@@ -938,6 +938,57 @@ static void proc_commit(xdr_t *in, xdr_t *out, uint32_t xid)
 }
 
 /* ------------------------------------------------------------------ */
+/* RENAME                                                               */
+/* ------------------------------------------------------------------ */
+static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
+{
+    our_fhandle_t fdir, tdir;
+    int           ok1, ok2;
+    char          fname[MAX_NAME], tname[MAX_NAME];
+    char          fdir_path[MAX_PATH], tdir_path[MAX_PATH];
+    char          from_path[MAX_PATH], to_path[MAX_PATH];
+    vfs_stat_t    fpre, fpost, tpre, tpost;
+    int           has_fpre, has_fpost, has_tpre, has_tpost;
+    uint32_t      status;
+
+    xdr_read_fhandle3(in, &fdir, &ok1);
+    xdr_read_string(in, fname, MAX_NAME);
+    xdr_read_fhandle3(in, &tdir, &ok2);
+    xdr_read_string(in, tname, MAX_NAME);
+    rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
+
+    if (!ok1 || !ok2) {
+        xdr_write_uint32(out, NFS3ERR_BADHANDLE);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        return;
+    }
+    if (fh_resolve(&fdir, fdir_path, MAX_PATH) < 0 ||
+        fh_resolve(&tdir, tdir_path, MAX_PATH) < 0) {
+        xdr_write_uint32(out, NFS3ERR_STALE);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        return;
+    }
+
+    snprintf(from_path, MAX_PATH, "%s/%s", fdir_path, fname);
+    snprintf(to_path,   MAX_PATH, "%s/%s", tdir_path, tname);
+
+    has_fpre = (vfs_stat(fdir_path, &fpre) == 0);
+    has_tpre = (vfs_stat(tdir_path, &tpre) == 0);
+
+    status = (vfs_rename(from_path, to_path) < 0)
+                 ? vfs_errno_to_nfs3(errno) : NFS3_OK;
+
+    has_fpost = (vfs_stat(fdir_path, &fpost) == 0);
+    has_tpost = (vfs_stat(tdir_path, &tpost) == 0);
+
+    xdr_write_uint32(out, status);
+    xdr_write_wcc_data(out, &fpre, has_fpre, &fpost, has_fpost);
+    xdr_write_wcc_data(out, &tpre, has_tpre, &tpost, has_tpost);
+}
+
+/* ------------------------------------------------------------------ */
 /* NOTSUPP stub: emit NFS3ERR_NOTSUPP with a null post_op_attr          */
 /* ------------------------------------------------------------------ */
 static void proc_notsupp(xdr_t *out, uint32_t xid)
@@ -950,9 +1001,43 @@ static void proc_notsupp(xdr_t *out, uint32_t xid)
 /* ================================================================== */
 /* Dispatch                                                             */
 /* ================================================================== */
+
+static const char *proc_name(uint32_t proc)
+{
+    switch (proc) {
+    case NFS3PROC_NULL:        return "NULL";
+    case NFS3PROC_GETATTR:     return "GETATTR";
+    case NFS3PROC_SETATTR:     return "SETATTR";
+    case NFS3PROC_LOOKUP:      return "LOOKUP";
+    case NFS3PROC_ACCESS:      return "ACCESS";
+    case NFS3PROC_READLINK:    return "READLINK";
+    case NFS3PROC_READ:        return "READ";
+    case NFS3PROC_WRITE:       return "WRITE";
+    case NFS3PROC_CREATE:      return "CREATE";
+    case NFS3PROC_MKDIR:       return "MKDIR";
+    case NFS3PROC_SYMLINK:     return "SYMLINK";
+    case NFS3PROC_MKNOD:       return "MKNOD";
+    case NFS3PROC_REMOVE:      return "REMOVE";
+    case NFS3PROC_RMDIR:       return "RMDIR";
+    case NFS3PROC_RENAME:      return "RENAME";
+    case NFS3PROC_LINK:        return "LINK";
+    case NFS3PROC_READDIR:     return "READDIR";
+    case NFS3PROC_READDIRPLUS: return "READDIRPLUS";
+    case NFS3PROC_FSSTAT:      return "FSSTAT";
+    case NFS3PROC_FSINFO:      return "FSINFO";
+    case NFS3PROC_PATHCONF:    return "PATHCONF";
+    case NFS3PROC_COMMIT:      return "COMMIT";
+    default:                   return "?";
+    }
+}
+
 void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
 {
     (void)fd;
+
+    if (g_verbose)
+        fprintf(stderr, "nfs3: xid=%08X proc=%s uid=%u\n",
+                call->xid, proc_name(call->proc), call->auth_uid);
 
     if (call->vers != VERS_NFS) {
         rpc_write_prog_mismatch(out, call->xid, VERS_NFS, VERS_NFS);
@@ -960,21 +1045,22 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
     }
 
     switch (call->proc) {
-    case NFS3PROC_NULL:        proc_null(out, call->xid);           break;
-    case NFS3PROC_GETATTR:     proc_getattr(in, out, call->xid);    break;
-    case NFS3PROC_SETATTR:     proc_setattr(in, out, call->xid);    break;
-    case NFS3PROC_LOOKUP:      proc_lookup(in, out, call->xid);     break;
-    case NFS3PROC_ACCESS:      proc_access(in, out, call->xid);     break;
-    case NFS3PROC_READ:        proc_read(in, out, call->xid);       break;
-    case NFS3PROC_WRITE:       proc_write(in, out, call->xid);      break;
-    case NFS3PROC_CREATE:      proc_create(in, out, call->xid);     break;
-    case NFS3PROC_REMOVE:      proc_remove(in, out, call->xid);     break;
-    case NFS3PROC_READDIR:     proc_readdir(in, out, call->xid);    break;
-    case NFS3PROC_READDIRPLUS: proc_readdirplus(in, out, call->xid);break;
-    case NFS3PROC_FSSTAT:      proc_fsstat(in, out, call->xid);     break;
-    case NFS3PROC_FSINFO:      proc_fsinfo(in, out, call->xid);     break;
-    case NFS3PROC_PATHCONF:    proc_pathconf(in, out, call->xid);   break;
-    case NFS3PROC_COMMIT:      proc_commit(in, out, call->xid);     break;
-    default:                   proc_notsupp(out, call->xid);        break;
+    case NFS3PROC_NULL:        proc_null(out, call->xid);            break;
+    case NFS3PROC_GETATTR:     proc_getattr(in, out, call->xid);     break;
+    case NFS3PROC_SETATTR:     proc_setattr(in, out, call->xid);     break;
+    case NFS3PROC_LOOKUP:      proc_lookup(in, out, call->xid);      break;
+    case NFS3PROC_ACCESS:      proc_access(in, out, call->xid);      break;
+    case NFS3PROC_READ:        proc_read(in, out, call->xid);        break;
+    case NFS3PROC_WRITE:       proc_write(in, out, call->xid);       break;
+    case NFS3PROC_CREATE:      proc_create(in, out, call->xid);      break;
+    case NFS3PROC_REMOVE:      proc_remove(in, out, call->xid);      break;
+    case NFS3PROC_RENAME:      proc_rename(in, out, call->xid);      break;
+    case NFS3PROC_READDIR:     proc_readdir(in, out, call->xid);     break;
+    case NFS3PROC_READDIRPLUS: proc_readdirplus(in, out, call->xid); break;
+    case NFS3PROC_FSSTAT:      proc_fsstat(in, out, call->xid);      break;
+    case NFS3PROC_FSINFO:      proc_fsinfo(in, out, call->xid);      break;
+    case NFS3PROC_PATHCONF:    proc_pathconf(in, out, call->xid);    break;
+    case NFS3PROC_COMMIT:      proc_commit(in, out, call->xid);      break;
+    default:                   proc_notsupp(out, call->xid);         break;
     }
 }

@@ -461,10 +461,80 @@ print(f"nfsd_test.py  host={HOST}  pmap={PORT_PMAP}  "
       f"mount={PORT_MOUNT}  nfs={PORT_NFS}")
 print(f"export under test: {EXPORT_PATH}")
 
+# ------------------------------------------------------------------ #
+# Test: RENAME                                                         #
+# ------------------------------------------------------------------ #
+def test_rename():
+    if ROOT_FH is None:
+        print("\n=== RENAME (SKIPPED) ===")
+        return
+    print("\n=== RENAME ===")
+    s = conn(PORT_NFS)
+    fh = xdr_opaque(ROOT_FH)
+    sattr3_null = u32(0)*6
+
+    # Create source file
+    args = fh + xdr_string("rename_src.tmp") + u32(0) + sattr3_null
+    xid, pkt = rpc_call(100003, 3, 8, args)
+    resp = send_recv(s, pkt)
+    _, stat, off = parse_reply_hdr(resp)
+    ns = struct.unpack_from(">I", resp, off)[0]
+    if ns != 0:
+        fail("RENAME setup CREATE", f"nfs_stat={ns}")
+        s.close(); return
+    ok("RENAME setup: CREATE rename_src.tmp")
+
+    # RENAME src -> dst
+    args = fh + xdr_string("rename_src.tmp") + fh + xdr_string("rename_dst.tmp")
+    xid, pkt = rpc_call(100003, 3, 14, args)
+    resp = send_recv(s, pkt)
+    _, stat, off = parse_reply_hdr(resp)
+    ns = struct.unpack_from(">I", resp, off)[0]
+    if ns == 0:
+        ok("NFS3PROC_RENAME rename_src.tmp -> rename_dst.tmp")
+    else:
+        fail("NFS3PROC_RENAME", f"nfs_stat={ns}")
+        s.close(); return
+
+    # LOOKUP src must be NOENT
+    args = fh + xdr_string("rename_src.tmp")
+    xid, pkt = rpc_call(100003, 3, 3, args)
+    resp = send_recv(s, pkt)
+    _, stat, off = parse_reply_hdr(resp)
+    ns = struct.unpack_from(">I", resp, off)[0]
+    if ns == 2:   # NFS3ERR_NOENT
+        ok("LOOKUP old name after rename -> NOENT (correct)")
+    else:
+        fail("LOOKUP old name after rename", f"nfs_stat={ns} (want 2=NOENT)")
+
+    # LOOKUP dst must succeed
+    args = fh + xdr_string("rename_dst.tmp")
+    xid, pkt = rpc_call(100003, 3, 3, args)
+    resp = send_recv(s, pkt)
+    _, stat, off = parse_reply_hdr(resp)
+    ns = struct.unpack_from(">I", resp, off)[0]
+    if ns == 0:
+        ok("LOOKUP new name after rename -> OK (correct)")
+    else:
+        fail("LOOKUP new name after rename", f"nfs_stat={ns}")
+
+    # Cleanup REMOVE
+    args = fh + xdr_string("rename_dst.tmp")
+    xid, pkt = rpc_call(100003, 3, 12, args)
+    resp = send_recv(s, pkt)
+    _, stat, off = parse_reply_hdr(resp)
+    ns = struct.unpack_from(">I", resp, off)[0]
+    if ns == 0:
+        ok("RENAME cleanup: REMOVE rename_dst.tmp")
+    else:
+        fail("RENAME cleanup REMOVE", f"nfs_stat={ns}")
+    s.close()
+
 try:
     test_portmapper()
     test_mount()
     test_nfs3()
+    test_rename()
 except ConnectionRefusedError:
     print("\nERROR: connection refused -- is the server running?")
     print("  ./nfsd -p 11111 -m 12048 -n 12049 nfsd.conf")

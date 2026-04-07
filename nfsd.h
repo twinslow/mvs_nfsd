@@ -372,6 +372,9 @@ extern int g_port_pmap;
 extern int g_port_mount;
 extern int g_port_nfs;
 
+/* Verbose logging flag: set by -v flag */
+extern int g_verbose;
+
 /* ------------------------------------------------------------------ */
 /* Prototypes: xdr.c                                                    */
 /* ------------------------------------------------------------------ */
@@ -438,6 +441,7 @@ int        vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset);
 int        vfs_create(const char *path, uint32_t mode);
 int        vfs_remove(const char *path);
+int        vfs_rename(const char *from, const char *to);
 int        vfs_truncate(const char *path, uint64_t size);
 int        vfs_set_times(const char *path,
                int set_atime, uint32_t atime_sec,

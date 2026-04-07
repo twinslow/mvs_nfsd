@@ -42,6 +42,7 @@ uint8_t g_write_verifier[8];
 int     g_port_pmap  = PORT_PORTMAP;
 int     g_port_mount = PORT_MOUNT;
 int     g_port_nfs   = PORT_NFS;
+int     g_verbose    = 0;
 
 /* ------------------------------------------------------------------ */
 /* Global I/O buffers shared across all connections (single-threaded)   */
@@ -144,11 +145,13 @@ int main(int argc, char *argv[])
     fd_set  rfds;
     time_t  now;
 
-    while ((opt = getopt(argc, argv, "p:m:n:")) != -1) {
+    while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p': port_pmap  = atoi(optarg); break;
         case 'm': port_mount = atoi(optarg); break;
-        case 'n': port_nfs   = atoi(optarg); break;        default:
+        case 'n': port_nfs   = atoi(optarg); break;
+        case 'v': g_verbose  = 1;            break;
+        default:
             fprintf(stderr,
                 "usage: %s [-p pmap] [-m mount] [-n nfs] <config>\n",
                 argv[0]);

@@ -176,6 +176,14 @@ int vfs_remove(const char *path)
 }
 
 /* ------------------------------------------------------------------ */
+/* vfs_rename: rename / move a file.                                    */
+/* ------------------------------------------------------------------ */
+int vfs_rename(const char *from, const char *to)
+{
+    return rename(from, to);
+}
+
+/* ------------------------------------------------------------------ */
 /* vfs_truncate: change file size to 'size' bytes.                      */
 /* ------------------------------------------------------------------ */
 int vfs_truncate(const char *path, uint64_t size)
