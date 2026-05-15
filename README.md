@@ -75,6 +75,20 @@ sudo mount -t nfs -o nfsvers=3,nolock server:/export/src /mnt/src
 sudo mount -t nfs \
      -o nfsvers=3,port=2049,mountport=20048,nolock \
      server:/export/src /mnt/src
+
+
+# The following command worked to mount the file system on Ubuntu 24.04.4 LTS
+sudo mount -t nfs \
+     -o nfsvers=3,port=12049,mountport=12048,nolock,tcp,soft,timeo=10 \
+     192.168.1.168:/export/src /mnt/test
+```
+
+The following commands can be used to test connectivity to the ports:
+
+```bash
+nc -zv 192.168.1.168 12049
+nc -zv 192.168.1.168 12048
+nc -zv 192.168.1.168 11111
 ```
 
 ### Non-root (high ports — for development and testing)
