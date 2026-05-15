@@ -36,6 +36,23 @@
 #include "nfsd.h"
 
 /* ------------------------------------------------------------------ */
+/* parse_port: parse a decimal port string into [1, 65535].             */
+/* Returns 0 on success, -1 if the string is not a valid port number.   */
+/* ------------------------------------------------------------------ */
+static int parse_port(const char *s, int *out)
+{
+    char *end;
+    long  v;
+
+    errno = 0;
+    v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0' || v < 1 || v > 65535)
+        return -1;
+    *out = (int)v;
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Global write verifier: set once at startup from time()               */
 /* ------------------------------------------------------------------ */
 uint8_t g_write_verifier[8];
@@ -70,7 +87,8 @@ static int make_listen_sock(int port)
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); exit(1); }
 
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        perror("nfsd: setsockopt SO_REUSEADDR");
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -97,7 +115,12 @@ static void accept_conn(int lsock, int proto)
     cfd = accept(lsock, (struct sockaddr *)&peer, &plen);
     if (cfd < 0) return;
 
-    if (g_nconns >= MAX_CONNECTIONS) { close(cfd); return; }
+    if (g_nconns >= MAX_CONNECTIONS) {
+        fprintf(stderr, "nfsd: connection table full (%d), dropping\n",
+                MAX_CONNECTIONS);
+        close(cfd);
+        return;
+    }
 
     g_conns[g_nconns].fd    = cfd;
     g_conns[g_nconns].proto = proto;
@@ -147,9 +170,24 @@ int main(int argc, char *argv[])
 
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
-        case 'p': port_pmap  = atoi(optarg); break;
-        case 'm': port_mount = atoi(optarg); break;
-        case 'n': port_nfs   = atoi(optarg); break;
+        case 'p':
+            if (parse_port(optarg, &port_pmap)  < 0) {
+                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                return 1;
+            }
+            break;
+        case 'm':
+            if (parse_port(optarg, &port_mount) < 0) {
+                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                return 1;
+            }
+            break;
+        case 'n':
+            if (parse_port(optarg, &port_nfs)   < 0) {
+                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                return 1;
+            }
+            break;
         case 'v': g_verbose  = 1;            break;
         default:
             fprintf(stderr,
@@ -182,11 +220,20 @@ int main(int argc, char *argv[])
     g_port_mount = port_mount;
     g_port_nfs   = port_nfs;
 
-    /* Write verifier: set from startup time */
-    memset(g_write_verifier, 0, sizeof(g_write_verifier));
-    now = time(NULL);
-    memcpy(g_write_verifier, &now,
-           sizeof(now) < 8u ? sizeof(now) : 8u);
+    /* Write verifier: combine startup time + PID to avoid collision on
+     * fast restarts (time() has only 1-second granularity). */
+    {
+        pid_t pid = getpid();
+        now = time(NULL);
+        g_write_verifier[0] = (uint8_t)((uint32_t)now >> 24);
+        g_write_verifier[1] = (uint8_t)((uint32_t)now >> 16);
+        g_write_verifier[2] = (uint8_t)((uint32_t)now >>  8);
+        g_write_verifier[3] = (uint8_t)((uint32_t)now      );
+        g_write_verifier[4] = (uint8_t)((uint32_t)pid >> 24);
+        g_write_verifier[5] = (uint8_t)((uint32_t)pid >> 16);
+        g_write_verifier[6] = (uint8_t)((uint32_t)pid >>  8);
+        g_write_verifier[7] = (uint8_t)((uint32_t)pid      );
+    }
 
     signal(SIGPIPE, SIG_IGN);
 

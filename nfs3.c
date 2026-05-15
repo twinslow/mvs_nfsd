@@ -6,7 +6,7 @@
  *              PATHCONF, COMMIT.
  *
  * Not implemented (return NFS3ERR_NOTSUPP):
- *   READLINK, MKDIR, SYMLINK, MKNOD, RMDIR, RENAME, LINK.
+ *   READLINK, MKDIR, SYMLINK, MKNOD, RMDIR, LINK.
  *
  * Static read/write buffers are safe because the server is
  * single-threaded (one request in flight at a time).
@@ -20,6 +20,14 @@
 /* Static I/O buffers -- one READ and one WRITE buffer */
 static uint8_t g_read_buf [MAX_READ_SIZE];
 static uint8_t g_write_buf[MAX_WRITE_SIZE];
+
+/*
+ * Per-entry worst-case wire size for READDIRPLUS:
+ *   value_follows(4) + fileid(8) + name_len_hdr(4) + name_padded(var) +
+ *   cookie(8) + post_op_attr(4+84) + name_handle_present(4) +
+ *   fh_opaque_len(4) + fh_data(OUR_FHSIZE=16) = 140 bytes + name
+ */
+#define READDIRPLUS_ENTRY_OVERHEAD 140u
 
 /* ================================================================== */
 /* XDR helpers for NFS3 types                                          */
@@ -132,15 +140,15 @@ void xdr_read_sattr3(xdr_t *x, sattr3_t *a)
     /* atime: set_it (0/1/2), if 2: sec + nsec */
     a->set_atime = (int)xdr_read_uint32(x);
     if (a->set_atime == (int)SET_TO_CLIENT_TIME) {
-        a->atime_sec = xdr_read_uint32(x);
-        xdr_skip(x, 4);  /* nsec */
+        a->atime_sec  = xdr_read_uint32(x);
+        a->atime_nsec = xdr_read_uint32(x);
     }
 
     /* mtime: same */
     a->set_mtime = (int)xdr_read_uint32(x);
     if (a->set_mtime == (int)SET_TO_CLIENT_TIME) {
-        a->mtime_sec = xdr_read_uint32(x);
-        xdr_skip(x, 4);  /* nsec */
+        a->mtime_sec  = xdr_read_uint32(x);
+        a->mtime_nsec = xdr_read_uint32(x);
     }
 }
 
@@ -158,6 +166,53 @@ static void make_child_relpath(const char *parent_rel, const char *name,
     } else {
         snprintf(child_rel, maxlen, "%s/%s", parent_rel, name);
     }
+}
+
+/*
+ * name_is_valid: return 1 if name is safe to use as a path component.
+ *
+ * Rejects empty names, "." (would alias the directory), ".." (path
+ * traversal above the export root), and names containing '/' (which
+ * would split into multiple components under snprintf).  RFC 1813
+ * requires NFS3ERR_INVAL for names containing NUL or slash.
+ */
+static int name_is_valid(const char *name)
+{
+    if (name[0] == '\0') return 0;
+    if (name[0] == '.' && name[1] == '\0') return 0;
+    if (name[0] == '.' && name[1] == '.' && name[2] == '\0') return 0;
+    if (strchr(name, '/') != NULL) return 0;
+    return 1;
+}
+
+/*
+ * check_access: evaluate NFS3 ACCESS bits against POSIX mode, uid, gid.
+ * Returns the subset of 'requested' that is actually permitted.
+ */
+static uint32_t check_access(const vfs_stat_t *st, uint32_t uid,
+                              uint32_t gid, uint32_t requested)
+{
+    uint32_t granted = 0;
+    uint32_t mode    = st->mode;
+
+    if (uid == 0) {
+        /* Root: read/write/delete always; execute only if any x-bit set */
+        granted = ACCESS3_READ | ACCESS3_LOOKUP | ACCESS3_MODIFY
+                | ACCESS3_EXTEND | ACCESS3_DELETE;
+        if (mode & 0111u) granted |= ACCESS3_EXECUTE;
+        return granted & requested;
+    }
+
+    /* Select the relevant rwx triplet */
+    if      (uid == st->uid) mode >>= 6;
+    else if (gid == st->gid) mode >>= 3;
+    /* else: other bits are already in bits 2-0 */
+
+    if (mode & 04u) granted |= ACCESS3_READ | ACCESS3_LOOKUP;
+    if (mode & 02u) granted |= ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE;
+    if (mode & 01u) granted |= ACCESS3_EXECUTE;
+
+    return granted & requested;
 }
 
 /* Helper: strip last component from relpath to get parent relpath */
@@ -241,14 +296,18 @@ static void proc_setattr(xdr_t *in, xdr_t *out, uint32_t xid)
 
     has_pre  = (vfs_stat(path, &pre) == 0);
 
+    /* mode, uid, gid changes are not supported; they are silently ignored.
+     * Clients that call chmod/chown over NFS will get NFS3_OK but no
+     * change on disk -- acceptable for a minimal read/write server. */
     if (a.has_size && vfs_truncate(path, a.size) < 0)
         status = vfs_errno_to_nfs3(errno);
 
     if (status == NFS3_OK &&
         (a.set_atime != (int)SET_DONT_CHANGE ||
          a.set_mtime != (int)SET_DONT_CHANGE)) {
-        if (vfs_set_times(path, a.set_atime, a.atime_sec,
-                                a.set_mtime, a.mtime_sec) < 0)
+        if (vfs_set_times(path,
+                          a.set_atime, a.atime_sec, a.atime_nsec,
+                          a.set_mtime, a.mtime_sec, a.mtime_nsec) < 0)
             status = vfs_errno_to_nfs3(errno);
     }
 
@@ -282,6 +341,11 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_post_op_attr(out, NULL, 0);
         return;
     }
+    if (!name_is_valid(name)) {
+        xdr_write_uint32(out, NFS3ERR_INVAL);
+        xdr_write_post_op_attr(out, NULL, 0);
+        return;
+    }
     if (fh_resolve(&dir_fh, dir_path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
@@ -301,8 +365,7 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
 
     /* Cache the object's relative path */
     dir_rel[0] = '\0';
-    fh_cache_lookup(dir_fh.export_id, dir_fh.dev, dir_fh.ino,
-                    dir_rel, MAX_PATH);
+    fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
     make_child_relpath(dir_rel, name, obj_rel, MAX_PATH);
     fh_cache_insert(dir_fh.export_id, obj_st.raw_dev, obj_st.raw_ino,
                     obj_rel);
@@ -316,7 +379,8 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
 /* ------------------------------------------------------------------ */
 /* ACCESS                                                               */
 /* ------------------------------------------------------------------ */
-static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid)
+static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
+                        uint32_t auth_uid, uint32_t auth_gid)
 {
     our_fhandle_t fh;
     int           ok;
@@ -346,8 +410,9 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid)
 
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &st, has_st);
-    /* Grant all requested access (no fine-grained access control) */
-    xdr_write_uint32(out, requested);
+    xdr_write_uint32(out, has_st
+                         ? check_access(&st, auth_uid, auth_gid, requested)
+                         : 0u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -490,6 +555,13 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
+    if (!name_is_valid(name)) {
+        xdr_write_uint32(out, NFS3ERR_INVAL);
+        xdr_write_uint32(out, 0);
+        xdr_write_post_op_attr(out, NULL, 0);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        return;
+    }
     if (fh_resolve(&dir_fh, dir_path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_uint32(out, 0);
@@ -515,7 +587,24 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
         }
     }
 
-    /* EXCLUSIVE mode: we create if not exists; treat as UNCHECKED */
+    /* EXCLUSIVE mode: we do not store the verifier, so we treat it as
+     * GUARDED (fail if file exists).  This is safe -- no existing file
+     * is truncated -- but it means a retried EXCLUSIVE create returns
+     * NFS3ERR_EXIST instead of the original handle.  Full RFC 1813
+     * verifier semantics would require persisting the 8-byte createverf. */
+    if (createmode == CREATE_EXCLUSIVE) {
+        vfs_stat_t tmp;
+        if (vfs_stat(obj_path, &tmp) == 0) {
+            has_dir_post = (vfs_stat(dir_path, &dir_post) == 0);
+            xdr_write_uint32(out, NFS3ERR_EXIST);
+            xdr_write_uint32(out, 0);
+            xdr_write_post_op_attr(out, NULL, 0);
+            xdr_write_wcc_data(out, &dir_pre, has_dir_pre,
+                               &dir_post, has_dir_post);
+            return;
+        }
+    }
+
     {
         uint32_t mode = a.has_mode ? a.mode : 0644u;
         status = (vfs_create(obj_path, mode) < 0)
@@ -537,8 +626,7 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
     if (has_obj) {
         fh_make(&obj_fh, dir_fh.export_id, obj_st.raw_dev, obj_st.raw_ino);
         dir_rel[0] = '\0';
-        fh_cache_lookup(dir_fh.export_id, dir_fh.dev, dir_fh.ino,
-                        dir_rel, MAX_PATH);
+        fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
         make_child_relpath(dir_rel, name, obj_rel, MAX_PATH);
         fh_cache_insert(dir_fh.export_id, obj_st.raw_dev,
                         obj_st.raw_ino, obj_rel);
@@ -575,6 +663,11 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
 
     if (!ok) {
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        return;
+    }
+    if (!name_is_valid(name)) {
+        xdr_write_uint32(out, NFS3ERR_INVAL);
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
@@ -740,8 +833,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
 
     /* Retrieve this directory's relpath for building child relpaths */
     dir_rel[0] = '\0';
-    fh_cache_lookup(dir_fh.export_id, dir_fh.dev, dir_fh.ino,
-                    dir_rel, MAX_PATH);
+    fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
 
     vfs_seekdir_to(dp, cookie);
     eof = 1; wrote_one = 0;
@@ -756,7 +848,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
            post_op_attr(4+84)+post_op_fh(4+4+OUR_FHSIZE+pad) */
         before = xdr_get_pos(out);
 
-        if ((before - reply_start) + 200u + name_len > maxcount
+        if ((before - reply_start) + READDIRPLUS_ENTRY_OVERHEAD + name_len > maxcount
             && wrote_one) {
             eof = 0;
             break;
@@ -963,6 +1055,12 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
+    if (!name_is_valid(fname) || !name_is_valid(tname)) {
+        xdr_write_uint32(out, NFS3ERR_INVAL);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        xdr_write_wcc_data(out, NULL, 0, NULL, 0);
+        return;
+    }
     if (fh_resolve(&fdir, fdir_path, MAX_PATH) < 0 ||
         fh_resolve(&tdir, tdir_path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
@@ -982,6 +1080,22 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
 
     has_fpost = (vfs_stat(fdir_path, &fpost) == 0);
     has_tpost = (vfs_stat(tdir_path, &tpost) == 0);
+
+    /* Update the path cache for the renamed file so handles issued
+     * before the rename continue to resolve to the new location. */
+    if (status == NFS3_OK) {
+        vfs_stat_t mv_st;
+        if (vfs_stat(to_path, &mv_st) == 0) {
+            char tdir_rel[MAX_PATH];
+            char new_rel[MAX_PATH];
+            tdir_rel[0] = '\0';
+            fh_cache_lookup(tdir.export_id, tdir.ino,
+                            tdir_rel, MAX_PATH);
+            make_child_relpath(tdir_rel, tname, new_rel, MAX_PATH);
+            fh_cache_insert(tdir.export_id, mv_st.raw_dev,
+                            mv_st.raw_ino, new_rel);
+        }
+    }
 
     xdr_write_uint32(out, status);
     xdr_write_wcc_data(out, &fpre, has_fpre, &fpost, has_fpost);
@@ -1049,7 +1163,9 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
     case NFS3PROC_GETATTR:     proc_getattr(in, out, call->xid);     break;
     case NFS3PROC_SETATTR:     proc_setattr(in, out, call->xid);     break;
     case NFS3PROC_LOOKUP:      proc_lookup(in, out, call->xid);      break;
-    case NFS3PROC_ACCESS:      proc_access(in, out, call->xid);      break;
+    case NFS3PROC_ACCESS:
+        proc_access(in, out, call->xid, call->auth_uid, call->auth_gid);
+        break;
     case NFS3PROC_READ:        proc_read(in, out, call->xid);        break;
     case NFS3PROC_WRITE:       proc_write(in, out, call->xid);       break;
     case NFS3PROC_CREATE:      proc_create(in, out, call->xid);      break;

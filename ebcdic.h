@@ -45,15 +45,23 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* ------------------------------------------------------------------ */
+/* Short names for MVS compatibility */
+#if defined(__MVS__)
+#define ebcdic_to_ascii         ebcToAsc
+#define ascii_to_ebcdic         ascToEbc
+#define ebcdic_member_to_name   ebcMbToN
+#define name_to_ebcdic_member   namToEmb
+#endif /* __MVS__ */
+
+/* ------------------------------------------------------------------- */
 /* Translation tables (defined in ebcdic.c)                            */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------- */
 extern const uint8_t ebcdic_to_ascii_tab[256];
 extern const uint8_t ascii_to_ebcdic_tab[256];
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Inline single-character translators                                  */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /* Translate one EBCDIC byte to ASCII. */
 static uint8_t ebcdic_to_ascii_c(uint8_t e)
@@ -67,9 +75,9 @@ static uint8_t ascii_to_ebcdic_c(uint8_t a)
     return ascii_to_ebcdic_tab[a];
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Buffer translators                                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /*
  * ebcdic_to_ascii: translate 'len' bytes from src (EBCDIC) to dst (ASCII).

@@ -132,7 +132,8 @@ int rpc_parse_call(xdr_t *x, rpc_call_t *call)
     cred_len = xdr_read_uint32(x);
     if (x->error) return -1;
 
-    if (flavor == AUTH_FLAVOR_UNIX && cred_len >= 12) {
+    if (flavor == AUTH_FLAVOR_UNIX && cred_len >= 12
+        && cred_len <= x->capacity - x->pos) {
         /* stamp(4) + machinename_len(4) + machinename + uid(4) + gid(4) */
         body_end = x->pos + ((cred_len + 3u) & ~3u);
 

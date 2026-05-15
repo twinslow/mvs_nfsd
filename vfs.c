@@ -108,26 +108,31 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 int vfs_pread(const char *path, void *buf, uint32_t count,
               uint64_t offset, uint32_t *nread, int *eof)
 {
-    int     fd;
-    ssize_t n;
-    struct  stat st;
+    int        fd;
+    ssize_t    n;
+    struct     stat st;
+    int        saved_errno;
 
     fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
 
-    n = pread(fd, buf, (size_t)count, (off_t)offset);
-    if (n < 0) { close(fd); return -1; }
-
-    *nread = (uint32_t)n;
-    *eof   = 0;
-
-    if (fstat(fd, &st) == 0) {
-        *eof = ((off_t)(offset + (uint64_t)n) >= st.st_size) ? 1 : 0;
-    } else {
-        *eof = (n < (ssize_t)count) ? 1 : 0;
+    /* Stat first so the EOF boundary is consistent with the read position */
+    if (fstat(fd, &st) < 0) {
+        saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
     }
 
+    n = pread(fd, buf, (size_t)count, (off_t)offset);
+    saved_errno = errno;
     close(fd);
+    errno = saved_errno;
+
+    if (n < 0) return -1;
+
+    *nread = (uint32_t)n;
+    *eof   = ((off_t)(offset + (uint64_t)n) >= st.st_size) ? 1 : 0;
     return 0;
 }
 
@@ -141,13 +146,16 @@ int vfs_pwrite(const char *path, const void *buf,
 {
     int     fd;
     ssize_t n;
+    int     saved_errno;
 
     fd = open(path, O_WRONLY);
     if (fd < 0) return -1;
 
     n = pwrite(fd, buf, (size_t)count, (off_t)offset);
-    if (n >= 0) fsync(fd);
+    saved_errno = errno;          /* preserve before fsync/close can overwrite */
+    if (n == (ssize_t)count) fsync(fd);
     close(fd);
+    errno = saved_errno;
 
     return (n == (ssize_t)count) ? 0 : -1;
 }
@@ -194,52 +202,30 @@ int vfs_truncate(const char *path, uint64_t size)
 /* ------------------------------------------------------------------ */
 /* vfs_set_times: set atime and/or mtime on path.                       */
 /* set_atime / set_mtime use the SET_* constants from nfsd.h:           */
-/*   SET_DONT_CHANGE      - leave unchanged                             */
-/*   SET_TO_SERVER_TIME   - use current time                            */
-/*   SET_TO_CLIENT_TIME   - use the supplied *_sec value                */
+/*   SET_DONT_CHANGE      - leave this timestamp unchanged               */
+/*   SET_TO_SERVER_TIME   - set to the server's current time             */
+/*   SET_TO_CLIENT_TIME   - set to the supplied sec/nsec values          */
+/*                                                                      */
+/* Uses utimensat(2) with UTIME_OMIT / UTIME_NOW so each timestamp is  */
+/* handled independently without having to stat the file first.         */
 /* ------------------------------------------------------------------ */
 int vfs_set_times(const char *path,
-                  int set_atime, uint32_t atime_sec,
-                  int set_mtime, uint32_t mtime_sec)
+                  int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
+                  int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
 {
-    struct timeval tv[2];
-    struct stat    st;
+    struct timespec ts[2];
 
-    if (set_atime == SET_DONT_CHANGE || set_mtime == SET_DONT_CHANGE) {
-        /* Read current times so we don't change the one we should keep */
-        if (stat(path, &st) < 0) return -1;
-    }
+    ts[0].tv_sec  = (set_atime == SET_TO_CLIENT_TIME) ? (time_t)atime_sec : 0;
+    ts[0].tv_nsec = (set_atime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
+                    (set_atime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
+                                                        (long)atime_nsec;
 
-    if (set_atime == SET_DONT_CHANGE) {
-        tv[0].tv_sec  = (long)st.st_atime;
-        tv[0].tv_usec = 0;
-    } else if (set_atime == SET_TO_CLIENT_TIME) {
-        tv[0].tv_sec  = (long)atime_sec;
-        tv[0].tv_usec = 0;
-    } else {
-        /* SET_TO_SERVER_TIME: pass NULL to utimes for current time */
-        tv[0].tv_sec  = 0;
-        tv[0].tv_usec = 0;
-    }
+    ts[1].tv_sec  = (set_mtime == SET_TO_CLIENT_TIME) ? (time_t)mtime_sec : 0;
+    ts[1].tv_nsec = (set_mtime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
+                    (set_mtime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
+                                                        (long)mtime_nsec;
 
-    if (set_mtime == SET_DONT_CHANGE) {
-        tv[1].tv_sec  = (long)st.st_mtime;
-        tv[1].tv_usec = 0;
-    } else if (set_mtime == SET_TO_CLIENT_TIME) {
-        tv[1].tv_sec  = (long)mtime_sec;
-        tv[1].tv_usec = 0;
-    } else {
-        tv[1].tv_sec  = 0;
-        tv[1].tv_usec = 0;
-    }
-
-    /* If either time is SET_TO_SERVER_TIME, use NULL for current time */
-    if (set_atime == SET_TO_SERVER_TIME ||
-        set_mtime == SET_TO_SERVER_TIME) {
-        return utimes(path, NULL);
-    }
-
-    return utimes(path, tv);
+    return utimensat(AT_FDCWD, path, ts, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,6 +331,13 @@ int vfs_readdir_next(vfs_dir_t *d, char *name,
 /* vfs_seekdir_to: seek so the next vfs_readdir_next call returns the   */
 /* entry AFTER the one that had the given cookie value.                 */
 /* cookie=0 means start from the very beginning.                        */
+/*                                                                      */
+/* Implementation note: we rewind and read linearly through 'cookie'   */
+/* entries.  This is O(n) per resumed READDIR page.  POSIX seekdir()   */
+/* / telldir() would allow O(1) seeking but only if the DIR* handle    */
+/* is kept open between calls, which conflicts with the static-pool     */
+/* no-malloc design.  For the typical case (small directories or        */
+/* single-page listings) this cost is negligible.                       */
 /* ------------------------------------------------------------------ */
 void vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie)
 {

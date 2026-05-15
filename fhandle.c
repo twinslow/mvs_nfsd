@@ -1,41 +1,63 @@
 /*
- * fhandle.c - File handle construction and path resolution cache.
+ * fhandle.c - File handle construction and path-resolution cache.
  *
  * FILE HANDLE LAYOUT (16 bytes, big-endian on wire):
- *   bytes  0- 3: magic   = OUR_FH_MAGIC ('NFS3')
+ *   bytes  0- 3: magic     = OUR_FH_MAGIC ('NFS3')
  *   bytes  4- 7: export_id
- *   bytes  8-11: dev      (st_dev truncated to 32 bits)
- *   bytes 12-15: ino      (st_ino truncated to 32 bits)
+ *   bytes  8-11: reserved  = 0
+ *   bytes 12-15: id32      -- stable 32-bit ID for this file
  *
- * All encoding is explicit byte-by-byte so the code is correct on
- * both little-endian (Linux x86_64) and big-endian (MVS) hosts.
+ * The id32 is allocated from the path cache below.  Keying on
+ * (dev, ino) from vfs_stat_t avoids the previous design where the same
+ * raw truncated values were stored directly in the handle, making it
+ * impossible to distinguish the stable ID from a raw inode number.
  *
  * PATH CACHE
  * ----------
- * NFS requires that a file handle resolve to a path on every call, but
- * inodes alone don't give us a path.  We maintain a fixed-size cache
- * keyed on (export_id, dev, ino) -> relative path from export root.
+ * A flat array of FH_CACHE_SIZE (512) entries.  Each entry stores:
+ *   (export_id, dev, ino)  -- the filesystem identity (32-bit each)
+ *   id32                   -- the stable token carried in the handle
+ *   relpath                -- path relative to export root
  *
- * The cache is a flat array with round-robin eviction.  Capacity is
- * FH_CACHE_SIZE (512) entries.  Entries are populated:
- *   - On MOUNTPROC3_MNT (root of export, relpath="")
- *   - On NFS3PROC_LOOKUP (child path is parent_relpath + "/" + name)
- *   - On NFS3PROC_READDIRPLUS (all entries in a directory scan)
+ * Two lookup modes are needed:
+ *   - By (export_id, dev, ino): used when inserting / building handles.
+ *   - By (export_id, id32):     used when resolving a received handle.
  *
- * For the MVS port: replace dev/ino with dataset-index / member-index,
- * or a hash of the dataset + member name, in fh_make().
+ * id32 values are issued from a monotonically increasing counter.  With
+ * a 512-entry cache a 32-bit counter will not wrap in practice.
+ *
+ * Round-robin eviction.  Entries are populated:
+ *   - On MOUNTPROC3_MNT       (export root, relpath = "")
+ *   - On NFS3PROC_LOOKUP      (child path built from parent + name)
+ *   - On NFS3PROC_READDIRPLUS (every entry scanned in a directory)
+ *
+ * Portability note: all types are uint32_t so this file compiles
+ * cleanly on both 64-bit Linux (x86_64) and 32-bit MVS with GCCMVS.
+ * On Linux, vfs_stat_t.raw_dev and .raw_ino carry st_dev/st_ino
+ * truncated to 32 bits (see vfs.c); on MVS the VFS layer maps PDS
+ * dataset/member indices directly into these 32-bit fields.
  */
 
-#include <string.h>   /* memset, strncpy, strcmp, strlen, strrchr */
-#include <stdio.h>    /* snprintf */
+#include <string.h>   /* memset, strncpy, snprintf */
+#include <stdio.h>
 #include "nfsd.h"
 
 /* ------------------------------------------------------------------ */
-/* Cache storage                                                        */
+/* Cache entry                                                          */
 /* ------------------------------------------------------------------ */
-static fh_cache_entry_t g_cache[FH_CACHE_SIZE];
-static int              g_cache_next  = 0;   /* next eviction slot    */
-static int              g_cache_count = 0;   /* entries ever inserted */
+typedef struct {
+    int      valid;
+    uint32_t export_id;
+    uint32_t dev;           /* raw_dev from vfs_stat_t */
+    uint32_t ino;           /* raw_ino from vfs_stat_t */
+    uint32_t id32;          /* stable ID carried in the file handle */
+    char     relpath[MAX_PATH];
+} cache_entry_t;
+
+static cache_entry_t g_cache[FH_CACHE_SIZE];
+static int           g_cache_next  = 0;   /* next eviction slot */
+static int           g_cache_count = 0;   /* entries ever inserted (capped at FH_CACHE_SIZE) */
+static uint32_t      g_id_seq      = 1;   /* id32 allocator; never issues 0 */
 
 /* ------------------------------------------------------------------ */
 /* fh_init: clear the cache at startup                                  */
@@ -45,18 +67,90 @@ void fh_init(void)
     memset(g_cache, 0, sizeof(g_cache));
     g_cache_next  = 0;
     g_cache_count = 0;
+    g_id_seq      = 1;
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_make: construct a file handle from export_id + dev + ino          */
+/* Internal: find slot by filesystem identity.  Returns -1 if absent.  */
+/* ------------------------------------------------------------------ */
+static int cache_find_by_ino(uint32_t export_id, uint32_t dev, uint32_t ino)
+{
+    int i;
+    int limit = (g_cache_count < FH_CACHE_SIZE) ? g_cache_count : FH_CACHE_SIZE;
+    for (i = 0; i < limit; i++) {
+        if (g_cache[i].valid
+            && g_cache[i].export_id == export_id
+            && g_cache[i].dev       == dev
+            && g_cache[i].ino       == ino)
+            return i;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Internal: find slot by stable id32.  Returns -1 if absent.          */
+/* ------------------------------------------------------------------ */
+static int cache_find_by_id(uint32_t export_id, uint32_t id32)
+{
+    int i;
+    int limit = (g_cache_count < FH_CACHE_SIZE) ? g_cache_count : FH_CACHE_SIZE;
+    for (i = 0; i < limit; i++) {
+        if (g_cache[i].valid
+            && g_cache[i].export_id == export_id
+            && g_cache[i].id32      == id32)
+            return i;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Internal: evict the next slot and return its index.                  */
+/* ------------------------------------------------------------------ */
+static int cache_alloc_slot(void)
+{
+    int i = g_cache_next;
+    g_cache_next = (g_cache_next + 1) % FH_CACHE_SIZE;
+    if (g_cache_count < FH_CACHE_SIZE) g_cache_count++;
+    return i;
+}
+
+/* ------------------------------------------------------------------ */
+/* fh_make: construct a file handle from (export_id, dev, ino).         */
+/*                                                                      */
+/* Looks up or allocates a stable id32 for the (dev, ino) pair.        */
+/* Sets fh->dev = 0 (reserved) and fh->ino = id32.                     */
+/*                                                                      */
+/* Separating id32 from the raw inode value means the handle's id32    */
+/* is never confused with a raw ino, and the cache can be updated       */
+/* without changing the handle the client holds.                        */
 /* ------------------------------------------------------------------ */
 void fh_make(our_fhandle_t *fh, uint32_t export_id,
              uint32_t dev, uint32_t ino)
 {
+    int      i;
+    uint32_t id32;
+
+    i = cache_find_by_ino(export_id, dev, ino);
+    if (i >= 0) {
+        id32 = g_cache[i].id32;
+    } else {
+        /* New entry: allocate slot and a fresh id32 */
+        i    = cache_alloc_slot();
+        id32 = g_id_seq++;
+        if (g_id_seq == 0) g_id_seq = 1;   /* keep id32 != 0 */
+
+        g_cache[i].valid     = 1;
+        g_cache[i].export_id = export_id;
+        g_cache[i].dev       = dev;
+        g_cache[i].ino       = ino;
+        g_cache[i].id32      = id32;
+        g_cache[i].relpath[0] = '\0';
+    }
+
     fh->magic     = OUR_FH_MAGIC;
     fh->export_id = export_id;
-    fh->dev       = dev;
-    fh->ino       = ino;
+    fh->dev       = 0u;     /* reserved */
+    fh->ino       = id32;
 }
 
 /* ------------------------------------------------------------------ */
@@ -84,7 +178,7 @@ void fh_encode(const our_fhandle_t *fh, uint8_t *bytes)
 
 /* ------------------------------------------------------------------ */
 /* fh_decode: read our_fhandle_t from 'len' bytes (must be OUR_FHSIZE). */
-/* Returns 0 on success, -1 if the magic is wrong or len is bad.        */
+/* Returns 0 on success, -1 if the magic is wrong or len is too small.  */
 /* ------------------------------------------------------------------ */
 int fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh)
 {
@@ -116,71 +210,65 @@ int fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh)
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_cache_insert: add or update a (export_id, dev, ino) -> relpath    */
-/* entry.  relpath is relative to the export root with NO leading '/'.  */
-/* The empty string "" means the export root itself.                    */
+/* fh_cache_insert: record or refresh (export_id, dev, ino) -> relpath  */
+/*                                                                      */
+/* If an entry for (export_id, dev, ino) already exists, only the      */
+/* relpath is updated (preserving the existing id32).  Otherwise a new  */
+/* slot is evicted and a fresh id32 allocated.                          */
+/*                                                                      */
+/* relpath is relative to the export root with NO leading '/'.          */
+/* The empty string "" represents the export root itself.               */
 /* ------------------------------------------------------------------ */
 void fh_cache_insert(uint32_t export_id, uint32_t dev,
                      uint32_t ino, const char *relpath)
 {
-    int i;
-    int limit = (g_cache_count < FH_CACHE_SIZE)
-                    ? g_cache_count : FH_CACHE_SIZE;
+    int      i;
+    uint32_t id32;
 
-    /* Update existing entry if present */
-    for (i = 0; i < limit; i++) {
-        if (g_cache[i].valid
-            && g_cache[i].export_id == export_id
-            && g_cache[i].dev       == dev
-            && g_cache[i].ino       == ino) {
-            strncpy(g_cache[i].relpath, relpath, MAX_PATH - 1);
-            g_cache[i].relpath[MAX_PATH - 1] = '\0';
-            return;
-        }
+    i = cache_find_by_ino(export_id, dev, ino);
+    if (i >= 0) {
+        /* Refresh relpath in existing entry */
+        strncpy(g_cache[i].relpath, relpath, MAX_PATH - 1);
+        g_cache[i].relpath[MAX_PATH - 1] = '\0';
+        return;
     }
 
-    /* Insert into next eviction slot */
-    g_cache[g_cache_next].valid     = 1;
-    g_cache[g_cache_next].export_id = export_id;
-    g_cache[g_cache_next].dev       = dev;
-    g_cache[g_cache_next].ino       = ino;
-    strncpy(g_cache[g_cache_next].relpath, relpath, MAX_PATH - 1);
-    g_cache[g_cache_next].relpath[MAX_PATH - 1] = '\0';
+    /* New entry */
+    i    = cache_alloc_slot();
+    id32 = g_id_seq++;
+    if (g_id_seq == 0) g_id_seq = 1;
 
-    g_cache_next = (g_cache_next + 1) % FH_CACHE_SIZE;
-    if (g_cache_count < FH_CACHE_SIZE) g_cache_count++;
+    g_cache[i].valid     = 1;
+    g_cache[i].export_id = export_id;
+    g_cache[i].dev       = dev;
+    g_cache[i].ino       = ino;
+    g_cache[i].id32      = id32;
+    strncpy(g_cache[i].relpath, relpath, MAX_PATH - 1);
+    g_cache[i].relpath[MAX_PATH - 1] = '\0';
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_cache_lookup: find the relpath for (export_id, dev, ino).         */
-/* Copies at most maxlen-1 bytes into relpath (NUL-terminated).         */
-/* Returns 0 on success, -1 if not found.                               */
+/* fh_cache_lookup: find the relpath for (export_id, id32).             */
+/*                                                                      */
+/* id32 is the value stored in our_fhandle_t.ino (the file handle's    */
+/* stable file ID).  Copies at most maxlen-1 bytes into relpath.        */
+/* Returns 0 on success, -1 if not found (handle is stale).            */
 /* ------------------------------------------------------------------ */
-int fh_cache_lookup(uint32_t export_id, uint32_t dev,
-                    uint32_t ino, char *relpath, uint32_t maxlen)
+int fh_cache_lookup(uint32_t export_id, uint32_t id32,
+                    char *relpath, uint32_t maxlen)
 {
-    int i;
-    int limit = (g_cache_count < FH_CACHE_SIZE)
-                    ? g_cache_count : FH_CACHE_SIZE;
-
-    for (i = 0; i < limit; i++) {
-        if (g_cache[i].valid
-            && g_cache[i].export_id == export_id
-            && g_cache[i].dev       == dev
-            && g_cache[i].ino       == ino) {
-            strncpy(relpath, g_cache[i].relpath, maxlen - 1);
-            relpath[maxlen - 1] = '\0';
-            return 0;
-        }
-    }
-    return -1;
+    int i = cache_find_by_id(export_id, id32);
+    if (i < 0) return -1;
+    strncpy(relpath, g_cache[i].relpath, maxlen - 1);
+    relpath[maxlen - 1] = '\0';
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
 /* fh_resolve: convert a file handle to an absolute path on this host.  */
 /*                                                                      */
-/* Looks up the relpath in the cache, then prepends the export's        */
-/* host_path.  Writes the result into abspath (maxlen bytes).           */
+/* Looks up the relpath in the cache by (export_id, id32), then        */
+/* prepends the export's host_path.  Writes the result into abspath.   */
 /* Returns 0 on success, -1 if the handle is stale or unknown.          */
 /* ------------------------------------------------------------------ */
 int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
@@ -191,10 +279,9 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
     exp = exports_find_by_id(fh->export_id);
     if (!exp) return -1;
 
-    if (fh_cache_lookup(fh->export_id, fh->dev, fh->ino,
-                        relpath, MAX_PATH) < 0) {
+    /* fh->ino carries the stable id32 */
+    if (fh_cache_lookup(fh->export_id, fh->ino, relpath, MAX_PATH) < 0)
         return -1;
-    }
 
     if (relpath[0] == '\0') {
         /* The handle IS the export root */

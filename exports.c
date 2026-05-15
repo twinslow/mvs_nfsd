@@ -19,6 +19,7 @@
 #include <stdio.h>    /* fopen, fclose, fgets */
 #include <string.h>   /* strncpy, strlen, strcmp, strchr */
 #include <ctype.h>    /* isspace */
+#include <sys/stat.h> /* stat */
 #include "nfsd.h"
 
 static export_t  g_exports[MAX_EXPORTS];
@@ -95,6 +96,28 @@ int exports_load(const char *config_file)
     }
 
     fclose(fp);
+
+    /* Validate that each host_path exists and is a directory */
+    {
+        int i;
+        struct stat st;
+        for (i = 0; i < g_nexports; i++) {
+            if (stat(g_exports[i].host_path, &st) < 0) {
+                fprintf(stderr,
+                    "nfsd: warning: host path for export %s does not "
+                    "exist or is not accessible: %s\n",
+                    g_exports[i].export_path,
+                    g_exports[i].host_path);
+            } else if (!S_ISDIR(st.st_mode)) {
+                fprintf(stderr,
+                    "nfsd: warning: host path for export %s is not "
+                    "a directory: %s\n",
+                    g_exports[i].export_path,
+                    g_exports[i].host_path);
+            }
+        }
+    }
+
     return g_nexports;
 }
 

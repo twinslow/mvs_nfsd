@@ -25,6 +25,75 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* 
+ * For MVS, we use short aliases for all functions and globals to 
+ * avoid name mangling issues with the C runtime. The aliases are defined 
+ * in the block below.  On Linux, we use the full names.
+ */
+#if defined(__MVS__)
+/* xdr.c */
+#define xdr_init_read           xdrInRd
+#define xdr_init_write          xdrInWr
+#define xdr_read_uint32         xdrRdU32
+#define xdr_read_uint64         xdrRdU64
+#define xdr_read_raw            xdrRdRaw
+#define xdr_read_opaque         xdrRdOpa
+#define xdr_read_string         xdrRdStr
+#define xdr_read_fhandle3       xdrRdFh3
+#define xdr_read_sattr3         xdrRdSa3
+#define xdr_write_uint32        xdrWrU32
+#define xdr_write_uint64        xdrWrU64
+#define xdr_write_raw           xdrWrRaw
+#define xdr_write_opaque        xdrWrOpa
+#define xdr_write_string        xdrWrStr
+#define xdr_write_fhandle       xdrWrFh
+#define xdr_write_fattr3        xdrWrFa3
+#define xdr_write_post_op_attr  xdrWrPoa
+#define xdr_write_wcc_data      xdrWrWcc
+#define xdr_get_pos             xdrGetPo
+#define xdr_set_pos             xdrSetPo
+/* rpc.c */
+#define rpc_parse_call          rpcParsC
+#define rpc_write_accept_hdr    rpcWrAcc
+#define rpc_write_prog_mismatch rpcWrPgM
+#define rpc_write_proc_unavail  rpcWrPcU
+/* exports.c */
+#define exports_load            expLoad
+#define exports_count           expCount
+#define exports_get             expGet
+#define exports_get_id          expGetId
+#define exports_find_by_nfs_path expFndNp
+#define exports_find_by_id      expFndId
+/* fhandle.c */
+#define fh_cache_insert         fhCachIn
+#define fh_cache_lookup         fhCachLk
+#define fh_resolve              fhResolv
+/* vfs.c */
+#define vfs_pread               vfsPread
+#define vfs_pwrite              vfsPwrit
+#define vfs_create              vfsCreat
+#define vfs_remove              vfsRemov
+#define vfs_rename              vfsRenam
+#define vfs_truncate            vfsTrunc
+#define vfs_set_times           vfsSetTm
+#define vfs_fsstat              vfsFsSt
+#define vfs_errno_to_nfs3       vfsErrN3
+#define vfs_opendir             vfsOpDir
+#define vfs_readdir_next        vfsRdNxt
+#define vfs_seekdir_to          vfsSekTo
+#define vfs_closedir            vfsClDir
+/* handlers */
+#define handle_portmap          hndPmap
+#define handle_mount            hndMount
+#define handle_nfs3             hndNfs3
+/* globals */
+#define g_write_verifier        gWrVerif
+#define g_port_pmap             gPortPm
+#define g_port_mount            gPortMt
+#define g_port_nfs              gPortNfs
+#define g_verbose               gVerbose
+#endif /* __MVS__ */
+
 /*
  * Uncomment for MVS if stdint.h is absent:
  *
@@ -35,16 +104,16 @@
  * typedef signed int         int32_t;
  */
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Network port numbers                                                 */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define PORT_PORTMAP     111
 #define PORT_MOUNT       20048
 #define PORT_NFS         2049
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* RPC message type constants (RFC 5531)                                */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define RPC_CALL             0u
 #define RPC_REPLY            1u
 #define MSG_ACCEPTED         0u
@@ -57,9 +126,9 @@
 #define AUTH_FLAVOR_NULL     0u
 #define AUTH_FLAVOR_UNIX     1u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* RPC program numbers and versions                                     */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define PROG_PORTMAP         100000u
 #define PROG_NFS             100003u
 #define PROG_MOUNT           100005u
@@ -67,9 +136,9 @@
 #define VERS_NFS             3u
 #define VERS_MOUNT           3u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Portmapper procedure numbers                                         */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define PMAPPROC_NULL        0u
 #define PMAPPROC_SET         1u
 #define PMAPPROC_UNSET       2u
@@ -80,9 +149,9 @@
 #define IPPROTO_TCP_PMAP     6u
 #define IPPROTO_UDP_PMAP     17u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Mount protocol procedure numbers                                     */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define MOUNTPROC3_NULL      0u
 #define MOUNTPROC3_MNT       1u
 #define MOUNTPROC3_DUMP      2u
@@ -90,9 +159,9 @@
 #define MOUNTPROC3_UMNTALL   4u
 #define MOUNTPROC3_EXPORT    5u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* NFSv3 procedure numbers (RFC 1813)                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define NFS3PROC_NULL         0u
 #define NFS3PROC_GETATTR      1u
 #define NFS3PROC_SETATTR      2u
@@ -116,9 +185,9 @@
 #define NFS3PROC_PATHCONF     20u
 #define NFS3PROC_COMMIT       21u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* NFSv3 status codes                                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define NFS3_OK               0u
 #define NFS3ERR_PERM          1u
 #define NFS3ERR_NOENT         2u
@@ -149,9 +218,9 @@
 #define NFS3ERR_BADTYPE       10007u
 #define NFS3ERR_JUKEBOX       10008u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* NFS file types                                                       */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define NF3REG    1u   /* regular file */
 #define NF3DIR    2u   /* directory    */
 #define NF3BLK    3u   /* block device */
@@ -160,9 +229,9 @@
 #define NF3SOCK   6u   /* socket       */
 #define NF3FIFO   7u   /* named pipe   */
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* ACCESS3 permission bits                                              */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define ACCESS3_READ     0x0001u
 #define ACCESS3_LOOKUP   0x0002u
 #define ACCESS3_MODIFY   0x0004u
@@ -170,24 +239,24 @@
 #define ACCESS3_DELETE   0x0010u
 #define ACCESS3_EXECUTE  0x0020u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* WRITE stable_how values                                              */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define UNSTABLE     0u
 #define DATA_SYNC    1u
 #define FILE_SYNC    2u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* FSINFO property flags                                                */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define FSF3_LINK        0x0001u
 #define FSF3_SYMLINK     0x0002u
 #define FSF3_HOMOGENEOUS 0x0008u
 #define FSF3_CANSETTIME  0x0010u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* CREATE mode values                                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define CREATE_UNCHECKED  0u
 #define CREATE_GUARDED    1u
 #define CREATE_EXCLUSIVE  2u
@@ -197,9 +266,9 @@
 #define SET_TO_SERVER_TIME   1u
 #define SET_TO_CLIENT_TIME   2u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Mount protocol error codes                                           */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #define MNT3_OK              0u
 #define MNT3ERR_PERM         1u
 #define MNT3ERR_NOENT        2u
@@ -211,14 +280,14 @@
 #define MNT3ERR_NOTSUPP      10004u
 #define MNT3ERR_SERVERFAULT  10006u
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Size and buffer limits                                               */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /* Maximum NFS3 file handle size (wire format) */
 #define NFS3_FHSIZE       64
 
-/* Our file handle is 16 bytes: magic(4) + export_id(4) + dev(4) + ino(4) */
+/* Our file handle is 16 bytes: magic(4) + export_id(4) + rsvd(4) + id32(4) */
 #define OUR_FHSIZE        16
 #define OUR_FH_MAGIC      0x4E465333u  /* 'NFS3' */
 
@@ -239,9 +308,9 @@
 /* Maximum open directory handles at once */
 #define MAX_OPEN_DIRS     8
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Core data structures                                                 */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /*
  * Our file handle (16 bytes, fits within NFS3 64-byte limit).
@@ -249,16 +318,21 @@
  * All four fields are stored big-endian in the wire encoding regardless
  * of host endianness (see fh_encode / fh_decode in fhandle.c).
  *
+ * The 'ino' field carries a stable 32-bit ID allocated from the path
+ * cache in fhandle.c.  The ID maps a (dev64, ino64) pair to a compact
+ * token that avoids collisions from truncating 64-bit inodes.  'dev' is
+ * reserved and always 0 in handles we issue.
+ *
  * For the MVS port:
  *   export_id  -> PDS dataset index in the exports table
- *   dev        -> could map to volume serial or dataset index
- *   ino        -> member index or hash within the PDS
+ *   dev        -> reserved (always 0)
+ *   ino        -> stable ID from the cache allocator, keyed on dataset+member
  */
 typedef struct {
     uint32_t magic;      /* always OUR_FH_MAGIC */
     uint32_t export_id;  /* index into exports table */
-    uint32_t dev;        /* st_dev truncated to 32 bits */
-    uint32_t ino;        /* st_ino truncated to 32 bits */
+    uint32_t dev;        /* reserved, always 0 */
+    uint32_t ino;        /* stable 32-bit file ID (from path cache) */
 } our_fhandle_t;
 
 /* One exported directory */
@@ -266,15 +340,6 @@ typedef struct {
     char export_path[MAX_PATH]; /* NFS path as seen by clients: /export/foo */
     char host_path[MAX_PATH];   /* local path on this host: /home/user/foo  */
 } export_t;
-
-/* Entry in the file-handle path cache */
-typedef struct {
-    int      valid;
-    uint32_t export_id;
-    uint32_t dev;
-    uint32_t ino;
-    char     relpath[MAX_PATH]; /* path relative to export root (no leading /) */
-} fh_cache_entry_t;
 
 /* XDR encode/decode buffer */
 typedef struct {
@@ -328,8 +393,8 @@ typedef struct {
     uint32_t mtime_nsec;
     uint32_t ctime_sec;
     uint32_t ctime_nsec;
-    uint32_t raw_dev;      /* for file handle: st_dev as uint32 */
-    uint32_t raw_ino;      /* for file handle: st_ino as uint32 */
+    uint32_t raw_dev;      /* st_dev truncated to 32 bits -- used as cache key */
+    uint32_t raw_ino;      /* st_ino truncated to 32 bits -- used as cache key */
 } vfs_stat_t;
 
 /* VFS filesystem-level statistics */
@@ -349,16 +414,16 @@ typedef struct {
     int      has_uid;     uint32_t uid;
     int      has_gid;     uint32_t gid;
     int      has_size;    uint64_t size;
-    int      set_atime;   uint32_t atime_sec;   /* SET_TO_CLIENT_TIME */
-    int      set_mtime;   uint32_t mtime_sec;   /* SET_TO_CLIENT_TIME */
+    int      set_atime;   uint32_t atime_sec;   uint32_t atime_nsec;
+    int      set_mtime;   uint32_t mtime_sec;   uint32_t mtime_nsec;
 } sattr3_t;
 
 /* Opaque directory iterator handle -- defined fully in vfs.c */
 typedef struct vfs_dir vfs_dir_t;
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Global state                                                         */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /*
  * 8-byte write verifier: set once at startup from time().
@@ -375,9 +440,9 @@ extern int g_port_nfs;
 /* Verbose logging flag: set by -v flag */
 extern int g_verbose;
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: xdr.c                                                    */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void     xdr_init_read(xdr_t *x, uint8_t *buf, uint32_t len);
 void     xdr_init_write(xdr_t *x, uint8_t *buf, uint32_t cap);
 uint32_t xdr_read_uint32(xdr_t *x);
@@ -396,9 +461,9 @@ void     xdr_write_fhandle(xdr_t *x, const our_fhandle_t *fh);
 uint32_t xdr_get_pos(const xdr_t *x);
 void     xdr_set_pos(xdr_t *x, uint32_t pos);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: rpc.c                                                    */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int  rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen);
 int  rpc_send(int fd, const uint8_t *buf, uint32_t len);
 int  rpc_parse_call(xdr_t *x, rpc_call_t *call);
@@ -407,9 +472,9 @@ void rpc_write_prog_mismatch(xdr_t *x, uint32_t xid,
          uint32_t lo, uint32_t hi);
 void rpc_write_proc_unavail(xdr_t *x, uint32_t xid);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: exports.c                                                */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int       exports_load(const char *config_file);
 int       exports_count(void);
 export_t *exports_get(int idx);
@@ -417,9 +482,9 @@ int       exports_get_id(const export_t *exp);
 export_t *exports_find_by_nfs_path(const char *nfs_path);
 export_t *exports_find_by_id(uint32_t id);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: fhandle.c                                                */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void fh_init(void);
 void fh_make(our_fhandle_t *fh, uint32_t export_id,
              uint32_t dev, uint32_t ino);
@@ -427,13 +492,13 @@ int  fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh);
 void fh_encode(const our_fhandle_t *fh, uint8_t *bytes);
 void fh_cache_insert(uint32_t export_id, uint32_t dev,
                      uint32_t ino, const char *relpath);
-int  fh_cache_lookup(uint32_t export_id, uint32_t dev,
-                     uint32_t ino, char *relpath, uint32_t maxlen);
+int  fh_cache_lookup(uint32_t export_id, uint32_t id32,
+                     char *relpath, uint32_t maxlen);
 int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: vfs.c                                                    */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int        vfs_stat(const char *path, vfs_stat_t *st);
 int        vfs_pread(const char *path, void *buf, uint32_t count,
                uint64_t offset, uint32_t *nread, int *eof);
@@ -444,8 +509,8 @@ int        vfs_remove(const char *path);
 int        vfs_rename(const char *from, const char *to);
 int        vfs_truncate(const char *path, uint64_t size);
 int        vfs_set_times(const char *path,
-               int set_atime, uint32_t atime_sec,
-               int set_mtime, uint32_t mtime_sec);
+               int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
+               int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec);
 int        vfs_fsstat(const char *path, vfs_fsstat_t *fs);
 uint32_t   vfs_errno_to_nfs3(int err);
 vfs_dir_t *vfs_opendir(const char *path);
@@ -454,19 +519,19 @@ int        vfs_readdir_next(vfs_dir_t *d, char *name,
 void       vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie);
 void       vfs_closedir(vfs_dir_t *d);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: portmap.c                                                */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void handle_portmap(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: mount3.c                                                 */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void handle_mount(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out);
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Prototypes: nfs3.c                                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out);
 void xdr_write_fattr3(xdr_t *x, const vfs_stat_t *st);
 void xdr_write_post_op_attr(xdr_t *x, const vfs_stat_t *st, int present);
