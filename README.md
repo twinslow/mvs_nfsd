@@ -234,3 +234,87 @@ not provide `stdint.h`.
   ignored).
 - No locking (`nolock` mount option recommended).
 - No security: all clients have full read/write access.
+
+
+# MVS VFS and mapping
+
+```
+# MVS mapping format
+/export/tonyw/library {
+    TONYW.LIBRARY.CNTL      fileext="jcl"
+    TONYW.LIBRARY.C         fileext="c"
+    TONYW.LIBRARY.H         fileext="h"
+}
+/export/sys1/proclib {
+    SYS1.PROCLIB            fileext="jclproc"
+    SYS1.PARMLIB            fileext="txt"
+}
+/export/sys1/parmlib {
+    SYS1.PARMLIB            fileext="txt"
+}
+```
+
+## VFS Nodes
+
+An array of nodes, which create the virtual file system structure (the directories) 
+and how those directories relate to the real MVS DASD layout.
+
+### Node types
+
+* `vfs-dir` - A fixed directory node, which exists only in the VFS
+* `pds-dir` - A directory node, which maps to a single MVS PDS
+
+### Node type `vfs-dir` (type ID `1`)
+
+This node type creates a constant and fake directory node in the VFS. It has the following attributes --
+
+* vfs-node-number - This node's ID number
+* parent-vfs-node-number - The node ID of the parent node
+* next-node-number - The next sibling node number
+* node-type - The type of this node (type 1)
+* first-child-node-number - The first child node
+* directory-name - The name of the directory this node represents
+
+```c
+struct vfs_node_vfs_dir {
+    uint32_t        node_num;
+    uint32_t        parent_node_num;
+    uint32_t        next_node_num;
+    uint8_t         node_type;
+    uint32_t        first_child_node_num;
+    unsigned char * directory_name;
+};
+```
+
+### Node type `pds-dir` (type ID `2`)
+
+This node maps a MVS partitioned dataset into this VFS directory. It has the following attributes --
+
+* `vfs-node-number` - This node's ID number
+* `parent-vfs-node-number` - The node ID of the parent node
+* `next-node-number` - The next sibling node number
+* `node-type` - The type of this node (type 2)
+* `first-child-node-number` - The first child node
+* `directory-name` - The name of the directory this node represents
+* `file-name-ext` - The file name extension that will be applied to the translated 
+  names of the PDS directory members. This is also used to locate the correct 
+  MVS PDS for new files being created and existing files being updated
+* `MVS PDS dataset name` - The MVS dataset name
+* `MVS vol-ser` - The MVS dataset's volume serial number
+
+```c
+struct vfs_node_pds_dir {
+    uint32_t        node_num;
+    uint32_t        parent_node_num;
+    uint32_t        next_node_num;
+    uint8_t         node_type;
+    uint32_t        first_child_node_num;
+    unsigned char * directory_name;
+    unsigned char * file_name_ext;
+    unsigned char   mvs_pds_dsname[45];
+    unsigned char   mvs_vol_ser[7];
+};
+```
+
+
+##

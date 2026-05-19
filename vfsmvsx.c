@@ -16,33 +16,38 @@
  * code) so that directory iteration can use OS-native constructs.
  *
  * The static dir_pool avoids malloc() for maximum portability.
+ *
+ * A DUMMIED UP VFS FUNCTION SET FOR ...
+ * A DUMMIED UP VFS FUNCTION SET FOR ...
+ * A DUMMIED UP VFS FUNCTION SET FOR ...
+ *
+ * /export/src
+ * /export/src/file1.c
+ * /export/src/file2.h
+ *
  */
  
-#define _POSIX_C_SOURCE 200809L
- 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/time.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dirent.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <errno.h>
 #include "nfsd.h"
  
 /* -------------------------------------------------------------------- */
 /* Directory handle type (opaque outside this file)                     */
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
-    DIR     *dp;
+    unsigned char **dir_content;
     uint64_t next_cookie; /* 1-based index of the next entry to return */
 };
  
 /* Static pool of directory handles -- no malloc required */
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
+ 
+unsigned char * file1_c = "/* Content of file1.c */\n";
+unsigned char * file2_h = "Content of file2.h\n";
  
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t from lstat() of path.                    */
@@ -51,50 +56,56 @@ static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
 int vfs_stat(const char *path, vfs_stat_t *vs)
 {
     struct stat st;
+    time_t    now;
+    time_t    ftime;
  
-    if (lstat(path, &st) < 0) return -1;
+    now = time(NULL);
  
-    /* Map S_IF* bits to NFS3 file type */
-    if      (S_ISREG(st.st_mode))  vs->ftype = NF3REG;
-    else if (S_ISDIR(st.st_mode))  vs->ftype = NF3DIR;
-    else if (S_ISBLK(st.st_mode))  vs->ftype = NF3BLK;
-    else if (S_ISCHR(st.st_mode))  vs->ftype = NF3CHR;
-    else if (S_ISLNK(st.st_mode))  vs->ftype = NF3LNK;
-    else if (S_ISSOCK(st.st_mode)) vs->ftype = NF3SOCK;
-    else if (S_ISFIFO(st.st_mode)) vs->ftype = NF3FIFO;
-    else                            vs->ftype = NF3REG;
+    if ( strcmp(path, "/export") == 0 ) {
+        vs->ftype = NF3DIR;
+        vs->fileid = 1;
+        vs->size   = (uint32_t) 512;
+        ftime = now - 7200;
+    } else if ( strcmp(path, "/export/src") == 0 ) {
+        vs->ftype = NF3DIR;
+        vs->fileid = 2;
+        vs->size   = (uint32_t) 512;
+        ftime = now - 7200;
+    } else if ( strcmp(path, "/export/src/file1.c") == 0 ) {
+        vs->ftype = NF3REG;
+        vs->fileid = 3;
+        vs->size   = (uint32_t) strlen(file1_c);
+        ftime = now;
+    } else if ( strcmp(path, "/export/src/file2.h") == 0 ) {
+        vs->ftype = NF3REG;
+        vs->fileid = 4;
+        vs->size   = (uint32_t) strlen(file2_h);
+        ftime = now;
+    } else {
+        errno = ENOENT;
+        return -1;
+    }
  
-    vs->mode       = (uint32_t)(st.st_mode & 0xFFFu);
-    vs->nlink      = (uint32_t) st.st_nlink;
-    vs->uid        = (uint32_t) st.st_uid;
-    vs->gid        = (uint32_t) st.st_gid;
-    vs->size       = (uint64_t) st.st_size;
-    vs->used       = (uint64_t) st.st_blocks * 512u;
-    vs->rdev_maj   = 0;
-    vs->rdev_min   = 0;
-    vs->fsid       = (uint64_t) st.st_dev;
-    vs->fileid     = (uint64_t) st.st_ino;
+    vs->used   = (uint32_t) 512;
  
-    /*
-     * Nanosecond timestamps: st_mtim is POSIX 2008; present on Linux
-     * with _POSIX_C_SOURCE >= 200809L.  On older systems or MVS,
-     * the nsec fields are simply left as 0.
-     */
-    vs->atime_sec  = (uint32_t) st.st_atime;
-    vs->mtime_sec  = (uint32_t) st.st_mtime;
-    vs->ctime_sec  = (uint32_t) st.st_ctime;
-#if defined(__linux__)
-    vs->atime_nsec = (uint32_t) st.st_atim.tv_nsec;
-    vs->mtime_nsec = (uint32_t) st.st_mtim.tv_nsec;
-    vs->ctime_nsec = (uint32_t) st.st_ctim.tv_nsec;
-#else
+    vs->mode       = (uint32_t) 0;
+    vs->nlnk       = (uint32_t) 0;
+    vs->uid        = (uint32_t) 999;
+    vs->gid        = (uint32_t) 999;
+    vs->rdev_maj   = (uint32_t) 0;
+    vs->rdev_min   = (uint32_t) 0;
+    vs->fsid       = (uint32_t) vs->fileid;
+ 
+    vs->atime_sec  = (uint32_t) ftime;
+    vs->mtime_sec  = (uint32_t) ftime;
+    vs->ctime_sec  = (uint32_t) ftime;
+    /* Set nano-seconds portion of time to 0 */
     vs->atime_nsec = 0;
     vs->mtime_nsec = 0;
     vs->ctime_nsec = 0;
-#endif
  
-    vs->raw_dev = (uint32_t) st.st_dev;
-    vs->raw_ino = (uint32_t) st.st_ino;
+    vs->raw_dev = (uint32_t) vs->fileid;
+    vs->raw_ino = (uint32_t) vs->fileid;
  
     return 0;
 }
@@ -113,26 +124,32 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     struct     stat st;
     int        saved_errno;
  
-    fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
+    unsigned char * file_data;
  
-    /* Stat first so the EOF boundary is consistent with the read position */
-    if (fstat(fd, &st) < 0) {
-        saved_errno = errno;
-        close(fd);
-        errno = saved_errno;
+    if ( strcmp(path, "/export/src/file1.c") == 0 ) {
+        file_data =  file1_c;
+    } else if ( strcmp(path, "/export/src/file2.h") == 0 ) {
+        file_data = file2_h;
+    ) else if ( strcmp(path, "/export/src") == 0 ) {
+        errno = EISDIR;
+        return -1;
+    ) else if ( strcmp(path, "/export") == 0 ) {
+        errno = EISDIR;
+        return -1;
+    ) else {
+        errno = ENOENT;
         return -1;
     }
  
-    n = pread(fd, buf, (size_t)count, (off_t)offset);
-    saved_errno = errno;
-    close(fd);
-    errno = saved_errno;
+    if ( offset > strlen(file_data) ) {
+        *eof = 1;
+        *nread = 0;
+        return 0;
+    }
+    strncpy(buf, file_data, count);
+    *nread = strlen(file_data);
+    *eof = 0;
  
-    if (n < 0) return -1;
- 
-    *nread = (uint32_t)n;
-    *eof   = ((off_t)(offset + (uint64_t)n) >= st.st_size) ? 1 : 0;
     return 0;
 }
  
@@ -144,20 +161,8 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
 int vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset)
 {
-    int     fd;
-    ssize_t n;
-    int     saved_errno;
- 
-    fd = open(path, O_WRONLY);
-    if (fd < 0) return -1;
- 
-    n = pwrite(fd, buf, (size_t)count, (off_t)offset);
-    saved_errno = errno;          /* preserve before fsync/close can overwrite */
-    if (n == (ssize_t)count) fsync(fd);
-    close(fd);
-    errno = saved_errno;
- 
-    return (n == (ssize_t)count) ? 0 : -1;
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -167,12 +172,8 @@ int vfs_pwrite(const char *path, const void *buf,
 /* -------------------------------------------------------------------- */
 int vfs_create(const char *path, uint32_t mode)
 {
-    int fd = open(path,
-                  O_CREAT | O_WRONLY | O_TRUNC,
-                  (mode_t)mode);
-    if (fd < 0) return -1;
-    close(fd);
-    return 0;
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -180,7 +181,8 @@ int vfs_create(const char *path, uint32_t mode)
 /* -------------------------------------------------------------------- */
 int vfs_remove(const char *path)
 {
-    return unlink(path);
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -188,7 +190,8 @@ int vfs_remove(const char *path)
 /* -------------------------------------------------------------------- */
 int vfs_rename(const char *from, const char *to)
 {
-    return rename(from, to);
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -196,7 +199,8 @@ int vfs_rename(const char *from, const char *to)
 /* -------------------------------------------------------------------- */
 int vfs_truncate(const char *path, uint64_t size)
 {
-    return truncate(path, (off_t)size);
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -213,19 +217,8 @@ int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
                   int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
 {
-    struct timespec ts[2];
- 
-    ts[0].tv_sec  = (set_atime == SET_TO_CLIENT_TIME) ? (time_t)atime_sec : 0;
-    ts[0].tv_nsec = (set_atime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
-                    (set_atime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
-                                                        (long)atime_nsec;
- 
-    ts[1].tv_sec  = (set_mtime == SET_TO_CLIENT_TIME) ? (time_t)mtime_sec : 0;
-    ts[1].tv_nsec = (set_mtime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
-                    (set_mtime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
-                                                        (long)mtime_nsec;
- 
-    return utimensat(AT_FDCWD, path, ts, 0);
+    errno = EACCES;
+    return -1;
 }
  
 /* -------------------------------------------------------------------- */
@@ -233,16 +226,12 @@ int vfs_set_times(const char *path,
 /* -------------------------------------------------------------------- */
 int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 {
-    struct statvfs sv;
- 
-    if (statvfs(path, &sv) < 0) return -1;
- 
-    fs->total_bytes = (uint64_t)sv.f_blocks * (uint64_t)sv.f_frsize;
-    fs->free_bytes  = (uint64_t)sv.f_bfree  * (uint64_t)sv.f_frsize;
-    fs->avail_bytes = (uint64_t)sv.f_bavail * (uint64_t)sv.f_frsize;
-    fs->total_files = (uint64_t)sv.f_files;
-    fs->free_files  = (uint64_t)sv.f_ffree;
-    fs->avail_files = (uint64_t)sv.f_favail;
+    fs->total_bytes = 512 * 200;
+    fs->free_bytes  = 512 * 196;
+    fs->avail_bytes = 512 * 196;
+    fs->total_files = 2;
+    fs->free_files  = 1024*8 - 4;
+    fs->avail_files = 1024*8 - 4;
     fs->invarsec    = 0;
     return 0;
 }
@@ -277,28 +266,52 @@ uint32_t vfs_errno_to_nfs3(int err)
 }
  
 /* -------------------------------------------------------------------- */
+/* Dummy directory contents                                             */
+/* -------------------------------------------------------------------- */
+static unsigned char * dir_export[] = {
+    ".",
+    "..",
+    "src",
+    0
+}
+ 
+static unsigned char * dir_src[] = {
+    ".",
+    "..",
+    "file1.c",
+    "file2.h",
+    0
+}
+ 
+/* -------------------------------------------------------------------- */
 /* vfs_opendir: open a directory for iteration.                         */
 /* Returns a handle from the static pool, or NULL on error.             */
 /* -------------------------------------------------------------------- */
 vfs_dir_t *vfs_opendir(const char *path)
 {
-    DIR *dp;
-    int  i;
+    int  dir_index;
  
-    for (i = 0; i < MAX_OPEN_DIRS; i++) {
-        if (!g_dir_used[i]) break;
+    for (dir_index = 0; dir_index < MAX_OPEN_DIRS; dir_index++) {
+        if (!g_dir_used[dir_index]) break;
     }
-    if (i == MAX_OPEN_DIRS) {
+    if (dir_index == MAX_OPEN_DIRS) {
         errno = EMFILE;
         return NULL;
     }
  
-    dp = opendir(path);
-    if (!dp) return NULL;
+    if ( strcmp(path, "/export") == 0 ) {
+        g_dir_pool[i].dir_content = dir_export;
+        g_dir_pool[i].next_cookie = 1;
+        g_dir_used[i]             = 1;
+    } else if ( strcmp(path, "/export/src") == 0 ) {
+        g_dir_pool[i].dir_content = dir_src;
+        g_dir_pool[i].next_cookie = 1;
+        g_dir_used[i]             = 1;
+    } else {
+        errno = ENOENT;
+        return -1;
+    }
  
-    g_dir_pool[i].dp          = dp;
-    g_dir_pool[i].next_cookie = 1;
-    g_dir_used[i]             = 1;
     return &g_dir_pool[i];
 }
  
@@ -313,15 +326,18 @@ int vfs_readdir_next(vfs_dir_t *d, char *name,
                      uint32_t maxname, uint64_t *fileid,
                      uint64_t *cookie)
 {
-    struct dirent *de;
+    unsigned char * dir_entry_name;
+    dir_entry_name = d->dir_content[d->next_cookie-1];
  
-    de = readdir(d->dp);
-    if (!de) return -1;
+    if ( dir_entry_name ) {
+        strncpy(name, dir_entry_name, maxname - 1);
+        name[maxname - 1] = '\0';
+    } else {
+        errno = 0;
+        return -1;
+    }
  
-    strncpy(name, de->d_name, maxname - 1);
-    name[maxname - 1] = '\0';
- 
-    *fileid = (uint64_t)de->d_ino;
+    *fileid = d->next_cookie;
     *cookie = d->next_cookie;
     d->next_cookie++;
     return 0;

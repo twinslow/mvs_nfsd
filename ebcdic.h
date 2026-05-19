@@ -38,13 +38,12 @@
  * Unmapped ASCII bytes below 0x20 (control chars) are translated
  * to EBCDIC 0x00 in ASCII->EBCDIC direction.
  */
-
+ 
 #ifndef EBCDIC_H
 #define EBCDIC_H
-
-#include <stdint.h>
-#include <stddef.h>
-
+ 
+#include "types.h"
+ 
 /* Short names for MVS compatibility */
 #if defined(__MVS__)
 #define ebcdic_to_ascii         ebcToAsc
@@ -52,44 +51,44 @@
 #define ebcdic_member_to_name   ebcMbToN
 #define name_to_ebcdic_member   namToEmb
 #endif /* __MVS__ */
-
+ 
 /* ------------------------------------------------------------------- */
 /* Translation tables (defined in ebcdic.c)                            */
 /* ------------------------------------------------------------------- */
 extern const uint8_t ebcdic_to_ascii_tab[256];
 extern const uint8_t ascii_to_ebcdic_tab[256];
-
+ 
 /* -------------------------------------------------------------------- */
 /* Inline single-character translators                                  */
 /* -------------------------------------------------------------------- */
-
+ 
 /* Translate one EBCDIC byte to ASCII. */
 static uint8_t ebcdic_to_ascii_c(uint8_t e)
 {
     return ebcdic_to_ascii_tab[e];
 }
-
+ 
 /* Translate one ASCII byte to EBCDIC. */
 static uint8_t ascii_to_ebcdic_c(uint8_t a)
 {
     return ascii_to_ebcdic_tab[a];
 }
-
+ 
 /* -------------------------------------------------------------------- */
 /* Buffer translators                                                   */
 /* -------------------------------------------------------------------- */
-
+ 
 /*
  * ebcdic_to_ascii: translate 'len' bytes from src (EBCDIC) to dst (ASCII).
  * dst and src may be the same buffer (in-place translation is safe).
  */
 void ebcdic_to_ascii(uint8_t *dst, const uint8_t *src, size_t len);
-
+ 
 /*
  * ascii_to_ebcdic: translate 'len' bytes from src (ASCII) to dst (EBCDIC).
  */
 void ascii_to_ebcdic(uint8_t *dst, const uint8_t *src, size_t len);
-
+ 
 /*
  * ebcdic_member_to_name: convert an 8-byte EBCDIC PDS member name
  * (space-padded, upper-case) to a NUL-terminated ASCII filename.
@@ -101,7 +100,7 @@ void ascii_to_ebcdic(uint8_t *dst, const uint8_t *src, size_t len);
  * Returns the length of the resulting ASCII name.
  */
 int ebcdic_member_to_name(char *dst, const uint8_t *member8);
-
+ 
 /*
  * name_to_ebcdic_member: convert a NUL-terminated ASCII filename to
  * an 8-byte EBCDIC PDS member name (upper-case, space-padded).
@@ -110,5 +109,5 @@ int ebcdic_member_to_name(char *dst, const uint8_t *member8);
  * -1 if the name is too long or contains invalid characters.
  */
 int name_to_ebcdic_member(uint8_t *member8, const char *name);
-
+ 
 #endif /* EBCDIC_H */
