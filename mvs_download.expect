@@ -338,8 +338,8 @@ expect eof
 # -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
-set total_ok  [expr {$c_ok  + $h_ok}]
-set total_err [expr {$c_err + $h_err}]
+set total_ok  [expr {$c_ok   + $h_ok   + $cntl_ok}]
+set total_err [expr {$c_err  + $h_err  + $cntl_err}]
 
 send_user "===================\n"
 send_user "Download complete.\n"

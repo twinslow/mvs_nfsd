@@ -1,0 +1,22 @@
+# Force LF line endings for all text files regardless of platform git config.
+# This overrides core.autocrlf=true set in the global git config on Windows.
+
+# Default: treat everything as text and normalise to LF
+* text=auto eol=lf
+
+# Explicit text files -- always LF
+*.c     text eol=lf
+*.h     text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.jcl   text eol=lf
+Makefile text eol=lf
+*.expect text eol=lf
+*.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# True binaries -- no line-ending conversion, no diff
+*.o     binary
+*.a     binary
+*.so    binary
+*.exe   binary

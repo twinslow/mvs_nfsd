@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 #
-# mvs_upload.expect - Upload C and H source files to MVS PDS libraries.
+# mvs_upload.expect - Upload source files to MVS PDS libraries.
 #
 # Usage (from project root):
 #   chmod +x mvs_upload.expect
@@ -10,12 +10,18 @@
 #   1. Prompts for TSO userid and password (password is not echoed).
 #   2. Connects to the MVS FTP server at localhost:2121 in passive mode.
 #   3. Sets ASCII transfer mode (required for text files on MVS).
-#   4. CDs to /TONYW.DINONFS.C and uploads all .c files from ./src.
-#   5. CDs to /TONYW.DINONFS.H and uploads all .h files from ./src.
+#   4. For each entry in the upload_jobs list: CDs to the target PDS
+#      and uploads all matching files from the specified local directory.
+#
+# Adding a new PDS upload:
+#   Add one line to the upload_jobs list in the Configuration section:
+#     [list <local-dir> <glob-pattern> <target-pds>]
+#   Example:
+#     [list [file join $script_dir jcl] "*.jcl" "/TEMP.DINONFS.CNTL"]
 #
 # Member name derivation:
-#   The local filename extension (.c / .h) is stripped, the result is
-#   uppercased, any characters not valid in MVS member names are removed
+#   The local filename extension is stripped, the result is uppercased,
+#   any characters not valid in MVS member names are removed
 #   (valid set: A-Z 0-9 @ # $), and the result is truncated to 8
 #   characters.  A warning is printed for any name that is truncated or
 #   that becomes empty after cleanup.
@@ -29,25 +35,41 @@
 #
 
 # -----------------------------------------------------------------------
-# Configuration -- adjust if your PDS names or server details differ
+# Configuration
 # -----------------------------------------------------------------------
 set ftp_host  "localhost"
 set ftp_port  "2121"
-set pds_c     "/TEMP.DINONFS.C"
-set pds_h     "/TEMP.DINONFS.H"
 
-# Source directory is ./src relative to this script's own location
 set script_dir [file dirname [file normalize [info script]]]
 set src_dir    [file join $script_dir src]
+set jcl_dir    [file join $script_dir jcl]
+set tests_dir    [file join $script_dir tests]
+
+#
+# Upload job list.  Each entry is a three-element list:
+#   1. Local source directory (absolute path)
+#   2. Glob pattern selecting which files to upload
+#   3. Target MVS PDS (absolute FTP path)
+#
+# Add, remove or reorder entries here -- no other changes are needed.
+#
+set upload_jobs [list \
+    [list $src_dir "*.c" "/TEMP.DINONFS.C"] \
+    [list $src_dir "*.h" "/TEMP.DINONFS.H"] \
+    [list $jcl_dir "*.jcl" "/TEMP.DINONFS.CNTL"] \
+    [list $tests_dir "*.c" "/TEMP.DINONFS.TESTS.C"] \
+    [list $tests_dir "*.h" "/TEMP.DINONFS.TESTS.H"] \
+]
 
 # Seconds to wait for each FTP response before declaring a timeout
 set timeout 60
 
 # -----------------------------------------------------------------------
-# Procedure: derive an MVS PDS member name from a local file path
+# Procedure: member_name
 #
-#   Returns the member name string, or "" if no valid characters remain.
-#   Sets the caller's 'truncated' variable to 1 if the name was cut.
+# Derive an MVS PDS member name from a local file path.
+# Returns the member name string, or "" if no valid characters remain.
+# Sets the caller's 'truncated_var' to 1 if the name was truncated.
 # -----------------------------------------------------------------------
 proc member_name {filepath truncated_var} {
     upvar $truncated_var truncated
@@ -59,8 +81,7 @@ proc member_name {filepath truncated_var} {
 
     # Remove characters not permitted in MVS member names.
     # Valid: A-Z  0-9  @  #  $
-    # First character must be alphabetic or national (@ # $) -- FTP
-    # server enforces this; we just strip the offenders here.
+    # First character must be alphabetic or national (@ # $).
     regsub -all {[^A-Z0-9@#$]} $name {} name
 
     # Detect and apply the 8-character limit
@@ -73,12 +94,18 @@ proc member_name {filepath truncated_var} {
 }
 
 # -----------------------------------------------------------------------
-# Procedure: upload a list of local files to the current FTP directory.
-#   Prints a status line for each file and handles per-file errors
-#   without aborting the entire transfer.
+# Procedure: upload_files
+#
+# Upload a list of local files to the current FTP directory.
+# Prints a status line per file; handles per-file errors without
+# aborting the entire transfer.
+#
+# Returns a two-element list: {count_ok count_errors}
 # -----------------------------------------------------------------------
 proc upload_files {file_list} {
     global timeout
+    set count_ok  0
+    set count_err 0
 
     foreach f $file_list {
         set trunc 0
@@ -103,62 +130,122 @@ proc upload_files {file_list} {
         # Wait for the ftp> prompt that signals the FTP client has fully
         # processed the command and is ready for the next one.
         #
-        # The transfer-statistics line the FTP client prints after a
-        # successful transfer (e.g. "9579 bytes sent in 0.001 seconds")
-        # can contain digit sequences that look like FTP response codes
-        # (e.g. "579 " matches 5[0-9][0-9]). Waiting for "ftp> " as the
-        # completion signal drains that entire line from the buffer before
-        # we send the next command, eliminating false matches.
-        #
-        # "226 Transfer" is used as the success flag because that exact
-        # string can only come from the server's 226 reply; it cannot
-        # appear in a statistics line.
+        # "226 Transfer" is used as the success flag; it can only come
+        # from the server's 226 reply and cannot appear in the
+        # transfer-statistics line that the FTP client appends afterward.
+        # Waiting for ftp> (rather than returning on 226) drains the
+        # statistics line and the prompt from the buffer before the next
+        # put is sent.
         #
         set ok 0
         expect {
-            # 226 Transfer complete -- mark success and keep waiting
-            # for the ftp> prompt so the buffer is fully drained.
             "226 Transfer" { set ok 1; exp_continue }
-
-            # ftp> prompt: FTP client is ready -- evaluate outcome.
-            -re {ftp> ?$} { }
-
+            -re {ftp> ?$}  { }
             timeout {
                 send_user "         *** TIMEOUT uploading [file tail $f] ***\n"
                 set ok -1
             }
         }
 
-        if {$ok == 0} {
+        if {$ok == 1} {
+            incr count_ok
+        } elseif {$ok == 0} {
             send_user "         *** ERROR: [file tail $f] -> $member transfer failed ***\n"
+            incr count_err
+        }
+        # ok == -1 is a timeout, already reported above
+    }
+
+    return [list $count_ok $count_err]
+}
+
+# -----------------------------------------------------------------------
+# Procedure: upload_pds
+#
+# Glob files from a local directory, CD to an MVS PDS, and upload them.
+#
+#   src_dir   - local directory to read files from
+#   glob_pat  - glob pattern selecting files (e.g. "*.c")
+#   pds       - MVS PDS FTP path to upload into (e.g. "/TEMP.DINONFS.C")
+#
+# Handles the CD and reports the section header.  On a CD failure the
+# procedure returns an error count equal to the number of matched files
+# (all files counted as failed) rather than calling exit, so the main
+# loop can report a complete summary before finishing.
+#
+# Returns a two-element list: {count_ok count_errors}
+# -----------------------------------------------------------------------
+proc upload_pds {src_dir glob_pat pds} {
+    global timeout
+
+    set files [lsort [glob -nocomplain -directory $src_dir $glob_pat]]
+
+    if {[llength $files] == 0} {
+        send_user -- "--- $glob_pat -> $pds (no matching files, skipping) ---\n\n"
+        return [list 0 0]
+    }
+
+    send_user -- "--- $glob_pat -> $pds ([llength $files] file(s)) ---\n"
+
+    # CD to the target PDS and drain the ftp> prompt before sending puts
+    send "cd $pds\r"
+    expect {
+        "250 " { expect -re {ftp> ?$} }
+        -re {5[0-9][0-9] } {
+            send_user "Error: cannot cd to $pds\n"
+            send_user "       Check that the PDS exists and you have write access.\n"
+            send_user "\n"
+            return [list 0 [llength $files]]
+        }
+        timeout {
+            send_user "Error: timeout on cd to $pds\n"
+            send_user "\n"
+            return [list 0 [llength $files]]
         }
     }
+
+    set counts [upload_files $files]
+    send_user "\n"
+    return $counts
 }
 
 # -----------------------------------------------------------------------
-# Sanity-check the source directory before prompting for anything
+# Pre-flight: validate source directories and count total files
 # -----------------------------------------------------------------------
-if {![file isdirectory $src_dir]} {
-    send_user "Error: source directory not found: $src_dir\n"
+set total_files 0
+foreach job $upload_jobs {
+    set jdir [lindex $job 0]
+    set jpat [lindex $job 1]
+    if {![file isdirectory $jdir]} {
+        send_user "Error: source directory not found: $jdir\n"
+        exit 1
+    }
+    set jfiles [glob -nocomplain -directory $jdir $jpat]
+    incr total_files [llength $jfiles]
+}
+
+if {$total_files == 0} {
+    send_user "Error: no files found matching any upload job.\n"
     exit 1
 }
 
-set c_files [lsort [glob -nocomplain -directory $src_dir *.c]]
-set h_files [lsort [glob -nocomplain -directory $src_dir *.h]]
-
-if {[llength $c_files] == 0 && [llength $h_files] == 0} {
-    send_user "Error: no .c or .h files found in $src_dir\n"
-    exit 1
-}
-
+# -----------------------------------------------------------------------
+# Banner
+# -----------------------------------------------------------------------
 send_user "\n"
 send_user "MVS source upload\n"
 send_user "=================\n"
-send_user "Source directory : $src_dir\n"
-send_user "FTP target       : $ftp_host:$ftp_port\n"
-send_user "C   PDS          : $pds_c\n"
-send_user "H   PDS          : $pds_h\n"
-send_user "Files found      : [llength $c_files] .c  /  [llength $h_files] .h\n"
+send_user "FTP target : $ftp_host:$ftp_port\n"
+send_user "Jobs       :\n"
+foreach job $upload_jobs {
+    set jdir [lindex $job 0]
+    set jpat [lindex $job 1]
+    set jpds [lindex $job 2]
+    set jn   [llength [glob -nocomplain -directory $jdir $jpat]]
+    send_user [format "  %-8s %-35s -> %s (%d file(s))\n" \
+                      $jpat $jdir $jpds $jn]
+}
+send_user "Total      : $total_files file(s)\n"
 send_user "\n"
 
 # -----------------------------------------------------------------------
@@ -186,7 +273,6 @@ send_user "\n\n"
 send_user "Connecting to $ftp_host port $ftp_port ...\n"
 spawn ftp -p $ftp_host $ftp_port
 
-# Wait for the login name prompt (varies by FTP client and server banner)
 expect {
     -re {[Nn]ame.*:[ \t]*}  { }
     -re {[Uu]ser.*:[ \t]*}  { }
@@ -197,7 +283,6 @@ expect {
 }
 send "$userid\r"
 
-# Wait for the password prompt
 expect {
     -re {[Pp]assword.*:[ \t]*} { }
     timeout {
@@ -207,19 +292,10 @@ expect {
 }
 send "$password\r"
 
-# Check login outcome
 expect {
-    "230 " {
-        send_user "Logged in as $userid.\n\n"
-    }
-    "530 " {
-        send_user "Error: login failed -- check userid and password.\n"
-        exit 1
-    }
-    timeout {
-        send_user "Error: timeout waiting for login confirmation.\n"
-        exit 1
-    }
+    "230 " { send_user "Logged in as $userid.\n\n" }
+    "530 " { send_user "Error: login failed -- check userid and password.\n"; exit 1 }
+    timeout { send_user "Error: timeout waiting for login confirmation.\n";   exit 1 }
 }
 
 # -----------------------------------------------------------------------
@@ -232,57 +308,30 @@ expect {
 }
 
 # -----------------------------------------------------------------------
-# Upload .c files
+# Run each upload job
 # -----------------------------------------------------------------------
-if {[llength $c_files] > 0} {
-    send_user -- "--- .c files -> $pds_c ---\n"
+set total_ok  0
+set total_err 0
 
-    send "cd $pds_c\r"
-    expect {
-        "250 " { expect -re {ftp> ?$} }
-        -re {5[0-9][0-9] } {
-            send_user "Error: cannot cd to $pds_c\n"
-            send_user "       Check that the PDS exists and you have write access.\n"
-            exit 1
-        }
-        timeout {
-            send_user "Error: timeout on cd to $pds_c\n"
-            exit 1
-        }
-    }
-
-    upload_files $c_files
-    send_user "\n"
+foreach job $upload_jobs {
+    set result [upload_pds [lindex $job 0] [lindex $job 1] [lindex $job 2]]
+    incr total_ok  [lindex $result 0]
+    incr total_err [lindex $result 1]
 }
 
 # -----------------------------------------------------------------------
-# Upload .h files
-# -----------------------------------------------------------------------
-if {[llength $h_files] > 0} {
-    send_user -- "--- .h files -> $pds_h ---\n"
-
-    send "cd $pds_h\r"
-    expect {
-        "250 " { expect -re {ftp> ?$} }
-        -re {5[0-9][0-9] } {
-            send_user "Error: cannot cd to $pds_h\n"
-            send_user "       Check that the PDS exists and you have write access.\n"
-            exit 1
-        }
-        timeout {
-            send_user "Error: timeout on cd to $pds_h\n"
-            exit 1
-        }
-    }
-
-    upload_files $h_files
-    send_user "\n"
-}
-
-# -----------------------------------------------------------------------
-# Done
+# Disconnect and summarise
 # -----------------------------------------------------------------------
 send "quit\r"
 expect eof
 
-send_user "Upload complete.\n\n"
+send_user "=================\n"
+send_user "Upload complete.\n"
+send_user "  Succeeded : $total_ok file(s)\n"
+if {$total_err > 0} {
+    send_user "  Failed    : $total_err file(s)\n"
+}
+send_user "\n"
+
+if {$total_err > 0} { exit 1 }
+exit 0
