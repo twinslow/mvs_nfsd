@@ -294,6 +294,7 @@
 #define MAX_EXPORTS       16
 #define MAX_PATH          256
 #define MAX_NAME          256
+#define MAX_FILE_EXT_LEN  16
 #define FH_CACHE_SIZE     512
 #define MAX_CONNECTIONS   16
  
@@ -338,7 +339,8 @@ typedef struct {
 /* One exported directory */
 typedef struct {
     char export_path[MAX_PATH]; /* NFS path as seen by clients: /export/foo */
-    char host_path[MAX_PATH];   /* local path on this host: /home/user/foo  */
+    char host_path[MAX_PATH];   /* local path on this host: /home/user/foo or MVS PDS dataset name */
+    char file_ext[MAX_FILE_EXT_LEN]; /* optional extension to add to all files in this export */
 } export_t;
  
 /* XDR encode/decode buffer */

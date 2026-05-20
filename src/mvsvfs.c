@@ -30,6 +30,8 @@
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+
+#include "mvsio.h"
 #include "nfsd.h"
  
 /* -------------------------------------------------------------------- */
@@ -37,65 +39,196 @@
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
     DIR     *dp;
-    uint64_t next_cookie; /* 1-based index of the next entry to return */
+    uint64_t next_cookie;           /* 1-based index of the next entry to return */
+    int      pds_entries_cached;    /* Number of valid entries in the PDS member cache */      
+    pds_member_entry_t entry[MVSVFS_PDS_DIR_CACHE_SIZE]; 
+                                    /* Pre-read PDS member entries */
+    uint8_t  end_of_dir_read;       /* 1 if we've hit the end of the directory */
 };
  
 /* Static pool of directory handles -- no malloc required */
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
- 
+
 /* -------------------------------------------------------------------- */
-/* vfs_stat: fill a vfs_stat_t from lstat() of path.                    */
+/* Determine if path is PDS dataset, or PDS member?                     */
+/* -------------------------------------------------------------------- */
+int mvs_path_type(const char *path, int *export_idx) {
+    int i;
+    for (i = 0; i < g_nexports; i++) {
+        if (strcmp(path, g_exports[i].export_path) == 0) {
+            *export_idx = i;
+            return MVS_PATH_TYPE_DATASET; // Path is an export path
+        }
+        /* Does the given path up to the last '/' match an export_path? */
+        size_t export_path_len = strlen(g_exports[i].export_path);
+        if (export_path_len < strlen(path) && 
+            strncmp(path, g_exports[i].export_path, export_path_len) == 0 &&
+            path[export_path_len] == '/') {
+            *export_idx = i;
+            return MVS_PATH_TYPE_PDS_MEMBER; // Path is a file (PDS member)
+        }
+    }
+    return 0; // Path is not an export path
+}
+
+/* -------------------------------------------------------------------- */
+/* Split the file path                                                  */
+/* Get the real PDS dataset name from the export definition and         */
+/* and extract the PDS member name from the file name in the path       */
+/* -------------------------------------------------------------------- */
+int mvs_get_pds_dsn_and_member(
+    const char          *path, 
+    char                *pds_dsname, 
+    char                *pds_member_name, 
+    int                 export_idx) 
+{
+    const char *export_path = g_exports[export_idx].export_path;
+    const char *host_path = g_exports[export_idx].host_path;
+    char char file_name[MAX_NAME];
+    char char file_ext[MAX_FILE_EXT_LEN];
+
+    /* The dataset name is the host path from the export definition */
+    strncpy(pds_dsname, host_path, 44);
+    pds_dsname[44] = '\0'; // Ensure null-termination
+
+    /* The member name is the part of the path after the export path */
+    size_t export_path_len = strlen(export_path);
+    if (strlen(path) <= export_path_len) {
+        pds_member_name[0] = '\0'; // No member name, this is the dataset itself
+        return 0;
+    }
+
+    /* Extract the file name from the end of the path, which can include file extension*/
+    //Find the last '/' in the path
+    const char *last_slash = strrchr(path, '/');
+    if (last_slash) {
+        strncpy(file_name, last_slash + 1, MAX_NAME - 1);
+        file_name[MAX_NAME - 1] = '\0'; // Ensure null-termination
+    }
+    /* Get the file extension (if any) from the file name */
+    char *last_dot = strrchr(file_name, '.');
+    if (last_dot) {
+        strncpy(file_ext, last_dot + 1, MAX_FILE_EXT_LEN - 1);
+        file_ext[MAX_FILE_EXT_LEN - 1] = '\0'; // Ensure null-termination
+        *last_dot = '\0'; // Remove extension from file_name
+    } else {
+        file_ext[0] = '\0'; // No extension
+    }
+     /* PDS member name is the upper case version of remaining file name, truncated to 8 characters*/
+    size_t member_name_len = strlen(file_name);
+    if (member_name_len > 8) member_name_len = 8;
+    for (size_t i = 0; i < member_name_len; i++) {
+        pds_member_name[i] = toupper((unsigned char)file_name[i]);  
+    }
+
+    pds_member_name[member_name_len] = '\0'; // Ensure null-termination
+
+    /*Does the file name extension match the expected extension which is in the export definition?*/
+    /*Case of file extension does not matter                                                      */
+    if (g_exports[export_idx].file_ext[0] != '\0') {
+        if (strcasecmp(file_ext, g_exports[export_idx].file_ext) != 0) {
+            errno = ENOENT; // File extension does not match expected extension, treat as file not found
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* vfs_stat: fill a vfs_stat_t as appropriate for a PDS dataset         */
+/* or a PDS member.                                                     */
 /* Returns 0 on success, -1 on error (errno set).                       */
 /* -------------------------------------------------------------------- */
+int vfs_stat_pds_member(const char *path, int export_idx,vfs_stat_t *vs)
+{
+    pds_member_entry_t entry *member_entry;
+    char pds_dsname[45];
+    char pds_member_name[9];
+
+    /* Split the path into dataset and member name. */
+    mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
+
+
+    member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx);
+    if (member_entry == NULL) {
+        errno = ENOENT;
+        return -1;  
+    }
+
+    vs->ftype = NF3REG;
+    vs->mode = 0444; /* read-only permissions for everyone */
+    vs->nlink = 1;   /* convention for files: one link from parent directory */
+    vs->uid = 0;     /* root-owned */
+    vs->gid = 0;     /* root-owned */
+    vs->size = member_entry->size;
+    vs->used = member_entry->size; /* for simplicity, assume used space equals size */
+    vs->rdev_maj = 0;
+    vs->rdev_min = 0;
+    vs->fsid = (uint64_t)export_idx + 1; /* unique filesystem ID based on export index */
+    vs->fileid = mvs_fid_hash(pds_dsname, pds_member_name); /* generate fileid based on dataset and member name */
+    vs->raw_ino = mvs_fid_ino32(pds_dsname, pds_member_name); /* generate raw_ino based on dataset and member name */
+    vs->raw_dev = (uint32_t)export_idx + 1; /* use export index as raw_dev for simplicity */
+
+    vs->atime_sec = member_entry->chgdate; /* Access time as modified time */
+    vs->atime_nsec = 0; // ISPF statistics do not have sub-second precision
+    vs->mtime_sec = member_entry->chgdate;
+    vs->mtime_nsec = 0; // ISPF statistics do not have sub-second precision
+    vs->ctime_sec = member_entry->crdate;
+    vs->ctime_nsec = 0; // ISPF statistics do not have sub-second precision
+
+    return 0;
+}
+
+int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
+{
+    vs->ftype = NF3DIR;
+    vs->mode = 0555; /* read/execute permissions for everyone */
+    vs->nlink = 2;   /* convention for directories: link from parent and self-link */
+    vs->uid = 0;     /* root-owned */
+    vs->gid = 0;     /* root-owned */
+    vs->size = 4096; /* arbitrary non-zero size for the directory itself */
+    vs->used = 4096; /* arbitrary non-zero disk usage for the directory itself */
+    vs->rdev_maj = 0;
+    vs->rdev_min = 0;
+    vs->fsid = (uint64_t)export_idx + 1; /* unique filesystem ID based on export index */
+    // Here we generate the fileid for the dataset, based on dataset name.
+    // We'll use this as the basis for the raw_dev/raw_ino fields.
+    vs->fileid  = mvs_fid_hash(path, NULL);
+    vs->raw_ino = mvs_fid_ino32(path, NULL);
+    vs->raw_dev = (uint32_t)export_idx + 1; 
+
+    // Now the accessed/modified/created date/times.
+    // For simplicity, we'll set these all to the same value based on the current time.
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    vs->atime_sec = (uint32_t)tv.tv_sec;
+    vs->atime_nsec = (uint32_t)(tv.tv_usec * 1000); // convert microseconds to nanoseconds
+    vs->mtime_sec = vs->atime_sec;
+    vs->mtime_nsec = vs->atime_nsec;
+    vs->ctime_sec = vs->atime_sec;      
+    vs->ctime_nsec = vs->atime_nsec;
+
+    return 0;
+}
+
 int vfs_stat(const char *path, vfs_stat_t *vs)
 {
     struct stat st;
- 
-    if (lstat(path, &st) < 0) return -1;
- 
-    /* Map S_IF* bits to NFS3 file type */
-    if      (S_ISREG(st.st_mode))  vs->ftype = NF3REG;
-    else if (S_ISDIR(st.st_mode))  vs->ftype = NF3DIR;
-    else if (S_ISBLK(st.st_mode))  vs->ftype = NF3BLK;
-    else if (S_ISCHR(st.st_mode))  vs->ftype = NF3CHR;
-    else if (S_ISLNK(st.st_mode))  vs->ftype = NF3LNK;
-    else if (S_ISSOCK(st.st_mode)) vs->ftype = NF3SOCK;
-    else if (S_ISFIFO(st.st_mode)) vs->ftype = NF3FIFO;
-    else                            vs->ftype = NF3REG;
- 
-    vs->mode       = (uint32_t)(st.st_mode & 0xFFFu);
-    vs->nlink      = (uint32_t) st.st_nlink;
-    vs->uid        = (uint32_t) st.st_uid;
-    vs->gid        = (uint32_t) st.st_gid;
-    vs->size       = (uint64_t) st.st_size;
-    vs->used       = (uint64_t) st.st_blocks * 512u;
-    vs->rdev_maj   = 0;
-    vs->rdev_min   = 0;
-    vs->fsid       = (uint64_t) st.st_dev;
-    vs->fileid     = (uint64_t) st.st_ino;
- 
-    /*
-     * Nanosecond timestamps: st_mtim is POSIX 2008; present on Linux
-     * with _POSIX_C_SOURCE >= 200809L.  On older systems or MVS,
-     * the nsec fields are simply left as 0.
-     */
-    vs->atime_sec  = (uint32_t) st.st_atime;
-    vs->mtime_sec  = (uint32_t) st.st_mtime;
-    vs->ctime_sec  = (uint32_t) st.st_ctime;
-#if defined(__linux__)
-    vs->atime_nsec = (uint32_t) st.st_atim.tv_nsec;
-    vs->mtime_nsec = (uint32_t) st.st_mtim.tv_nsec;
-    vs->ctime_nsec = (uint32_t) st.st_ctim.tv_nsec;
-#else
-    vs->atime_nsec = 0;
-    vs->mtime_nsec = 0;
-    vs->ctime_nsec = 0;
-#endif
- 
-    vs->raw_dev = (uint32_t) st.st_dev;
-    vs->raw_ino = (uint32_t) st.st_ino;
- 
+    int export_idx;
+
+    /* Is this path a directory or a member of a PDS */
+    int path_type = mvs_path_type(path, &export_idx);
+
+    if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
+        return vfs_stat_pds_member(path, export_idx, vs);
+    } else if (path_type == MVS_PATH_TYPE_DATASET) {
+        return vfs_stat_dataset(path, export_idx, vs);
+    } else {
+        errno = ENOENT;
+        return -1;
+    }
+
     return 0;
 }
  

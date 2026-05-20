@@ -11,7 +11,8 @@
  
 #define VFS_NODE_TYPE_VFS_DIR        1
 #define VFS_NODE_TYPE_PDS_DIR        2
- 
+#define MVSVFS_PDS_DIR_CACHE_SIZE    100 /* Number of PDS directory entries to cache */ 
+
 typedef struct vfs_node_vfs_dir {
     uint32_t        node_num;
     uint32_t        parent_node_num;
@@ -32,5 +33,11 @@ typedef struct vfs_node_pds_dir {
     unsigned char   mvs_pds_dsname[45];
     unsigned char   mvs_vol_ser[7];
 } vfs_node_pds_dir_t;
- 
+
+#define MVS_PATH_TYPE_DATASET       1
+#define MVS_PATH_TYPE_PDS_MEMBER    2
+
+int mvs_path_type(const char *path);
+
+
 #endif /* VFS_H */

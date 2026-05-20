@@ -41,6 +41,8 @@ int exports_load(const char *config_file)
     char *tok;
     char *rest;
     int   len;
+    char *dot;
+    int   i;
  
     fp = fopen(config_file, "r");
     if (!fp) return -1;
@@ -96,6 +98,27 @@ int exports_load(const char *config_file)
         strncpy(g_exports[g_nexports].host_path, rest, MAX_PATH - 1);
         g_exports[g_nexports].host_path[MAX_PATH - 1] = '\0';
  
+        /* Use the last qualifier of the host dsname as a filename extension,
+         * translating the filename extension to lower case.
+         */
+        dot = strrchr(g_exports[g_nexports].host_path, '.');
+        if (dot) {
+            strncpy(g_exports[g_nexports].file_ext, dot + 1, MAX_FILE_EXT_LEN - 1);
+            g_exports[g_nexports].file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+            /* Convert to lower case */
+            for (i = 0; i < MAX_FILE_EXT_LEN && g_exports[g_nexports].file_ext[i]; i++) {
+                g_exports[g_nexports].file_ext[i] = tolower((unsigned char)g_exports[g_nexports].file_ext[i]);
+            }
+        } else {
+            g_exports[g_nexports].file_ext[0] = '\0';
+        }
+
+        fprintf(stderr,
+            "nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')\n",
+            g_exports[g_nexports].export_path,
+            g_exports[g_nexports].host_path,
+            g_exports[g_nexports].file_ext);
+            
         g_nexports++;
     }
  
@@ -128,7 +151,7 @@ int exports_load(const char *config_file)
 }
  
 /* ------------------------------------------------------------------ */
-/* exports_count: number of configured exports                          */
+/* exports_count: number of configured exports                        */
 /* ------------------------------------------------------------------ */
 int exports_count(void)
 {
@@ -136,7 +159,7 @@ int exports_count(void)
 }
  
 /* ------------------------------------------------------------------ */
-/* exports_get: return pointer to export[idx], or NULL                  */
+/* exports_get: return pointer to export[idx], or NULL                */
 /* ------------------------------------------------------------------ */
 export_t *exports_get(int idx)
 {
@@ -145,7 +168,7 @@ export_t *exports_get(int idx)
 }
  
 /* ------------------------------------------------------------------ */
-/* exports_get_id: return the index of exp in the table, or -1          */
+/* exports_get_id: return the index of exp in the table, or -1        */
 /* ------------------------------------------------------------------ */
 int exports_get_id(const export_t *exp)
 {
@@ -157,8 +180,8 @@ int exports_get_id(const export_t *exp)
 }
  
 /* ------------------------------------------------------------------ */
-/* exports_find_by_nfs_path: find an export whose NFS path matches.     */
-/* The nfs_path comparison is case-sensitive and exact.                 */
+/* exports_find_by_nfs_path: find an export whose NFS path matches.   */
+/* The nfs_path comparison is case-sensitive and exact.               */
 /* ------------------------------------------------------------------ */
 export_t *exports_find_by_nfs_path(const char *nfs_path)
 {
@@ -171,7 +194,7 @@ export_t *exports_find_by_nfs_path(const char *nfs_path)
 }
  
 /* ------------------------------------------------------------------ */
-/* exports_find_by_id: find an export by its table index (export_id).   */
+/* exports_find_by_id: find an export by its table index (export_id). */
 /* ------------------------------------------------------------------ */
 export_t *exports_find_by_id(uint32_t id)
 {
