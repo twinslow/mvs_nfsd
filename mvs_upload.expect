@@ -1,0 +1,288 @@
+#!/usr/bin/expect -f
+#
+# mvs_upload.expect - Upload C and H source files to MVS PDS libraries.
+#
+# Usage (from project root):
+#   chmod +x mvs_upload.expect
+#   ./mvs_upload.expect
+#
+# What it does:
+#   1. Prompts for TSO userid and password (password is not echoed).
+#   2. Connects to the MVS FTP server at localhost:2121 in passive mode.
+#   3. Sets ASCII transfer mode (required for text files on MVS).
+#   4. CDs to /TONYW.DINONFS.C and uploads all .c files from ./src.
+#   5. CDs to /TONYW.DINONFS.H and uploads all .h files from ./src.
+#
+# Member name derivation:
+#   The local filename extension (.c / .h) is stripped, the result is
+#   uppercased, any characters not valid in MVS member names are removed
+#   (valid set: A-Z 0-9 @ # $), and the result is truncated to 8
+#   characters.  A warning is printed for any name that is truncated or
+#   that becomes empty after cleanup.
+#
+# Example mappings:
+#   nfsd.c               -> NFSD
+#   fhandle.c            -> FHANDLE
+#   ispf_to_unix_epoch.c -> ISPFTOUN  (truncated -- warned)
+#   vfsmvsx.c            -> VFSMVSX
+#   types.h              -> TYPES
+#
+
+# -----------------------------------------------------------------------
+# Configuration -- adjust if your PDS names or server details differ
+# -----------------------------------------------------------------------
+set ftp_host  "localhost"
+set ftp_port  "2121"
+set pds_c     "/TEMP.DINONFS.C"
+set pds_h     "/TEMP.DINONFS.H"
+
+# Source directory is ./src relative to this script's own location
+set script_dir [file dirname [file normalize [info script]]]
+set src_dir    [file join $script_dir src]
+
+# Seconds to wait for each FTP response before declaring a timeout
+set timeout 60
+
+# -----------------------------------------------------------------------
+# Procedure: derive an MVS PDS member name from a local file path
+#
+#   Returns the member name string, or "" if no valid characters remain.
+#   Sets the caller's 'truncated' variable to 1 if the name was cut.
+# -----------------------------------------------------------------------
+proc member_name {filepath truncated_var} {
+    upvar $truncated_var truncated
+    set truncated 0
+
+    # Strip directory and extension, then uppercase
+    set base [file rootname [file tail $filepath]]
+    set name [string toupper $base]
+
+    # Remove characters not permitted in MVS member names.
+    # Valid: A-Z  0-9  @  #  $
+    # First character must be alphabetic or national (@ # $) -- FTP
+    # server enforces this; we just strip the offenders here.
+    regsub -all {[^A-Z0-9@#$]} $name {} name
+
+    # Detect and apply the 8-character limit
+    if {[string length $name] > 8} {
+        set truncated 1
+        set name [string range $name 0 7]
+    }
+
+    return $name
+}
+
+# -----------------------------------------------------------------------
+# Procedure: upload a list of local files to the current FTP directory.
+#   Prints a status line for each file and handles per-file errors
+#   without aborting the entire transfer.
+# -----------------------------------------------------------------------
+proc upload_files {file_list} {
+    global timeout
+
+    foreach f $file_list {
+        set trunc 0
+        set member [member_name $f trunc]
+
+        if {$member eq ""} {
+            send_user [format "  %-30s SKIPPED  (no valid MVS chars in name)\n" \
+                              [file tail $f]]
+            continue
+        }
+
+        if {$trunc} {
+            send_user [format "  %-30s -> %-8s  (WARNING: name truncated)\n" \
+                              [file tail $f] $member]
+        } else {
+            send_user [format "  %-30s -> %s\n" [file tail $f] $member]
+        }
+
+        send "put \"$f\" $member\r"
+
+        #
+        # Wait for the ftp> prompt that signals the FTP client has fully
+        # processed the command and is ready for the next one.
+        #
+        # The transfer-statistics line the FTP client prints after a
+        # successful transfer (e.g. "9579 bytes sent in 0.001 seconds")
+        # can contain digit sequences that look like FTP response codes
+        # (e.g. "579 " matches 5[0-9][0-9]). Waiting for "ftp> " as the
+        # completion signal drains that entire line from the buffer before
+        # we send the next command, eliminating false matches.
+        #
+        # "226 Transfer" is used as the success flag because that exact
+        # string can only come from the server's 226 reply; it cannot
+        # appear in a statistics line.
+        #
+        set ok 0
+        expect {
+            # 226 Transfer complete -- mark success and keep waiting
+            # for the ftp> prompt so the buffer is fully drained.
+            "226 Transfer" { set ok 1; exp_continue }
+
+            # ftp> prompt: FTP client is ready -- evaluate outcome.
+            -re {ftp> ?$} { }
+
+            timeout {
+                send_user "         *** TIMEOUT uploading [file tail $f] ***\n"
+                set ok -1
+            }
+        }
+
+        if {$ok == 0} {
+            send_user "         *** ERROR: [file tail $f] -> $member transfer failed ***\n"
+        }
+    }
+}
+
+# -----------------------------------------------------------------------
+# Sanity-check the source directory before prompting for anything
+# -----------------------------------------------------------------------
+if {![file isdirectory $src_dir]} {
+    send_user "Error: source directory not found: $src_dir\n"
+    exit 1
+}
+
+set c_files [lsort [glob -nocomplain -directory $src_dir *.c]]
+set h_files [lsort [glob -nocomplain -directory $src_dir *.h]]
+
+if {[llength $c_files] == 0 && [llength $h_files] == 0} {
+    send_user "Error: no .c or .h files found in $src_dir\n"
+    exit 1
+}
+
+send_user "\n"
+send_user "MVS source upload\n"
+send_user "=================\n"
+send_user "Source directory : $src_dir\n"
+send_user "FTP target       : $ftp_host:$ftp_port\n"
+send_user "C   PDS          : $pds_c\n"
+send_user "H   PDS          : $pds_h\n"
+send_user "Files found      : [llength $c_files] .c  /  [llength $h_files] .h\n"
+send_user "\n"
+
+# -----------------------------------------------------------------------
+# Prompt for credentials
+# -----------------------------------------------------------------------
+send_user "TSO userid : "
+expect_user -re "(.*)\n"
+set userid [string trim $expect_out(1,string)]
+
+if {$userid eq ""} {
+    send_user "Error: userid cannot be empty.\n"
+    exit 1
+}
+
+send_user "Password   : "
+stty -echo
+expect_user -re "(.*)\n"
+set password $expect_out(1,string)
+stty echo
+send_user "\n\n"
+
+# -----------------------------------------------------------------------
+# Spawn FTP  (-p = passive mode,  host  port)
+# -----------------------------------------------------------------------
+send_user "Connecting to $ftp_host port $ftp_port ...\n"
+spawn ftp -p $ftp_host $ftp_port
+
+# Wait for the login name prompt (varies by FTP client and server banner)
+expect {
+    -re {[Nn]ame.*:[ \t]*}  { }
+    -re {[Uu]ser.*:[ \t]*}  { }
+    timeout {
+        send_user "Error: FTP server did not present a login prompt.\n"
+        exit 1
+    }
+}
+send "$userid\r"
+
+# Wait for the password prompt
+expect {
+    -re {[Pp]assword.*:[ \t]*} { }
+    timeout {
+        send_user "Error: FTP server did not present a password prompt.\n"
+        exit 1
+    }
+}
+send "$password\r"
+
+# Check login outcome
+expect {
+    "230 " {
+        send_user "Logged in as $userid.\n\n"
+    }
+    "530 " {
+        send_user "Error: login failed -- check userid and password.\n"
+        exit 1
+    }
+    timeout {
+        send_user "Error: timeout waiting for login confirmation.\n"
+        exit 1
+    }
+}
+
+# -----------------------------------------------------------------------
+# Set ASCII transfer mode
+# -----------------------------------------------------------------------
+send "ascii\r"
+expect {
+    "200 " { expect -re {ftp> ?$} }
+    timeout { send_user "Warning: no confirmation for ASCII mode -- continuing anyway.\n" }
+}
+
+# -----------------------------------------------------------------------
+# Upload .c files
+# -----------------------------------------------------------------------
+if {[llength $c_files] > 0} {
+    send_user -- "--- .c files -> $pds_c ---\n"
+
+    send "cd $pds_c\r"
+    expect {
+        "250 " { expect -re {ftp> ?$} }
+        -re {5[0-9][0-9] } {
+            send_user "Error: cannot cd to $pds_c\n"
+            send_user "       Check that the PDS exists and you have write access.\n"
+            exit 1
+        }
+        timeout {
+            send_user "Error: timeout on cd to $pds_c\n"
+            exit 1
+        }
+    }
+
+    upload_files $c_files
+    send_user "\n"
+}
+
+# -----------------------------------------------------------------------
+# Upload .h files
+# -----------------------------------------------------------------------
+if {[llength $h_files] > 0} {
+    send_user -- "--- .h files -> $pds_h ---\n"
+
+    send "cd $pds_h\r"
+    expect {
+        "250 " { expect -re {ftp> ?$} }
+        -re {5[0-9][0-9] } {
+            send_user "Error: cannot cd to $pds_h\n"
+            send_user "       Check that the PDS exists and you have write access.\n"
+            exit 1
+        }
+        timeout {
+            send_user "Error: timeout on cd to $pds_h\n"
+            exit 1
+        }
+    }
+
+    upload_files $h_files
+    send_user "\n"
+}
+
+# -----------------------------------------------------------------------
+# Done
+# -----------------------------------------------------------------------
+send "quit\r"
+expect eof
+
+send_user "Upload complete.\n\n"

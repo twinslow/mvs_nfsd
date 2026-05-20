@@ -1,0 +1,354 @@
+#!/usr/bin/expect -f
+#
+# mvs_download.expect - Download members from MVS PDS libraries to local files.
+#
+# Usage (from project root):
+#   chmod +x mvs_download.expect
+#   ./mvs_download.expect [destination-directory]
+#
+# If destination-directory is omitted the default is ./src relative to
+# this script's location.  Supplying an alternative directory is useful
+# for testing without overwriting the working source tree:
+#
+#   ./mvs_download.expect /tmp/mvs_download_test
+#
+# What it does:
+#   1. Prompts for TSO userid and password (password is not echoed).
+#   2. Connects to the MVS FTP server at localhost:2121 in passive mode.
+#   3. Sets ASCII transfer mode (required for text files on MVS).
+#   4. CDs to the C source PDS, lists members and downloads each one
+#      as <lowercase-member-name>.c in the destination directory.
+#   5. CDs to the H source PDS, lists members and downloads each one
+#      as <lowercase-member-name>.h in the destination directory.
+#   6. Prints a summary of files downloaded and any errors.
+#
+# Member name to filename mapping:
+#   The MVS member name (always uppercase) is converted to lowercase and
+#   the appropriate extension (.c or .h) is appended.
+#   Examples:
+#     NFSD     -> nfsd.c
+#     FHANDLE  -> fhandle.c
+#     TYPES    -> types.h
+#
+
+# -----------------------------------------------------------------------
+# Configuration -- adjust if your PDS names or server details differ
+# -----------------------------------------------------------------------
+set ftp_host  "localhost"
+set ftp_port  "2121"
+set pds_c     "/TEMP.DINONFS.C"
+set pds_h     "/TEMP.DINONFS.H"
+set pds_cntl  "/TONYW.DINONFS.CNTL"
+
+# Destination directory: command-line argument or ./src beside this script
+set script_dir [file dirname [file normalize [info script]]]
+if {[llength $argv] > 0} {
+    set dest_dir [file normalize [lindex $argv 0]]
+} else {
+    set dest_dir [file join $script_dir src]
+}
+
+# Seconds to wait for each FTP response before declaring a timeout
+set timeout 60
+
+# -----------------------------------------------------------------------
+# Procedure: read the member list from the current FTP directory.
+#
+# Sends "ls" and collects every line that consists solely of a valid MVS
+# member name (1-8 characters drawn from A-Z, 0-9, @, #, $, with the
+# first character restricted to A-Z or a national character).
+#
+# FTP server status lines (e.g. "150 Opening data connection",
+# "226 Transfer complete") will not be matched because:
+#   - Numeric response codes begin with a digit, which is not in
+#     the first-character set [A-Z@#$].
+#   - English words in server messages contain lowercase letters,
+#     which are not in [A-Z0-9@#$].
+#
+# Returns a Tcl list of member name strings, possibly empty.
+# -----------------------------------------------------------------------
+proc get_member_list {} {
+    global timeout
+    set members {}
+
+    send "ls\r"
+
+    expect {
+        # A valid member name is 1-8 uppercase/digit/national chars,
+        # first char alpha/national, on a line by itself.
+        # \r?\n anchors the match to the end of that line so that
+        # e.g. "CWD" inside "250 CWD command successful" is never
+        # captured (it is followed by a space, not a line ending).
+        -re {([A-Z@#$][A-Z0-9@#$]{0,7})\r?\n} {
+            lappend members $expect_out(1,string)
+            exp_continue
+        }
+
+        # ftp> prompt signals the listing is complete
+        -re {ftp> ?$} { }
+
+        timeout {
+            send_user "  Warning: timeout reading directory listing.\n"
+        }
+    }
+
+    return $members
+}
+
+# -----------------------------------------------------------------------
+# Procedure: download a list of members from the current FTP directory.
+#
+#   members   - Tcl list of MVS member names (uppercase)
+#   dest_dir  - local directory to write files into
+#   ext       - file extension to append, including the dot (e.g. ".c")
+#
+# Each member MEMBNAME is downloaded as dest_dir/membname.ext
+# (member name lowercased, extension appended).
+#
+# Returns a two-element list: {count_ok count_errors}
+# -----------------------------------------------------------------------
+proc download_members {members dest_dir ext} {
+    global timeout
+
+    set count_ok  0
+    set count_err 0
+
+    foreach member $members {
+        set local_name  "[string tolower $member]$ext"
+        set local_path  [file join $dest_dir $local_name]
+
+        send_user [format "  %-8s -> %s\n" $member $local_name]
+
+        send "get $member \"$local_path\"\r"
+
+        #
+        # Wait for the ftp> prompt that signals the FTP client has fully
+        # processed the command.  "226 Transfer" is set as the success
+        # flag -- it is specific enough to appear only in a genuine
+        # server 226 reply and not in any stats or banner line.
+        #
+        set ok 0
+        expect {
+            "226 Transfer" { set ok 1; exp_continue }
+            -re {ftp> ?$}  { }
+            timeout {
+                send_user "         *** TIMEOUT downloading $member ***\n"
+                set ok -1
+            }
+        }
+
+        if {$ok == 1} {
+            incr count_ok
+        } elseif {$ok == 0} {
+            send_user "         *** ERROR: $member -> $local_name download failed ***\n"
+            incr count_err
+        }
+        # ok == -1 is a timeout, already reported above
+    }
+
+    return [list $count_ok $count_err]
+}
+
+# -----------------------------------------------------------------------
+# Validate / create the destination directory
+# -----------------------------------------------------------------------
+if {![file isdirectory $dest_dir]} {
+    if {[catch {file mkdir $dest_dir} err]} {
+        send_user "Error: cannot create destination directory: $dest_dir\n"
+        send_user "       $err\n"
+        exit 1
+    }
+    send_user "Created destination directory: $dest_dir\n"
+}
+
+send_user "\n"
+send_user "MVS source download\n"
+send_user "===================\n"
+send_user "FTP target       : $ftp_host:$ftp_port\n"
+send_user "C   PDS          : $pds_c\n"
+send_user "H   PDS          : $pds_h\n"
+send_user "JCL PDS          : $pds_cntl\n"
+send_user "Destination      : $dest_dir\n"
+send_user "\n"
+
+# -----------------------------------------------------------------------
+# Prompt for credentials
+# -----------------------------------------------------------------------
+send_user "TSO userid : "
+expect_user -re "(.*)\n"
+set userid [string trim $expect_out(1,string)]
+
+if {$userid eq ""} {
+    send_user "Error: userid cannot be empty.\n"
+    exit 1
+}
+
+send_user "Password   : "
+stty -echo
+expect_user -re "(.*)\n"
+set password $expect_out(1,string)
+stty echo
+send_user "\n\n"
+
+# -----------------------------------------------------------------------
+# Spawn FTP  (-p = passive mode,  host  port)
+# -----------------------------------------------------------------------
+send_user "Connecting to $ftp_host port $ftp_port ...\n"
+spawn ftp -p $ftp_host $ftp_port
+
+# Wait for the login name prompt
+expect {
+    -re {[Nn]ame.*:[ \t]*} { }
+    -re {[Uu]ser.*:[ \t]*} { }
+    timeout {
+        send_user "Error: FTP server did not present a login prompt.\n"
+        exit 1
+    }
+}
+send "$userid\r"
+
+# Wait for the password prompt
+expect {
+    -re {[Pp]assword.*:[ \t]*} { }
+    timeout {
+        send_user "Error: FTP server did not present a password prompt.\n"
+        exit 1
+    }
+}
+send "$password\r"
+
+# Check login outcome
+expect {
+    "230 " { send_user "Logged in as $userid.\n\n" }
+    "530 " { send_user "Error: login failed -- check userid and password.\n"; exit 1 }
+    timeout { send_user "Error: timeout waiting for login confirmation.\n";   exit 1 }
+}
+
+# -----------------------------------------------------------------------
+# Set ASCII transfer mode and drain the ftp> prompt
+# -----------------------------------------------------------------------
+send "ascii\r"
+expect {
+    "200 " { expect -re {ftp> ?$} }
+    timeout { send_user "Warning: no confirmation for ASCII mode -- continuing anyway.\n" }
+}
+
+# -----------------------------------------------------------------------
+# Download .c members
+# -----------------------------------------------------------------------
+send_user -- "--- Getting member list from $pds_c ---\n"
+send "cd $pds_c\r"
+expect {
+    "250 " { expect -re {ftp> ?$} }
+    -re {5[0-9][0-9] } {
+        send_user "Error: cannot cd to $pds_c\n"
+        send_user "       Check that the PDS exists and you have read access.\n"
+        exit 1
+    }
+    timeout {
+        send_user "Error: timeout on cd to $pds_c\n"
+        exit 1
+    }
+}
+
+set c_members [get_member_list]
+if {[llength $c_members] == 0} {
+    send_user "  No members found (or listing failed).\n"
+} else {
+    send_user "  Found [llength $c_members] member(s): [join $c_members {, }]\n"
+}
+send_user "\n"
+
+send_user -- "--- Downloading .c files ---\n"
+set c_result   [download_members $c_members $dest_dir ".c"]
+set c_ok       [lindex $c_result 0]
+set c_err      [lindex $c_result 1]
+send_user "\n"
+
+# -----------------------------------------------------------------------
+# Download .h members
+# -----------------------------------------------------------------------
+send_user -- "--- Getting member list from $pds_h ---\n"
+send "cd $pds_h\r"
+expect {
+    "250 " { expect -re {ftp> ?$} }
+    -re {5[0-9][0-9] } {
+        send_user "Error: cannot cd to $pds_h\n"
+        send_user "       Check that the PDS exists and you have read access.\n"
+        exit 1
+    }
+    timeout {
+        send_user "Error: timeout on cd to $pds_h\n"
+        exit 1
+    }
+}
+
+set h_members [get_member_list]
+if {[llength $h_members] == 0} {
+    send_user "  No members found (or listing failed).\n"
+} else {
+    send_user "  Found [llength $h_members] member(s): [join $h_members {, }]\n"
+}
+send_user "\n"
+
+send_user -- "--- Downloading .h files ---\n"
+set h_result   [download_members $h_members $dest_dir ".h"]
+set h_ok       [lindex $h_result 0]
+set h_err      [lindex $h_result 1]
+send_user "\n"
+
+# -----------------------------------------------------------------------
+# Download .jcl / CNTL members
+# -----------------------------------------------------------------------
+send_user -- "--- Getting member list from $pds_cntl ---\n"
+send "cd $pds_cntl\r"
+expect {
+    "250 " { expect -re {ftp> ?$} }
+    -re {5[0-9][0-9] } {
+        send_user "Error: cannot cd to $pds_cntl\n"
+        send_user "       Check that the PDS exists and you have read access.\n"
+        exit 1
+    }
+    timeout {
+        send_user "Error: timeout on cd to $pds_cntl\n"
+        exit 1
+    }
+}
+
+set cntl_members [get_member_list]
+if {[llength $cntl_members] == 0} {
+    send_user "  No members found (or listing failed).\n"
+} else {
+    send_user "  Found [llength $cntl_members] member(s): [join $cntl_members {, }]\n"
+}
+send_user "\n"
+
+send_user -- "--- Downloading .jcl files ---\n"
+set cntl_result   [download_members $cntl_members $dest_dir ".jcl"]
+set cntl_ok       [lindex $cntl_result 0]
+set cntl_err      [lindex $cntl_result 1]
+send_user "\n"
+
+# -----------------------------------------------------------------------
+# Disconnect
+# -----------------------------------------------------------------------
+send "quit\r"
+expect eof
+
+# -----------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------
+set total_ok  [expr {$c_ok  + $h_ok}]
+set total_err [expr {$c_err + $h_err}]
+
+send_user "===================\n"
+send_user "Download complete.\n"
+send_user "  Succeeded : $total_ok file(s)\n"
+if {$total_err > 0} {
+    send_user "  Failed    : $total_err file(s)\n"
+}
+send_user "  Location  : $dest_dir\n"
+send_user "\n"
+
+if {$total_err > 0} { exit 1 }
+exit 0
