@@ -16,3 +16,6 @@ zapp.yaml
 *.o
 *.so
 *.exe
+
+# Upload script runtime state
+.mvs_upload_lastrun
