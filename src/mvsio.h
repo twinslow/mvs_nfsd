@@ -23,6 +23,12 @@ typedef struct {
 #define MVS_PATH_TYPE_DATASET       1
 #define MVS_PATH_TYPE_PDS_MEMBER    2
 
+#define MVS_PDSDIR_ENDMARK          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
+#define MVS_PDSDIR_USERDATA_COUNT_MASK ((unsigned char) 0x1F)
+#define MVS_PDSDIR_ALIAS_MASK   ((unsigned char) 0x80)
+#define MVS_PDSDIR_ISPF_EXT_STATS ((unsigned char) 0x04)
+
+
 int mvs_path_type(const char *path, int *export_idx);
 
 int mvs_get_pds_dsn_and_member(
