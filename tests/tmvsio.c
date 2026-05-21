@@ -5,8 +5,8 @@
  *
  * Build (from project root):
  *   cc -std=c99 -Wall -I src -I tests \
- *      tests/tmvsio.c src/mvsio.c tests/munit.c \
- *      -o tests/tmvsio
+ *      tests/runall.c tests/tmvsio.c src/mvsio.c tests/munit.c \
+ *      -o tests/runall
  *
  * Run:
  *   tests/tmvsio
@@ -220,7 +220,7 @@ static MunitResult test_unrelated_path_no_match(const MunitParameter params[], v
 
     result = mvs_path_type("/not/exported/at/all", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     /* idx must be unchanged when there is no match */
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
@@ -236,7 +236,7 @@ static MunitResult test_prefix_without_slash_no_match(const MunitParameter param
 
     result = mvs_path_type("/dinonfs/srcextra", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
@@ -251,7 +251,7 @@ static MunitResult test_shorter_than_export_no_match(const MunitParameter params
 
     result = mvs_path_type("/dinonfs/sr", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
@@ -265,7 +265,7 @@ static MunitResult test_empty_path_no_match(const MunitParameter params[], void 
 
     result = mvs_path_type("", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
@@ -279,7 +279,7 @@ static MunitResult test_root_path_no_match(const MunitParameter params[], void *
 
     result = mvs_path_type("/", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
@@ -319,7 +319,7 @@ static MunitResult test_no_exports_configured(const MunitParameter params[], voi
 
     result = mvs_path_type("/dinonfs/src", &idx);
 
-    munit_assert_int(result, ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
@@ -432,18 +432,11 @@ static MunitSuite sub_suites[] = {
     { NULL,      NULL,                NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 
-static const MunitSuite suite = {
+/* Exported -- referenced by tests/runall.c */
+MunitSuite tmvsio_suite = {
     "/mvsio/mvs_path_type",
     NULL,           /* no top-level tests; all are in sub-suites */
     sub_suites,
     1,
     MUNIT_SUITE_OPTION_NONE
 };
-
-/* ======================================================================
- * Entry point
- * ====================================================================== */
-int main(int argc, char *argv[])
-{
-    return munit_suite_main(&suite, NULL, argc, (char * const *)argv);
-}

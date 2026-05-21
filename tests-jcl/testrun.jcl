@@ -64,19 +64,20 @@
 //* Compile unit test modules
 //*
 //********************************************************************
-//*XXXXXX  EXEC JCCCTST,MODNAME=XXXXXXX
+//TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO
 //*
 //********************************************************************
 //*
 //* Compile, link and run tests
 //*
 //********************************************************************
-//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(TMVSIO)',
+//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',
 //             JOPTS='-D_MVS -D__MVS__ -o -list=//DDN:SYSPRINT'
 //COMPILE.JCCINCS DD DISP=SHR,DSN=SYSD.MUNIT.H
 //          DD DISP=SHR,DSN=TONYW.DINONFS.H
 //COMPILE.SYSPRINT DD SYSOUT=*
 //PRELINK.I DD DISP=SHR,DSN=SYSD.MUNIT.OBJLIB(MUNIT)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //

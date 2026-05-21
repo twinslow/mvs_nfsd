@@ -19,6 +19,7 @@ typedef struct {
     uint8_t          ispf_flags;
 } pds_member_entry_t;
 
+#define MVS_PATH_NOT_EXPORTED       -1
 #define MVS_PATH_TYPE_DATASET       1
 #define MVS_PATH_TYPE_PDS_MEMBER    2
 

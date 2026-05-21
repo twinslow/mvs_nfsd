@@ -32,7 +32,7 @@ int mvs_path_type(const char *path, int *export_idx) {
             return MVS_PATH_TYPE_PDS_MEMBER; // Path is a file (PDS member)
         }
     }
-    return 0; // Path is not an export path
+    return MVS_PATH_NOT_EXPORTED; // Path is not an export path
 }
 
 /* -------------------------------------------------------------------- */
