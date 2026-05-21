@@ -19,7 +19,11 @@ typedef struct {
     uint8_t          ispf_flags;
 } pds_member_entry_t;
 
+#define MVS_PATH_TYPE_DATASET       1
+#define MVS_PATH_TYPE_PDS_MEMBER    2
+
 int mvs_path_type(const char *path, int *export_idx);
+
 int mvs_get_pds_dsn_and_member(
     const char          *path, 
     char                *pds_dsname, 

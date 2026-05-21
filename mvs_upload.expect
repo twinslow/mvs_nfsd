@@ -40,10 +40,11 @@
 set ftp_host  "localhost"
 set ftp_port  "2121"
 
-set script_dir [file dirname [file normalize [info script]]]
-set src_dir    [file join $script_dir src]
-set jcl_dir    [file join $script_dir jcl]
-set tests_dir    [file join $script_dir tests]
+set script_dir     [file dirname [file normalize [info script]]]
+set src_dir        [file join $script_dir src]
+set jcl_dir        [file join $script_dir jcl]
+set tests_dir      [file join $script_dir tests]
+set tests_jcl_dir  [file join $script_dir tests-jcl]
 
 #
 # Upload job list.  Each entry is a three-element list:
@@ -54,11 +55,12 @@ set tests_dir    [file join $script_dir tests]
 # Add, remove or reorder entries here -- no other changes are needed.
 #
 set upload_jobs [list \
-    [list $src_dir "*.c" "/TEMP.DINONFS.C"] \
-    [list $src_dir "*.h" "/TEMP.DINONFS.H"] \
-    [list $jcl_dir "*.jcl" "/TEMP.DINONFS.CNTL"] \
-    [list $tests_dir "*.c" "/TEMP.DINONFS.TESTS.C"] \
-    [list $tests_dir "*.h" "/TEMP.DINONFS.TESTS.H"] \
+    [list $src_dir "*.c" "/TONYW.DINONFS.C"] \
+    [list $src_dir "*.h" "/TONYW.DINONFS.H"] \
+    [list $jcl_dir "*.jcl" "/TONYW.DINONFS.CNTL"] \
+    [list $tests_dir "*.c" "/TONYW.DINONFS.TESTS.C"] \
+    [list $tests_dir "*.h" "/TONYW.DINONFS.TESTS.H"] \
+    [list $tests_jcl_dir "*.jcl" "/TONYW.DINONFS.TESTS.CNTL"] \
 ]
 
 # Seconds to wait for each FTP response before declaring a timeout

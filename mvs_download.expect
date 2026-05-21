@@ -36,8 +36,8 @@
 # -----------------------------------------------------------------------
 set ftp_host  "localhost"
 set ftp_port  "2121"
-set pds_c     "/TEMP.DINONFS.C"
-set pds_h     "/TEMP.DINONFS.H"
+set pds_c     "/TONYW.DINONFS.C"
+set pds_h     "/TONYW.DINONFS.H"
 set pds_cntl  "/TONYW.DINONFS.CNTL"
 
 # Destination directory: command-line argument or ./src beside this script
