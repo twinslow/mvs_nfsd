@@ -4,7 +4,20 @@
 #
 # Usage (from project root):
 #   chmod +x mvs_upload.expect
-#   ./mvs_upload.expect
+#   ./mvs_upload.expect [incremental]
+#
+# Options:
+#   incremental    Only upload files whose modification time is newer than
+#                  the timestamp recorded at the end of the previous run.
+#                  On the very first run (no timestamp file yet) all files
+#                  are uploaded and a timestamp file is created.
+#                  Without this option every matching file is always uploaded.
+#
+# Note: a leading '-' is intentionally omitted from the option name.
+#   Expect's interpreter intercepts single-dash flags before the script
+#   sees them: '-incremental' is parsed as Expect's own '-i' flag, leaving
+#   'remental' as an unrecognised Tcl command.  Using a plain word avoids
+#   this entirely.
 #
 # What it does:
 #   1. Prompts for TSO userid and password (password is not echoed).
@@ -67,6 +80,58 @@ set upload_jobs [list \
 set timeout 60
 
 # -----------------------------------------------------------------------
+# Command-line argument parsing
+# -----------------------------------------------------------------------
+set g_incremental 0
+foreach arg $argv {
+    if {$arg eq "incremental"} {
+        set g_incremental 1
+    } else {
+        send_user "Error: unknown argument: $arg\n"
+        send_user "Usage: mvs_upload.expect \[incremental\]\n"
+        send_user "  incremental   Only upload files changed since the last run.\n"
+        exit 1
+    }
+}
+
+# -----------------------------------------------------------------------
+# Last-run timestamp tracking
+#
+# The timestamp file records the wall-clock time at the START of the
+# most recently completed upload.  Using the start time (rather than the
+# end time) guarantees that any file modified *during* a run is caught by
+# the next -incremental run.
+#
+# The file contains a single integer: seconds since the Unix epoch, as
+# returned by Tcl's [clock seconds].
+# -----------------------------------------------------------------------
+set timestamp_file [file join $script_dir .mvs_upload_lastrun]
+set g_last_run_time 0
+
+if {$g_incremental} {
+    if {[file exists $timestamp_file]} {
+        if {[catch {
+            set _fh  [open $timestamp_file r]
+            set _raw [string trim [read $_fh]]
+            close $_fh
+            if {[string is integer -strict $_raw] && $_raw > 0} {
+                set g_last_run_time $_raw
+            } else {
+                send_user "Warning: timestamp file is corrupt -- uploading all files.\n"
+            }
+        } _err]} {
+            send_user "Warning: cannot read timestamp file ($_err) -- uploading all files.\n"
+        }
+    } else {
+        send_user "Note: no previous run recorded -- uploading all files.\n"
+    }
+}
+
+# Snapshot the start time now; written to the timestamp file after the
+# upload completes so that future -incremental runs have a reference point.
+set g_run_start_time [clock seconds]
+
+# -----------------------------------------------------------------------
 # Procedure: member_name
 #
 # Derive an MVS PDS member name from a local file path.
@@ -93,6 +158,34 @@ proc member_name {filepath truncated_var} {
     }
 
     return $name
+}
+
+# -----------------------------------------------------------------------
+# Procedure: filter_changed_files
+#
+# In -incremental mode, returns only those files from file_list whose
+# modification time (file mtime) is strictly greater than g_last_run_time.
+# In full-upload mode (g_incremental == 0) or when no previous timestamp
+# exists (g_last_run_time == 0) the list is returned unchanged.
+#
+#   file_list - list of absolute file paths
+#
+# Returns the filtered list (possibly the same list, possibly empty).
+# -----------------------------------------------------------------------
+proc filter_changed_files {file_list} {
+    global g_incremental g_last_run_time
+
+    if {!$g_incremental || $g_last_run_time == 0} {
+        return $file_list
+    }
+
+    set changed {}
+    foreach f $file_list {
+        if {[file mtime $f] > $g_last_run_time} {
+            lappend changed $f
+        }
+    }
+    return $changed
 }
 
 # -----------------------------------------------------------------------
@@ -180,14 +273,20 @@ proc upload_files {file_list} {
 proc upload_pds {src_dir glob_pat pds} {
     global timeout
 
-    set files [lsort [glob -nocomplain -directory $src_dir $glob_pat]]
+    set all_files [lsort [glob -nocomplain -directory $src_dir $glob_pat]]
+    set files     [filter_changed_files $all_files]
 
-    if {[llength $files] == 0} {
+    if {[llength $all_files] == 0} {
         send_user -- "--- $glob_pat -> $pds (no matching files, skipping) ---\n\n"
         return [list 0 0]
     }
 
-    send_user -- "--- $glob_pat -> $pds ([llength $files] file(s)) ---\n"
+    if {[llength $files] == 0} {
+        send_user -- "--- $glob_pat -> $pds (no changed files, skipping) ---\n\n"
+        return [list 0 0]
+    }
+
+    send_user -- "--- $glob_pat -> $pds ([llength $files] of [llength $all_files] file(s)) ---\n"
 
     # CD to the target PDS and drain the ftp> prompt before sending puts
     send "cd $pds\r"
@@ -212,9 +311,10 @@ proc upload_pds {src_dir glob_pat pds} {
 }
 
 # -----------------------------------------------------------------------
-# Pre-flight: validate source directories and count total files
+# Pre-flight: validate source directories and count total / changed files
 # -----------------------------------------------------------------------
-set total_files 0
+set total_files   0
+set total_changed 0
 foreach job $upload_jobs {
     set jdir [lindex $job 0]
     set jpat [lindex $job 1]
@@ -223,12 +323,20 @@ foreach job $upload_jobs {
         exit 1
     }
     set jfiles [glob -nocomplain -directory $jdir $jpat]
-    incr total_files [llength $jfiles]
+    incr total_files   [llength $jfiles]
+    incr total_changed [llength [filter_changed_files $jfiles]]
 }
 
 if {$total_files == 0} {
     send_user "Error: no files found matching any upload job.\n"
     exit 1
+}
+
+if {$g_incremental && $total_changed == 0} {
+    set _when [clock format $g_last_run_time -format {%Y-%m-%d %H:%M:%S}]
+    send_user "Incremental mode: no files changed since $_when.\n"
+    send_user "Nothing to upload.\n"
+    exit 0
 }
 
 # -----------------------------------------------------------------------
@@ -238,36 +346,67 @@ send_user "\n"
 send_user "MVS source upload\n"
 send_user "=================\n"
 send_user "FTP target : $ftp_host:$ftp_port\n"
+if {$g_incremental} {
+    send_user "Mode       : incremental\n"
+    if {$g_last_run_time > 0} {
+        send_user "Last run   : [clock format $g_last_run_time -format {%Y-%m-%d %H:%M:%S}]\n"
+    } else {
+        send_user "Last run   : (none -- uploading all files)\n"
+    }
+} else {
+    send_user "Mode       : full upload\n"
+}
 send_user "Jobs       :\n"
 foreach job $upload_jobs {
-    set jdir [lindex $job 0]
-    set jpat [lindex $job 1]
-    set jpds [lindex $job 2]
-    set jn   [llength [glob -nocomplain -directory $jdir $jpat]]
-    send_user [format "  %-8s %-35s -> %s (%d file(s))\n" \
-                      $jpat $jdir $jpds $jn]
+    set jdir  [lindex $job 0]
+    set jpat  [lindex $job 1]
+    set jpds  [lindex $job 2]
+    set jall  [glob -nocomplain -directory $jdir $jpat]
+    set jtot  [llength $jall]
+    set jn    [llength [filter_changed_files $jall]]
+    if {$g_incremental} {
+        send_user [format "  %-8s %-35s -> %s (%d of %d file(s) changed)\n" \
+                          $jpat $jdir $jpds $jn $jtot]
+    } else {
+        send_user [format "  %-8s %-35s -> %s (%d file(s))\n" \
+                          $jpat $jdir $jpds $jn]
+    }
 }
-send_user "Total      : $total_files file(s)\n"
+if {$g_incremental} {
+    send_user "Total      : $total_changed of $total_files file(s) changed\n"
+} else {
+    send_user "Total      : $total_files file(s)\n"
+}
 send_user "\n"
 
 # -----------------------------------------------------------------------
-# Prompt for credentials
+# Credentials -- environment variables take priority over interactive input
 # -----------------------------------------------------------------------
-send_user "TSO userid : "
-expect_user -re "(.*)\n"
-set userid [string trim $expect_out(1,string)]
-
-if {$userid eq ""} {
-    send_user "Error: userid cannot be empty.\n"
-    exit 1
+if {[info exists env(MVS_USERID)] && $env(MVS_USERID) ne ""} {
+    set userid $env(MVS_USERID)
+    send_user "TSO userid : $userid (from \$MVS_USERID)\n"
+} else {
+    send_user "TSO userid : "
+    expect_user -re "(.*)\n"
+    set userid [string trim $expect_out(1,string)]
+    if {$userid eq ""} {
+        send_user "Error: userid cannot be empty.\n"
+        exit 1
+    }
 }
 
-send_user "Password   : "
-stty -echo
-expect_user -re "(.*)\n"
-set password $expect_out(1,string)
-stty echo
-send_user "\n\n"
+if {[info exists env(MVS_PASSWORD)] && $env(MVS_PASSWORD) ne ""} {
+    set password $env(MVS_PASSWORD)
+    send_user "Password   : (from \$MVS_PASSWORD)\n"
+} else {
+    send_user "Password   : "
+    stty -echo
+    expect_user -re "(.*)\n"
+    set password $expect_out(1,string)
+    stty echo
+    send_user "\n"
+}
+send_user "\n"
 
 # -----------------------------------------------------------------------
 # Spawn FTP  (-p = passive mode,  host  port)
@@ -319,6 +458,18 @@ foreach job $upload_jobs {
     set result [upload_pds [lindex $job 0] [lindex $job 1] [lindex $job 2]]
     incr total_ok  [lindex $result 0]
     incr total_err [lindex $result 1]
+}
+
+# -----------------------------------------------------------------------
+# Save the run timestamp for future -incremental runs
+# -----------------------------------------------------------------------
+if {[catch {
+    set _fh [open $timestamp_file w]
+    puts $_fh $g_run_start_time
+    close $_fh
+} _err]} {
+    send_user "Warning: could not save run timestamp ($_err).\n"
+    send_user "         Next -incremental run will upload all files.\n"
 }
 
 # -----------------------------------------------------------------------

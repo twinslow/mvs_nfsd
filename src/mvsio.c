@@ -1,6 +1,8 @@
 
 
 #include <string.h>
+#include <errno.h>
+
 #include "nfsd.h"
 #include "mvsio.h"
 
@@ -52,9 +54,10 @@ int mvs_get_pds_dsn_and_member(
     char      *last_slash;
     char      *last_dot;
     size_t     member_name_len;
+    size_t     i;
 
-    export_path = export_get(export_idx)->export_path;
-    host_path = export_get(export_idx)->host_path;
+    export_path = exports_get(export_idx)->export_path;
+    host_path = exports_get(export_idx)->host_path;
 
     /* The dataset name is the host path from the export definition */
     strncpy(pds_dsname, host_path, 44);
@@ -86,7 +89,7 @@ int mvs_get_pds_dsn_and_member(
      /* PDS member name is the upper case version of remaining file name, truncated to 8 characters*/
     member_name_len = strlen(file_name);
     if (member_name_len > 8) member_name_len = 8;
-    for (size_t i = 0; i < member_name_len; i++) {
+    for (i = 0; i < member_name_len; i++) {
         pds_member_name[i] = toupper((unsigned char)file_name[i]);  
     }
 
@@ -94,8 +97,8 @@ int mvs_get_pds_dsn_and_member(
 
     /*Does the file name extension match the expected extension which is in the export definition?*/
     /*Case of file extension does not matter                                                      */
-    if (export_get(export_idx)->file_ext[0] != '\0') {
-        if (strcasecmp(file_ext, export_get(export_idx)->file_ext) != 0) {
+    if (exports_get(export_idx)->file_ext[0] != '\0') {
+        if (strcasecmp(file_ext, exports_get(export_idx)->file_ext) != 0) {
             errno = ENOENT; // File extension does not match expected extension, treat as file not found
             return -1;
         }
@@ -127,6 +130,7 @@ int mvs_pds_member_list(
     // Open the dataset ... recfm=U and read directory blocks
     // Store up to max_members entries after we've read a member GE start_member
     // Close the dataset
+    return retcode;
 }
 
 
@@ -134,7 +138,7 @@ int mvs_pds_member_list(
 /* -------------------------------------------------------------------- */
 /* Retrieve a PDS member entry for specified DSN and member             */
 /* -------------------------------------------------------------------- */
-mvs_pds_member_entry_t *mvs_pds_get_member_entry(
+pds_member_entry_t *mvs_pds_get_member_entry(
     const char *dsname, 
     const char *member, 
     int export_idx)

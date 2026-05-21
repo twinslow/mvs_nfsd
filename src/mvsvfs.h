@@ -34,10 +34,5 @@ typedef struct vfs_node_pds_dir {
     unsigned char   mvs_vol_ser[7];
 } vfs_node_pds_dir_t;
 
-#define MVS_PATH_TYPE_DATASET       1
-#define MVS_PATH_TYPE_PDS_MEMBER    2
-
-int mvs_path_type(const char *path);
-
 
 #endif /* VFS_H */
