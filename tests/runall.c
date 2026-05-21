@@ -3,7 +3,8 @@
  *
  * Build (from project root):
  *   cc -std=c99 -Wall -I src -I tests \
- *      tests/runall.c tests/tmvsio.c src/mvsio.c tests/munit.c \
+ *      tests/runall.c tests/tstubs.c tests/tmvsio.c tests/tmvsio2.c \
+ *      src/mvsio.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
@@ -24,12 +25,13 @@
  * The suite structs are defined in their respective t<module>.c files.
  * ----------------------------------------------------------------------- */
 extern MunitSuite tmvsio_suite;
+extern MunitSuite tmvsio2_suite;
 
 /*
  * NUM_SUITES: count of module suites (excluding the NULL terminator).
  * Increment this by one each time a new extern suite is added.
  */
-#define NUM_SUITES 1
+#define NUM_SUITES 2
 
 /* -----------------------------------------------------------------------
  * main: build the root suite from all module suites and run it.
@@ -46,6 +48,7 @@ int main(int argc, char *argv[])
 
     /* Populate module suites -- add one line per suite */
     all_suites[0] = tmvsio_suite;
+    all_suites[1] = tmvsio2_suite;
 
     /* NULL terminator entry */
     memset(&all_suites[NUM_SUITES], 0, sizeof(MunitSuite));

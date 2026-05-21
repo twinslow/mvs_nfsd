@@ -64,7 +64,9 @@
 //* Compile unit test modules
 //*
 //********************************************************************
+//TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO
+//TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2
 //*
 //********************************************************************
 //*
@@ -75,9 +77,12 @@
 //             JOPTS='-D_MVS -D__MVS__ -o -list=//DDN:SYSPRINT'
 //COMPILE.JCCINCS DD DISP=SHR,DSN=SYSD.MUNIT.H
 //          DD DISP=SHR,DSN=TONYW.DINONFS.H
+//          DD DISP=SHR,DSN=TONYW.DINONFS.TESTS.H
 //COMPILE.SYSPRINT DD SYSOUT=*
 //PRELINK.I DD DISP=SHR,DSN=SYSD.MUNIT.OBJLIB(MUNIT)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //

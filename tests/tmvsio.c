@@ -5,7 +5,8 @@
  *
  * Build (from project root):
  *   cc -std=c99 -Wall -I src -I tests \
- *      tests/runall.c tests/tmvsio.c src/mvsio.c tests/munit.c \
+ *      tests/runall.c tests/tstubs.c tests/tmvsio.c tests/tmvsio2.c \
+ *      src/mvsio.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
@@ -22,41 +23,7 @@
 #include "nfsd.h"      /* export_t, MAX_EXPORTS, MAX_PATH */
 #include "mvsvfs.h"    /* MVS_PATH_TYPE_DATASET, MVS_PATH_TYPE_PDS_MEMBER */
 #include "mvsio.h"     /* mvs_path_type */
-
-/* ======================================================================
- * Stub exports table
- *
- * Populated by each test fixture's setup function.
- * The stubs below replace exports.c for this translation unit.
- * ====================================================================== */
-
-static export_t s_exports[MAX_EXPORTS];
-static int      s_nexports = 0;
-
-int exports_count(void)
-{
-    return s_nexports;
-}
-
-export_t *exports_get(int idx)
-{
-    if (idx < 0 || idx >= s_nexports) return NULL;
-    return &s_exports[idx];
-}
-
-/* Convenience: add one export entry to the stub table */
-static void stub_add_export(const char *export_path,
-                            const char *host_path,
-                            const char *file_ext)
-{
-    export_t *e = &s_exports[s_nexports++];
-    strncpy(e->export_path, export_path, MAX_PATH - 1);
-    e->export_path[MAX_PATH - 1] = '\0';
-    strncpy(e->host_path,   host_path,   MAX_PATH - 1);
-    e->host_path[MAX_PATH - 1] = '\0';
-    strncpy(e->file_ext,    file_ext,    MAX_FILE_EXT_LEN - 1);
-    e->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
-}
+#include "tstubs.h"    /* stub_clear_exports, stub_add_export */
 
 /* ======================================================================
  * Fixture: single export
@@ -68,7 +35,7 @@ static void stub_add_export(const char *export_path,
 static void *setup_single(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
-    s_nexports = 0;
+    stub_clear_exports();
     stub_add_export("/dinonfs/src", "TEMP.DINONFS.C", "c");
     return NULL;
 }
@@ -83,7 +50,7 @@ static void *setup_single(const MunitParameter params[], void *user_data)
 static void *setup_multi(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
-    s_nexports = 0;
+    stub_clear_exports();
     stub_add_export("/dinonfs/src", "TEMP.DINONFS.C",    "c");
     stub_add_export("/dinonfs/hdr", "TEMP.DINONFS.H",    "h");
     stub_add_export("/dinonfs/jcl", "TEMP.DINONFS.CNTL", "jcl");
@@ -97,7 +64,7 @@ static void *setup_multi(const MunitParameter params[], void *user_data)
 static void *setup_empty(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
-    s_nexports = 0;
+    stub_clear_exports();
     return NULL;
 }
 
