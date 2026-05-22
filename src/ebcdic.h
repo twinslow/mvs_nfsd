@@ -110,4 +110,5 @@ int ebcdic_member_to_name(char *dst, const uint8_t *member8);
  */
 int name_to_ebcdic_member(uint8_t *member8, const char *name);
  
+
 #endif /* EBCDIC_H */

@@ -339,6 +339,7 @@ typedef struct {
 /* One exported directory */
 typedef struct {
     char export_path[MAX_PATH]; /* NFS path as seen by clients: /export/foo */
+    char export_path_ebcdic[MAX_PATH]; /* NFS path as seen by clients, but in EBCDIC: /export/foo */
     char host_path[MAX_PATH];   /* local path on this host: /home/user/foo or MVS PDS dataset name */
     char file_ext[MAX_FILE_EXT_LEN]; /* optional extension to add to all files in this export */
 } export_t;

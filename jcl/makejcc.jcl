@@ -8,12 +8,15 @@
 //*
 //* DESC: COMPILE AND LINK DINO NFSD, USING JCC COMPILER
 //*
+//* NOTE the lower case -o in the JCC compiler options. If this 
+//* is upper case -O, then compiler outputs ASM source and not object 
+//* code.
 //********************************************************************
 //JCCCMOD PROC SOUT='*',JCC='JCC',
 //          INFILE='TONYW.DINONFS.C',
 //          OBJFILE='TONYW.DINONFS.OBJLIB',
 //          HDRFILE='TONYW.DINONFS.H',
-//          JOPTS='-O -LIST=//DDN:SYSPRINT -D__MVS__',
+//          JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__',
 //          MODNAME='NOT-SPECIFIED'
 //*
 //COMPILE  EXEC PGM=JCC,
@@ -29,7 +32,7 @@
 //SYSIN    DD   DSN=&INFILE(&MODNAME),DISP=SHR
 //*
 //JCCCMOD  PEND
-//*
+//* 
 //********************************************************************
 //*
 //* COMPILE MODULES
@@ -43,8 +46,11 @@
 //NFS3     EXEC JCCCMOD,MODNAME=NFS3
 //PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP
 //RPC      EXEC JCCCMOD,MODNAME=RPC
-//VFS      EXEC JCCCMOD,MODNAME=VFS
+//*VFS      EXEC JCCCMOD,MODNAME=VFS
 //XDR      EXEC JCCCMOD,MODNAME=XDR
+//*
+//* This is a mock VFS module that returns fixed files and contents.
+//MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS
 //*
 //********************************************************************
 //*
@@ -53,9 +59,11 @@
 //********************************************************************
 //NFSD    EXEC JCCCL,INFILE='TONYW.DINONFS.C(NFSD)',
 //        OUTFILE='TONYW.DINONFS.LOAD(NFSD)',
-//        JOPTS='-O -LIST=//DDN:SYSPRINT -D__MVS__'
+//        JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__'
 //COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
-//PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)
+//* Below prelink was to merge in ASM modules as used in
+//* FTPD build. 
+//* PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)
 //PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)
@@ -64,7 +72,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(VFS)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //

@@ -25,7 +25,8 @@
 #endif
  
 #include "nfsd.h"
- 
+#include "ebcdic.h"
+
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
  
@@ -75,7 +76,10 @@ int exports_load(const char *config_file)
         while (*p && !isspace((unsigned char)*p)) p++;
         if (*p) { *p = '\0'; p++; }
  
-        strncpy(g_exports[g_nexports].export_path, tok, MAX_PATH - 1);
+        strncpy(g_exports[g_nexports].export_path_ebcdic, tok, MAX_PATH - 1);
+        g_exports[g_nexports].export_path_ebcdic[MAX_PATH - 1] = '\0';
+
+        ebcdic_to_ascii(g_exports[g_nexports].export_path, tok, MAX_PATH - 1);
         g_exports[g_nexports].export_path[MAX_PATH - 1] = '\0';
  
         /* Skip whitespace between tokens */
@@ -91,7 +95,7 @@ int exports_load(const char *config_file)
         if (len == 0) {
             fprintf(stderr,
                 "nfsd: warning: missing host path for export %s\n",
-                g_exports[g_nexports].export_path);
+                g_exports[g_nexports].export_path_ebcdic);
             continue;
         }
  
@@ -115,7 +119,7 @@ int exports_load(const char *config_file)
 
         fprintf(stderr,
             "nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')\n",
-            g_exports[g_nexports].export_path,
+            g_exports[g_nexports].export_path_ebcdic,
             g_exports[g_nexports].host_path,
             g_exports[g_nexports].file_ext);
             

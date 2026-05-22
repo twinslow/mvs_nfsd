@@ -21,6 +21,18 @@
  *        server:/export/foo /mnt/foo
  */
 
+#ifdef __MVS__ 
+
+#include <sockets.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+
+#else
+
 #include <sys/types.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -33,7 +45,84 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+
+#endif
+
 #include "nfsd.h"
+
+/* ------------------------------------------------------------------ */
+/* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
+/*                                                                      */
+/* Supports:                                                            */
+/*   -x          option without argument                                */
+/*   -x val      option with argument (next argv element)              */
+/*   -xval       option with argument (attached, no space)             */
+/*   --           end-of-options marker                                 */
+/*                                                                      */
+/* Clustered flags (-xyz) are not supported; each flag must be its own  */
+/* -<char> token.  That is sufficient for nfsd's -p -m -n -v flags.    */
+/*                                                                      */
+/* optarg, optind, and optopt are declared static because they are      */
+/* consumed only within this translation unit.  On Linux the real       */
+/* POSIX symbols (from <unistd.h>) are used instead.                   */
+/* ------------------------------------------------------------------ */
+#ifdef __MVS__
+
+static char *optarg = NULL; /* points to option argument, or NULL      */
+static int   optind = 1;    /* index of next argv[] element to examine  */
+static int   optopt = 0;    /* option char that triggered an error      */
+
+static int getopt(int argc, char *argv[], const char *optstring)
+{
+    const char *p;
+    const char *argrest;
+    char        c;
+
+    /* No more arguments, or next argument is not an option */
+    if (optind >= argc || argv[optind] == NULL)   return -1;
+    if (argv[optind][0] != '-')                   return -1;
+    if (argv[optind][1] == '\0')                  return -1;
+
+    /* "--" signals end of options */
+    if (argv[optind][1] == '-' && argv[optind][2] == '\0') {
+        optind++;
+        return -1;
+    }
+
+    c       = argv[optind][1];          /* the option letter            */
+    argrest = argv[optind] + 2;         /* anything after the letter    */
+    optind++;
+
+    /* Look the letter up in the option string */
+    p = strchr(optstring, (int)(unsigned char)c);
+    if (p == NULL) {
+        fprintf(stderr, "unknown option -- %c\n", c);
+        optopt = (int)(unsigned char)c;
+        return (int)'?';
+    }
+
+    if (p[1] == ':') {
+        /* This option requires an argument */
+        if (*argrest != '\0') {
+            /* Attached form: -p11111 */
+            optarg = (char *)argrest;
+        } else if (optind < argc && argv[optind] != NULL) {
+            /* Separate form: -p 11111 */
+            optarg = argv[optind];
+            optind++;
+        } else {
+            fprintf(stderr, "option requires an argument -- %c\n", c);
+            optopt = (int)(unsigned char)c;
+            return (int)'?';
+        }
+    } else {
+        optarg = NULL;
+    }
+
+    return (int)(unsigned char)c;
+}
+
+#endif /* __MVS__ */
 
 /* ------------------------------------------------------------------ */
 /* parse_port: parse a decimal port string into [1, 65535].             */
@@ -87,8 +176,13 @@ static int make_listen_sock(int port)
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); exit(1); }
 
+#ifdef __MVS__
+    if (setsockopt(fd, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        perror("nfsd: setsockopt SO_REUSEADDR");
+#else
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
         perror("nfsd: setsockopt SO_REUSEADDR");
+#endif
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -109,7 +203,11 @@ static int make_listen_sock(int port)
 static void accept_conn(int lsock, int proto)
 {
     struct sockaddr_in peer;
+#ifdef __MVS__
+    long int           plen = sizeof(peer);
+#else
     socklen_t          plen = sizeof(peer);
+#endif
     int                cfd;
 
     cfd = accept(lsock, (struct sockaddr *)&peer, &plen);
@@ -223,7 +321,13 @@ int main(int argc, char *argv[])
     /* Write verifier: combine startup time + PID to avoid collision on
      * fast restarts (time() has only 1-second granularity). */
     {
+#ifdef __MVS__
+        /* MVS has no getpid(), so just use the time. */
+        uint32_t pid = 0xDEADBEEF;
+        /* TODO: Get the JES2 job ID ... started task number etc. */
+#else
         pid_t pid = getpid();
+#endif
         now = time(NULL);
         g_write_verifier[0] = (uint8_t)((uint32_t)now >> 24);
         g_write_verifier[1] = (uint8_t)((uint32_t)now >> 16);
@@ -235,7 +339,9 @@ int main(int argc, char *argv[])
         g_write_verifier[7] = (uint8_t)((uint32_t)pid      );
     }
 
+#ifndef __MVS__
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     pmap_sock  = make_listen_sock(port_pmap);
     mount_sock = make_listen_sock(port_mount);
@@ -263,7 +369,9 @@ int main(int argc, char *argv[])
 
         n = select(maxfd + 1, &rfds, NULL, NULL, NULL);
         if (n < 0) {
+#ifndef __MVS__
             if (errno == EINTR) continue;
+#endif
             perror("select");
             break;
         }
@@ -287,5 +395,6 @@ int main(int argc, char *argv[])
     close(pmap_sock);
     close(mount_sock);
     close(nfs_sock);
+
     return 0;
 }

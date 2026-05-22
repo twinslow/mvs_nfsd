@@ -221,3 +221,4 @@ int name_to_ebcdic_member(uint8_t *member8, const char *name)
 
     return 0;
 }
+
