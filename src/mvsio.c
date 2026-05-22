@@ -301,25 +301,28 @@ void mvs_extract_ispf_stats(
     entry->chgdate = temptime;
     userdata += 6;
 
-    entry->size = *(unsigned short *)userdata;
-    userdata += 2;
-    entry->initSize = *(unsigned short *)userdata;
-    userdata += 2;
-    entry->modCount = *(unsigned short *)userdata;
-    userdata += 2;
-
-    bytes_to_string(entry->user, userdata, 8);
-
     // If the extended stats indicator is set then use those
     if ( entry->ispf_flags & MVS_PDSDIR_ISPF_EXT_STATS ) {
-        userdata += 2;
         entry->size = *(int *)userdata;
         userdata += 4;
         entry->initSize = *(int *)userdata;
         userdata += 4;
         entry->modCount = *(int *)userdata;
         userdata += 4;
+    } else {
+        // Non extended stats ... so size fields are two bytes. 
+        entry->size = *(unsigned short *)userdata;
+        userdata += 2;
+        entry->initSize = *(unsigned short *)userdata;
+        userdata += 2;
+        entry->modCount = *(unsigned short *)userdata;
+        userdata += 2;
     }
+
+    bytes_to_string(entry->user, userdata, 8);
+
+    // There will either be 2 bytes remaining (unused) for non-extended stats,
+    // or 6 bytes remaining (unused) for extended stats. We don't need to do anything with these.
 }
 
 void mvs_set_no_ispf_stats(pds_member_entry_t *entry) {
@@ -360,7 +363,7 @@ int mvs_pds_member_entry_set(
     mvs_pds_member_entry_init(entry);
 
     // Copy member name, trim trailing blanks and null terminate.
-    bytes_to_string((unsigned char *)entry->user, blockptr, 8);
+    bytes_to_string((unsigned char *)entry->name, blockptr, 8);
     blockptr += 8;
 
     // Copy TTR - relative track number and record number
