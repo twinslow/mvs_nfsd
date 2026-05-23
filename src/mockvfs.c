@@ -34,6 +34,17 @@
  *   export root:  <export.host_path>
  *   file:         <export.host_path>/<filename>
  *
+ * EBCDIC / ASCII encoding (MVS only):
+ *   All C string literals in this file are compiled as EBCDIC by JCC.
+ *   Paths received by vfs_* functions have a mixed encoding: the
+ *   host_path prefix is EBCDIC (loaded from the EBCDIC config file),
+ *   but the filename component is ASCII because fh_resolve() appends
+ *   relpaths that were stored from what vfs_readdir_next() returned,
+ *   and that function translates its output to ASCII before returning.
+ *   mock_name_eq() handles the mismatch inside mock_resolve() by
+ *   converting the ASCII filename to EBCDIC before comparing it with
+ *   a compiled EBCDIC string literal.
+ *
  * JCC C89 compliance: all variable declarations precede executable
  * statements in every function.  Only block comments are used.
  */
@@ -43,6 +54,7 @@
 #include <stdio.h>
 #include <time.h>
 #include "nfsd.h"
+#include "ebcdic.h"
 
 // The following is not defined by JCC
 #define EPERM 1
@@ -120,6 +132,103 @@ static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
 };
 
 /* -------------------------------------------------------------------- */
+/* EBCDIC filename comparison helper                                    */
+/*                                                                      */
+/* On MVS, string literals such as "file1.txt" and "." are EBCDIC.     */
+/* The filename component of a path passed to mock_resolve() is ASCII   */
+/* (it was stored in the fhandle cache from an ASCII vfs_readdir_next   */
+/* result).  mock_name_eq() translates the ASCII filename to EBCDIC in  */
+/* a local buffer and then does a plain strcmp against the literal.     */
+/*                                                                      */
+/* On Linux both sides of every filename comparison are ASCII, so the   */
+/* macro falls back to a direct strcmp.                                  */
+/* -------------------------------------------------------------------- */
+
+#ifdef __MVS__
+
+static int mock_name_eq(const char *ascii_name, const char *ebcdic_lit)
+{
+    char   ebuf[MAX_NAME];
+    size_t len;
+
+    len = strlen(ascii_name);
+    if (len >= MAX_NAME) return 0;
+    ascii_to_ebcdic((uint8_t *)ebuf,
+                    (const uint8_t *)ascii_name,
+                    len + 1u);   /* +1 converts the NUL terminator too */
+    return strcmp(ebuf, ebcdic_lit) == 0;
+}
+
+#define MOCK_NAME_EQ(aname, elit)  mock_name_eq((aname), (elit))
+
+/* -------------------------------------------------------------------- */
+/* mock_path_for_log: return a fully-EBCDIC path for printf logging.    */
+/*                                                                      */
+/* Paths have the form:                                                  */
+/*   <EBCDIC host_path>                           (directory root)      */
+/*   <EBCDIC host_path><EBCDIC '/'><ASCII relpath> (file)              */
+/*                                                                      */
+/* The bytes up to and including the first EBCDIC '/' (0x61) are       */
+/* already correct.  Everything after that is an ASCII relpath (stored  */
+/* in the fhandle cache from the ASCII names returned by               */
+/* vfs_readdir_next).  Translating just that suffix to EBCDIC produces  */
+/* a string that printf can display correctly on an EBCDIC terminal.    */
+/*                                                                      */
+/* A single static buffer is used; safe for single-threaded use.        */
+/* Do NOT call MOCK_PATH() twice in the same printf argument list --    */
+/* use consecutive printfs instead (see vfs_rename).                    */
+/* -------------------------------------------------------------------- */
+
+#define MOCK_LOG_BUF_SIZE  (MAX_PATH * 2)
+
+static char s_log_buf[MOCK_LOG_BUF_SIZE];
+
+static const char *mock_path_for_log(const char *path)
+{
+    const char *slash;
+    int         prefix_len;
+    int         rest_len;
+    int         total_len;
+
+    total_len = (int)strlen(path);
+    if (total_len >= MOCK_LOG_BUF_SIZE)
+        total_len = MOCK_LOG_BUF_SIZE - 1;
+
+    /* Find the EBCDIC '/' that separates host_path from the relpath.   */
+    /* On MVS the literal '/' in C source is compiled as EBCDIC 0x61,   */
+    /* which is exactly the separator fh_resolve() inserts.             */
+    slash = strchr(path, '/');
+
+    if (slash == NULL) {
+        /* No separator -- entire path is the EBCDIC host_path only */
+        strncpy(s_log_buf, path, (size_t)total_len);
+        s_log_buf[total_len] = '\0';
+    } else {
+        /* Copy the EBCDIC prefix (host_path + '/') without change */
+        prefix_len = (int)(slash - path) + 1;
+        strncpy(s_log_buf, path, (size_t)prefix_len);
+
+        /* Translate the ASCII relpath suffix to EBCDIC.             */
+        /* +1 converts the NUL terminator as well.                   */
+        rest_len = total_len - prefix_len;
+        ascii_to_ebcdic((uint8_t *)s_log_buf + prefix_len,
+                        (const uint8_t *)path  + prefix_len,
+                        (size_t)rest_len + 1u);
+    }
+
+    return s_log_buf;
+}
+
+#define MOCK_PATH(p)  mock_path_for_log(p)
+
+#else /* !__MVS__ */
+
+#define MOCK_NAME_EQ(aname, elit)  (strcmp((aname), (elit)) == 0)
+#define MOCK_PATH(p)               (p)
+
+#endif /* __MVS__ */
+
+/* -------------------------------------------------------------------- */
 /* Directory handle (struct vfs_dir is opaque outside this file)        */
 /*                                                                      */
 /* File ID scheme (matches vfs_stat):                                   */
@@ -186,7 +295,7 @@ static int mock_resolve(const char *path, int *exp_idx, int *file_idx)
     host_len = (size_t)(last_slash - path);
 
     /* "." -- the directory that contains this path component */
-    if (strcmp(filename, ".") == 0) {
+    if (MOCK_NAME_EQ(filename, ".")) {
         for (j = 0; j < n; j++) {
             exp     = exports_get(j);
             exp_len = strlen(exp->host_path);
@@ -202,7 +311,7 @@ static int mock_resolve(const char *path, int *exp_idx, int *file_idx)
 
     /* Check against the mock file name table */
     for (i = 0; i < MOCK_NUM_FILES; i++) {
-        if (strcmp(filename, s_file_name[i]) == 0) {
+        if (MOCK_NAME_EQ(filename, s_file_name[i])) {
             /* Find the export that owns this parent directory path */
             for (j = 0; j < n; j++) {
                 exp     = exports_get(j);
@@ -237,7 +346,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     uint32_t base_id;
     time_t   now;
 
-    printf("[MOCKVFS] vfs_stat path=\"%s\"\n", path);
+    printf("[MOCKVFS] vfs_stat path=\"%s\"\n", MOCK_PATH(path));
 
     kind = mock_resolve(path, &exp_idx, &file_idx);
     if (kind == MOCK_NOT_FOUND) {
@@ -304,7 +413,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     uint32_t    avail;
 
     printf("[MOCKVFS] vfs_pread path=\"%s\" offset=%u count=%u\n",
-           path, (unsigned)offset, (unsigned)count);
+           MOCK_PATH(path), (unsigned)offset, (unsigned)count);
 
     kind = mock_resolve(path, &exp_idx, &file_idx);
     if (kind == MOCK_NOT_FOUND) {
@@ -330,6 +439,10 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     if (avail > count) avail = count;
 
     memcpy(buf, content + off32, (size_t)avail);
+#ifdef __MVS__
+    /* s_file_content[] is EBCDIC; translate to ASCII for the NFS client */
+    ebcdic_to_ascii((uint8_t *)buf, (const uint8_t *)buf, (size_t)avail);
+#endif
     *nread = avail;
     *eof   = ((off32 + avail) >= clen) ? 1 : 0;
     return 0;
@@ -344,7 +457,7 @@ int vfs_pwrite(const char *path, const void *buf,
 {
     printf("[MOCKVFS] vfs_pwrite path=\"%s\" offset=%u count=%u"
            " (discarded)\n",
-           path, (unsigned)offset, (unsigned)count);
+           MOCK_PATH(path), (unsigned)offset, (unsigned)count);
     (void)buf;
     return 0;
 }
@@ -356,7 +469,7 @@ int vfs_pwrite(const char *path, const void *buf,
 int vfs_create(const char *path, uint32_t mode)
 {
     printf("[MOCKVFS] vfs_create path=\"%s\" mode=0%o (ignored)\n",
-           path, (unsigned)mode);
+           MOCK_PATH(path), (unsigned)mode);
     return 0;
 }
 
@@ -366,7 +479,7 @@ int vfs_create(const char *path, uint32_t mode)
 
 int vfs_remove(const char *path)
 {
-    printf("[MOCKVFS] vfs_remove path=\"%s\" (ignored)\n", path);
+    printf("[MOCKVFS] vfs_remove path=\"%s\" (ignored)\n", MOCK_PATH(path));
     return 0;
 }
 
@@ -376,8 +489,10 @@ int vfs_remove(const char *path)
 
 int vfs_rename(const char *from, const char *to)
 {
-    printf("[MOCKVFS] vfs_rename from=\"%s\" to=\"%s\" -> EPERM\n",
-           from, to);
+    /* Two separate calls: MOCK_PATH uses a single static buffer so   */
+    /* both paths cannot be in the same printf argument list.         */
+    printf("[MOCKVFS] vfs_rename from=\"%s\"", MOCK_PATH(from));
+    printf(" to=\"%s\" -> EPERM\n",            MOCK_PATH(to));
     errno = EPERM;
     return -1;
 }
@@ -389,7 +504,7 @@ int vfs_rename(const char *from, const char *to)
 int vfs_truncate(const char *path, uint64_t size)
 {
     printf("[MOCKVFS] vfs_truncate path=\"%s\" size=%u (ignored)\n",
-           path, (unsigned)size);
+           MOCK_PATH(path), (unsigned)size);
     return 0;
 }
 
@@ -403,7 +518,7 @@ int vfs_set_times(const char *path,
 {
     printf("[MOCKVFS] vfs_set_times path=\"%s\""
            " set_atime=%d set_mtime=%d (ignored)\n",
-           path, set_atime, set_mtime);
+           MOCK_PATH(path), set_atime, set_mtime);
     (void)atime_sec;  (void)atime_nsec;
     (void)mtime_sec;  (void)mtime_nsec;
     return 0;
@@ -415,7 +530,7 @@ int vfs_set_times(const char *path,
 
 int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 {
-    printf("[MOCKVFS] vfs_fsstat path=\"%s\"\n", path);
+    printf("[MOCKVFS] vfs_fsstat path=\"%s\"\n", MOCK_PATH(path));
 
     fs->total_bytes = (uint64_t)1024u * 1024u * 64u; /* 64 MB nominal  */
     fs->free_bytes  = 0u;
@@ -468,7 +583,7 @@ vfs_dir_t *vfs_opendir(const char *path)
     int kind;
     int i;
 
-    printf("[MOCKVFS] vfs_opendir path=\"%s\"\n", path);
+    printf("[MOCKVFS] vfs_opendir path=\"%s\"\n", MOCK_PATH(path));
 
     kind = mock_resolve(path, &exp_idx, &file_idx);
     if (kind == MOCK_NOT_FOUND) {
@@ -522,6 +637,10 @@ int vfs_readdir_next(vfs_dir_t *d, char *name,
 
     strncpy(name, s_dir_entries[pos], (size_t)(maxname - 1u));
     name[maxname - 1u] = '\0';
+#ifdef __MVS__
+    /* s_dir_entries[] is EBCDIC; NFS clients require ASCII names */
+    ebcdic_to_ascii((uint8_t *)name, (const uint8_t *)name, strlen(name));
+#endif
 
     base_id = (uint32_t)(d->exp_idx + 1) * 10u;
 
