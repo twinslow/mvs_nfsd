@@ -1,0 +1,13 @@
+//TONYWA1 JOB (NFSD),'MAKE GETCIB',                          
+//      CLASS=A,MSGCLASS=X,MSGLEVEL=1,REGION=8M,             
+//      NOTIFY=TONYW                                         
+//*                                                          
+//GETCIB EXEC ASMFCL,MAC1='SYS1.AMODGEN',MAC2='SYS2.MACLIB', 
+//        PARM.ASM=(OBJ,NODECK)                              
+//ASM.SYSPUNCH DD SYSOUT=*                                   
+//ASM.SYSIN    DD DISP=SHR,DSN=TONYW.DINONFS.ASM(GETCIB)     
+//*SM.SYSGO    DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(GETCIB)  
+//LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD            
+//LKED.SYSIN   DD *                                          
+    NAME GETCIB(R)                                           
+//                                                           
