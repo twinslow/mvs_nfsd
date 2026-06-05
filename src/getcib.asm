@@ -14,7 +14,7 @@ GETCIB   CSECT
 *    2  STOP command received; CIB has been freed via QEDIT           *
 *                                                                     *
 * Calling convention: standard OS/VS2 (MVS) linkage                   *
-*   Entry  R13 -> 72-byte caller save area                            *
+*   Entry  R13 -> Stack frame from JCC runtime                        *
 *          R14 =  return address                                      *
 *          R15 =  entry point address                                 *
 *          R1  =  Address of parameter list                           *
@@ -26,7 +26,7 @@ GETCIB   CSECT
 *          R2-R12 preserved (restored from caller save area)          *
 *                                                                     *
 * Restrictions                                                        *
-*   NOT re-entrant: uses static SAVE area and CIBADDR fullword.       *
+*   NOT re-entrant: uses static storage                               *
 *                                                                     *
 * Control block offsets                                               *
 *   The STC indicator is checked via PSA -> TCB -> JSCB (IEZJSCB).    *
@@ -36,25 +36,9 @@ GETCIB   CSECT
 *                                                                     *
 ***********************************************************************
          YREGS
-*
-* PSA (Prefixed Save Area) - mapped at absolute address 0
-*
-*PSATOLD  EQU   X'21C'      Absolute addr: pointer to current TCB
-*
-* TCB offsets  (IEFTCB / IKJTCB in OS/VS2)
-*
-*TCBJSCB  EQU   X'B4'       Offset in TCB: pointer to JSCB
-*
-* JSCB offsets  (IEZJSCB in OS/VS2)
-* VERIFY: confirm JSCBSFL offset and JSCBSTCF bit on your MVS level.
-*
-*JSCBSFL  EQU   X'33'       Flag byte in JSCB containing job attributes
-*JSCBSTCF EQU   X'10'       Bit mask: address space is a started task
-*
 ***********************************************************************
 *  Entry and save-area linkage                                        *
 ***********************************************************************
-*
 *
 * This code was copied from FTPLOGIN by Juergen Winkelmann, ETH Zuerich
 *
