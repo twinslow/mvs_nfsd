@@ -58,6 +58,7 @@
 //*
 //********************************************************************
 //NFSD    EXEC JCCCL,INFILE='TONYW.DINONFS.C(NFSD)',
+//        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
 //        OUTFILE='TONYW.DINONFS.LOAD(NFSD)',
 //        JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__'
 //COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
@@ -75,4 +76,10 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
-//
+//LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)                       
+//          DD  DDNAME=SYSIN                                          
+//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.DINONFS.LOAD                      
+//*     INCLUDE SYSLMOD(GETCIB)                                           
+//LKED.SYSIN DD *                                                     
+    NAME NFSD(R)                                                   
+//                             

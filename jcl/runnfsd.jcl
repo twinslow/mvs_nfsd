@@ -9,12 +9,20 @@
 //* DESC: Run the NFSD process as a batch job.                        
 //*                                                                   
 //********************************************************************
-//NFSD    EXEC PGM=NFSD,                                              
-//          PARM='-p 11111 -m 12048 -n 12049 NFSDCONF'                
-//STEPLIB   DD DISP=SHR,DSN=TONYW.DINONFS.LOAD                        
-//SYSPRINT  DD SYSOUT=*                                               
-//STDOUT    DD SYSOUT=*,DCB=(RECFM=F,LRECL=250,BLKSIZE=250)           
-//STDERR    DD SYSOUT=*,DCB=(RECFM=F,LRECL=250,BLKSIZE=250)           
-//STDIN     DD DUMMY                                                  
-//NFSDCONF  DD DISP=SHR,DSN=TONYW.DINONFS.CONF                        
+//RESSOCK EXEC PGM=RESSOCK,                           
+//          PARM='111 2048 2049' 
+//STEPLIB   DD DISP=SHR,DSN=TONYW.DINONFS.LOAD     
+//SYSPRINT  DD SYSOUT=*                            
+//STDOUT    DD SYSOUT=*,DCB=(RECFM=V,BLKSIZE=250)  
+//STDERR    DD SYSOUT=*,DCB=(RECFM=V,BLKSIZE=250)  
+//STDIN     DD DUMMY                               
+//*
+//NFSD    EXEC PGM=NFSD,                           
+//          PARM='-p 111 -m 2048 -n 2049 NFSDCONF' 
+//STEPLIB   DD DISP=SHR,DSN=TONYW.DINONFS.LOAD     
+//SYSPRINT  DD SYSOUT=*                            
+//STDOUT    DD SYSOUT=*,DCB=(RECFM=V,BLKSIZE=250)  
+//STDERR    DD SYSOUT=*,DCB=(RECFM=V,BLKSIZE=250)  
+//STDIN     DD DUMMY                               
+//NFSDCONF  DD DISP=SHR,DSN=TONYW.DINONFS.CONF     
 //                                                                    
