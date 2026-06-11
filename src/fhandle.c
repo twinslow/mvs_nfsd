@@ -40,6 +40,8 @@
 
 #include <string.h>   /* memset, strncpy, snprintf */
 #include <stdio.h>
+
+#include "ebcdic.h"
 #include "nfsd.h"
 
 /* ------------------------------------------------------------------ */
@@ -288,7 +290,8 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
         strncpy(abspath, exp->host_path, maxlen - 1);
         abspath[maxlen - 1] = '\0';
     } else {
-        snprintf(abspath, maxlen, "%s/%s", exp->host_path, relpath);
+        snprintf(abspath, maxlen, "%s%c%s", exp->host_path, 
+            ebcdic_to_ascii_c('/'), relpath);
     }
     return 0;
 }

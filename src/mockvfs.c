@@ -55,6 +55,7 @@
 #include <time.h>
 #include "nfsd.h"
 #include "ebcdic.h"
+#include "hexdump.h"
 
 // The following is not defined by JCC
 #define EPERM 1
@@ -164,15 +165,9 @@ static int mock_name_eq(const char *ascii_name, const char *ebcdic_lit)
 /* -------------------------------------------------------------------- */
 /* mock_path_for_log: return a fully-EBCDIC path for printf logging.    */
 /*                                                                      */
-/* Paths have the form:                                                  */
-/*   <EBCDIC host_path>                           (directory root)      */
-/*   <EBCDIC host_path><EBCDIC '/'><ASCII relpath> (file)              */
-/*                                                                      */
-/* The bytes up to and including the first EBCDIC '/' (0x61) are       */
-/* already correct.  Everything after that is an ASCII relpath (stored  */
-/* in the fhandle cache from the ASCII names returned by               */
-/* vfs_readdir_next).  Translating just that suffix to EBCDIC produces  */
-/* a string that printf can display correctly on an EBCDIC terminal.    */
+/* Paths have the form:                                                 */
+/*   <ASCII host_path>                           (directory root)       */
+/*   <ASCII host_path><ASCII '/'><ASCII relpath> (file)                 */
 /*                                                                      */
 /* A single static buffer is used; safe for single-threaded use.        */
 /* Do NOT call MOCK_PATH() twice in the same printf argument list --    */
@@ -190,6 +185,10 @@ static const char *mock_path_for_log(const char *path)
     int         rest_len;
     int         total_len;
 
+    ascii_to_ebcdic((uint8_t *)s_log_buf, (const uint8_t *)path, MOCK_LOG_BUF_SIZE - 1);
+    s_log_buf[MOCK_LOG_BUF_SIZE - 1] = '\0';
+
+#if 0
     total_len = (int)strlen(path);
     if (total_len >= MOCK_LOG_BUF_SIZE)
         total_len = MOCK_LOG_BUF_SIZE - 1;
@@ -215,6 +214,7 @@ static const char *mock_path_for_log(const char *path)
                         (const uint8_t *)path  + prefix_len,
                         (size_t)rest_len + 1u);
     }
+#endif
 
     return s_log_buf;
 }
@@ -345,6 +345,8 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     int      kind;
     uint32_t base_id;
     time_t   now;
+
+    hexdump(stdout, "[MOCKVFS] vfs_stat path", path, strlen(path));
 
     printf("[MOCKVFS] vfs_stat path=\"%s\"\n", MOCK_PATH(path));
 

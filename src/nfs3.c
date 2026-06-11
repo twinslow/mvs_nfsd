@@ -16,6 +16,7 @@
 #include <stdio.h>    /* snprintf */
 #include <errno.h>
 #include "nfsd.h"
+#include "ebcdic.h"
 
 /* Static I/O buffers -- one READ and one WRITE buffer */
 static uint8_t g_read_buf [MAX_READ_SIZE];
@@ -164,7 +165,8 @@ static void make_child_relpath(const char *parent_rel, const char *name,
         strncpy(child_rel, name, maxlen - 1);
         child_rel[maxlen - 1] = '\0';
     } else {
-        snprintf(child_rel, maxlen, "%s/%s", parent_rel, name);
+        snprintf(child_rel, maxlen, "%s%c%s", 
+            parent_rel, ebcdic_to_ascii_c('/'), name);
     }
 }
 
@@ -352,7 +354,8 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s/%s", dir_path, name);
+    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+        dir_path, ebcdic_to_ascii_c('/'), name);
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
     if (vfs_stat(obj_path, &obj_st) < 0) {
@@ -570,7 +573,8 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s/%s", dir_path, name);
+    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+        dir_path, ebcdic_to_ascii_c('/'), name);
     has_dir_pre = (vfs_stat(dir_path, &dir_pre) == 0);
 
     /* GUARDED: fail if the file already exists */
@@ -677,7 +681,8 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s/%s", dir_path, name);
+    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+        dir_path, ebcdic_to_ascii_c('/'), name);
     has_pre = (vfs_stat(dir_path, &dir_pre) == 0);
 
     status = (vfs_remove(obj_path) < 0)
@@ -839,7 +844,8 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     eof = 1; wrote_one = 0;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
-        snprintf(entry_path, MAX_PATH, "%s/%s", dir_path, ename);
+        snprintf(entry_path, MAX_PATH, "%s%c%s", 
+            dir_path, ebcdic_to_ascii_c('/'), ename);
         has_est = (vfs_stat(entry_path, &est) == 0);
         if (!has_est) continue;   /* skip unstat-able entries */
 
@@ -1069,8 +1075,10 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(from_path, MAX_PATH, "%s/%s", fdir_path, fname);
-    snprintf(to_path,   MAX_PATH, "%s/%s", tdir_path, tname);
+    snprintf(from_path, MAX_PATH, "%s%c%s", 
+        fdir_path, ebcdic_to_ascii_c('/'), fname);
+    snprintf(to_path,   MAX_PATH, "%s%c%s", 
+        tdir_path, ebcdic_to_ascii_c('/'), tname);
 
     has_fpre = (vfs_stat(fdir_path, &fpre) == 0);
     has_tpre = (vfs_stat(tdir_path, &tpre) == 0);

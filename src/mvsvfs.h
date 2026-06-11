@@ -4,8 +4,8 @@
  * This is only used on MVS
  */
  
-#ifndef VFS_H
-#define VFS_H
+#ifndef MVSVFS_H
+#define MVSVFS_H
  
 #include "types.h"
  
@@ -35,4 +35,4 @@ typedef struct vfs_node_pds_dir {
 } vfs_node_pds_dir_t;
 
 
-#endif /* VFS_H */
+#endif /* MVSVFS_H */

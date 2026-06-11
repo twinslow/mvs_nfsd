@@ -21,7 +21,7 @@
  *        server:/export/foo /mnt/foo
  */
 
-#ifdef __MVS__ 
+#ifdef __MVS__
 
 #include <sockets.h>
 #include <signal.h>
@@ -30,6 +30,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include "asmutils.h"
 
 #else
 
@@ -258,32 +259,40 @@ static int handle_connection(conn_t *conn)
 /* ------------------------------------------------------------------ */
 int main(int argc, char *argv[])
 {
-    int     pmap_sock, mount_sock, nfs_sock;
-    int     port_pmap  = PORT_PORTMAP;
-    int     port_mount = PORT_MOUNT;
-    int     port_nfs   = PORT_NFS;
-    int     maxfd, n, i, opt;
-    fd_set  rfds;
-    time_t  now;
+    int            pmap_sock, mount_sock, nfs_sock;
+    int            port_pmap  = PORT_PORTMAP;
+    int            port_mount = PORT_MOUNT;
+    int            port_nfs   = PORT_NFS;
+    int            maxfd, n, i, opt;
+    fd_set         rfds;
+    struct timeval tv;      /* select() timeout -- re-set each iteration  */
+    time_t         now;
+#ifdef __MVS__
+    char           modify_buf[128]; /* MODIFY command text (EBCDIC)       */
+    int            modify_len;      /* bytes of command text returned      */
+    int            cib_rc;          /* getcib return code                  */
+#endif
+
+    fprintf(stderr, "nfsd: starting up\n");
 
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p':
             if (parse_port(optarg, &port_pmap)  < 0) {
                 fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
-                return 1;
+                return 101;
             }
             break;
         case 'm':
             if (parse_port(optarg, &port_mount) < 0) {
                 fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
-                return 1;
+                return 102;
             }
             break;
         case 'n':
             if (parse_port(optarg, &port_nfs)   < 0) {
                 fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
-                return 1;
+                return 103;
             }
             break;
         case 'v': g_verbose  = 1;            break;
@@ -291,7 +300,7 @@ int main(int argc, char *argv[])
             fprintf(stderr,
                 "usage: %s [-p pmap] [-m mount] [-n nfs] <config>\n",
                 argv[0]);
-            return 1;
+            return 104;
         }
     }
 
@@ -299,14 +308,14 @@ int main(int argc, char *argv[])
         fprintf(stderr,
             "usage: %s [-p pmap] [-m mount] [-n nfs] <config>\n",
             argv[0]);
-        return 1;
+        return 105;
     }
 
     /* Load export configuration */
     n = exports_load(argv[optind]);
     if (n < 0) {
         fprintf(stderr, "nfsd: cannot open config: %s\n", argv[optind]);
-        return 1;
+        return 106;
     }
     fprintf(stderr, "nfsd: loaded %d export(s) from %s\n",
             n, argv[optind]);
@@ -348,11 +357,35 @@ int main(int argc, char *argv[])
     nfs_sock   = make_listen_sock(port_nfs);
 
     fprintf(stderr,
-        "nfsd: listening -- portmapper=%d  mount=%d  nfs=%d\n",
+        "nfsd: Listening -- portmapper=%d  mount=%d  nfs=%d\n",
         port_pmap, port_mount, port_nfs);
 
     /* ---- Main select() event loop ---- */
     for (;;) {
+
+        /* ---- Check for MVS operator commands ---- */
+#ifdef __MVS__
+        modify_len = 0;
+        cib_rc = getcib(modify_buf, (size_t)(sizeof(modify_buf) - 1),
+                        &modify_len);
+        if (cib_rc == 2) {
+            /* STOP (P) command received -- exit the loop cleanly */
+            fprintf(stderr, "nfsd: MVS STOP command received, shutting down\n");
+            break;
+        }
+        if (cib_rc == 1) {
+            /* MODIFY (F) command received -- log and continue.
+             * Future: parse modify_buf for supported sub-commands. */
+            if (modify_len > 0) {
+                modify_buf[modify_len] = '\0';
+                fprintf(stderr, "nfsd: MVS MODIFY ignored: %s\n", modify_buf);
+            } else {
+                fprintf(stderr, "nfsd: MVS MODIFY received (no data)\n");
+            }
+        }
+#endif
+
+        /* ---- Build the fd_set ---- */
         FD_ZERO(&rfds);
         FD_SET(pmap_sock,  &rfds);
         FD_SET(mount_sock, &rfds);
@@ -367,7 +400,10 @@ int main(int argc, char *argv[])
             if (g_conns[i].fd > maxfd) maxfd = g_conns[i].fd;
         }
 
-        n = select(maxfd + 1, &rfds, NULL, NULL, NULL);
+        /* ---- Wait for activity (2-second timeout to poll for STOP) ---- */
+        tv.tv_sec  = 2;
+        tv.tv_usec = 0;
+        n = select(maxfd + 1, &rfds, NULL, NULL, &tv);
         if (n < 0) {
 #ifndef __MVS__
             if (errno == EINTR) continue;
@@ -375,6 +411,7 @@ int main(int argc, char *argv[])
             perror("select");
             break;
         }
+        if (n == 0) continue;  /* timeout -- go back and check for STOP  */
 
         if (FD_ISSET(pmap_sock,  &rfds)) accept_conn(pmap_sock,  PROTO_PORTMAP);
         if (FD_ISSET(mount_sock, &rfds)) accept_conn(mount_sock, PROTO_MOUNT);
@@ -392,9 +429,13 @@ int main(int argc, char *argv[])
         }
     }
 
-    close(pmap_sock);
-    close(mount_sock);
-    close(nfs_sock);
+    fprintf(stderr, "nfsd: Closing sockets\n");
+
+    closesocket(pmap_sock);
+    closesocket(mount_sock);
+    closesocket(nfs_sock);
+
+    fprintf(stderr, "nfsd: Shutting down\n \n \n");
 
     return 0;
 }

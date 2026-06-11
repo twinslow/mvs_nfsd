@@ -20,17 +20,12 @@
  
 #define _POSIX_C_SOURCE 200809L
  
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/time.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dirent.h>
+
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
-
+#include <time.h>
+#include "ebcdic.h"
 #include "mvsio.h"
 #include "nfsd.h"
  

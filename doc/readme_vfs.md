@@ -41,6 +41,11 @@ source file needs to change.
    Define `struct vfs_dir` in your implementation file to hold whatever state your
    directory iterator requires.
 
+7. **ASCII data** is the input and output of the VFS module interface. The absolute 
+   path name passed into the functions is ASCII, on the EBCDIC host. Note that the
+   structure export_t field `host_path` is in ASCII. There is a corresponding
+   field `host_path_ebcdic` with the EBCDIC version of the host path.
+   
 ---
 
 ## Data Types

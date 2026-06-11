@@ -44,6 +44,7 @@ int exports_load(const char *config_file)
     int   len;
     char *dot;
     int   i;
+    char  buff_ascii[MAX_PATH];
  
     fp = fopen(config_file, "r");
     if (!fp) return -1;
@@ -99,7 +100,13 @@ int exports_load(const char *config_file)
             continue;
         }
  
-        strncpy(g_exports[g_nexports].host_path, rest, MAX_PATH - 1);
+        /* Copy the local code page version (EBCDIC for MVS) */
+        strncpy(g_exports[g_nexports].host_path_ebcdic, rest, MAX_PATH - 1);
+        g_exports[g_nexports].host_path_ebcdic[MAX_PATH - 1] = '\0';
+
+        /* Copy the translated ascii version */
+        ebcdic_to_ascii(buff_ascii, g_exports[g_nexports].host_path_ebcdic, MAX_PATH - 1);
+        strncpy(g_exports[g_nexports].host_path, buff_ascii, MAX_PATH - 1);
         g_exports[g_nexports].host_path[MAX_PATH - 1] = '\0';
  
         /* Use the last qualifier of the host dsname as a filename extension,
@@ -120,7 +127,7 @@ int exports_load(const char *config_file)
         fprintf(stderr,
             "nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')\n",
             g_exports[g_nexports].export_path_ebcdic,
-            g_exports[g_nexports].host_path,
+            g_exports[g_nexports].host_path_ebcdic,
             g_exports[g_nexports].file_ext);
             
         g_nexports++;
