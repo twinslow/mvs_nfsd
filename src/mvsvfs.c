@@ -28,12 +28,17 @@
 #include "ebcdic.h"
 #include "mvsio.h"
 #include "nfsd.h"
- 
+#include "hexdump.h"
+
+#define PATH_SEPARATOR_ASCII  (char)0x2f  
+#define PATH_SEPARATOR_EBCDIC (char)0x61 
+
+
 /* -------------------------------------------------------------------- */
 /* Directory handle type (opaque outside this file)                     */
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
-    DIR     *dp;
+    //DIR     *dp;
     uint64_t next_cookie;           /* 1-based index of the next entry to return */
     int      pds_entries_cached;    /* Number of valid entries in the PDS member cache */      
     pds_member_entry_t entry[MVSVFS_PDS_DIR_CACHE_SIZE]; 
@@ -50,7 +55,7 @@ static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
 /* or a PDS member.                                                     */
 /* Returns 0 on success, -1 on error (errno set).                       */
 /* -------------------------------------------------------------------- */
-int vfs_stat_pds_member(const char *path, int export_idx,vfs_stat_t *vs)
+static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
 {
     pds_member_entry_t entry *member_entry;
     char pds_dsname[45];
@@ -90,7 +95,7 @@ int vfs_stat_pds_member(const char *path, int export_idx,vfs_stat_t *vs)
     return 0;
 }
 
-int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
+static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
 {
     vs->ftype = NF3DIR;
     vs->mode = 0555; /* read/execute permissions for everyone */
@@ -126,14 +131,18 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 {
     struct stat st;
     int export_idx;
+    char ebcdic_path[MAX_PATH_LEN];
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
     /* Is this path a directory or a member of a PDS */
-    int path_type = mvs_path_type(path, &export_idx);
+    int path_type = mvs_path_type(ebcdic_path, &export_idx);
 
     if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
-        return vfs_stat_pds_member(path, export_idx, vs);
+        return vfs_stat_pds_member(ebcdic_path, export_idx, vs);
     } else if (path_type == MVS_PATH_TYPE_DATASET) {
-        return vfs_stat_dataset(path, export_idx, vs);
+        return vfs_stat_dataset(ebcdic_path, export_idx, vs);
     } else {
         errno = ENOENT;
         return -1;
@@ -148,35 +157,51 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 /* Sets *nread to bytes actually read; *eof to 1 if at end of file.     */
 /* Returns 0 on success, -1 on error.                                   */
 /* -------------------------------------------------------------------- */
+
 int vfs_pread(const char *path, void *buf, uint32_t count,
               uint64_t offset, uint32_t *nread, int *eof)
 {
-    int        fd;
-    ssize_t    n;
-    struct     stat st;
-    int        saved_errno;
- 
-    fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
- 
-    /* Stat first so the EOF boundary is consistent with the read position */
-    if (fstat(fd, &st) < 0) {
-        saved_errno = errno;
-        close(fd);
-        errno = saved_errno;
+    int         fd;
+    ssize_t     n;
+    struct      stat st;
+    int         saved_errno;
+    int         rc;
+    char        ebcdic_path[MAX_PATH_LEN];
+    char        pds_dsname[45];
+    char        pds_member_name[9];
+    int         export_idx; 
+
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    /* Is this path to a directory or a member of a PDS */
+    int path_type = mvs_path_type(ebcdic_path, &export_idx);
+
+    if (path_type == MVS_PATH_TYPE_DATASET) {
+        errno = EACCES;
+        return -1;
+    } else if ( path_type != MVS_PATH_TYPE_PDS_MEMBER ){
+        errno = ENOENT;
         return -1;
     }
- 
-    n = pread(fd, buf, (size_t)count, (off_t)offset);
-    saved_errno = errno;
-    close(fd);
-    errno = saved_errno;
- 
-    if (n < 0) return -1;
- 
-    *nread = (uint32_t)n;
-    *eof   = ((off_t)(offset + (uint64_t)n) >= st.st_size) ? 1 : 0;
-    return 0;
+
+    /* Split the path into dataset and member name. */
+    mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
+
+    /* We've confirmed that we have a dataset and member name, so we can read. */
+    /* The below read routine handles file open, caching last op info and fclose. */
+    rc = mvs_pds_member_read(
+        pds_dsname,
+        pds_member_name,
+        export_idx,
+        offset,
+        count,
+        buf,
+        nread,
+        eof);
+
+    return rc;
 }
  
 /* -------------------------------------------------------------------- */
@@ -187,6 +212,10 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
 int vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     int     fd;
     ssize_t n;
     int     saved_errno;
@@ -201,6 +230,7 @@ int vfs_pwrite(const char *path, const void *buf,
     errno = saved_errno;
  
     return (n == (ssize_t)count) ? 0 : -1;
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -210,12 +240,17 @@ int vfs_pwrite(const char *path, const void *buf,
 /* -------------------------------------------------------------------- */
 int vfs_create(const char *path, uint32_t mode)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     int fd = open(path,
                   O_CREAT | O_WRONLY | O_TRUNC,
                   (mode_t)mode);
     if (fd < 0) return -1;
     close(fd);
     return 0;
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -223,7 +258,12 @@ int vfs_create(const char *path, uint32_t mode)
 /* -------------------------------------------------------------------- */
 int vfs_remove(const char *path)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     return unlink(path);
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -231,7 +271,12 @@ int vfs_remove(const char *path)
 /* -------------------------------------------------------------------- */
 int vfs_rename(const char *from, const char *to)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     return rename(from, to);
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -239,7 +284,12 @@ int vfs_rename(const char *from, const char *to)
 /* -------------------------------------------------------------------- */
 int vfs_truncate(const char *path, uint64_t size)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     return truncate(path, (off_t)size);
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -256,6 +306,10 @@ int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
                   int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     struct timespec ts[2];
  
     ts[0].tv_sec  = (set_atime == SET_TO_CLIENT_TIME) ? (time_t)atime_sec : 0;
@@ -269,6 +323,7 @@ int vfs_set_times(const char *path,
                                                         (long)mtime_nsec;
  
     return utimensat(AT_FDCWD, path, ts, 0);
+#endif
 }
  
 /* -------------------------------------------------------------------- */
@@ -276,6 +331,10 @@ int vfs_set_times(const char *path,
 /* -------------------------------------------------------------------- */
 int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 {
+    errno = EACCES;
+    return -1;
+
+#if 0
     struct statvfs sv;
  
     if (statvfs(path, &sv) < 0) return -1;
@@ -288,6 +347,7 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
     fs->avail_files = (uint64_t)sv.f_favail;
     fs->invarsec    = 0;
     return 0;
+#endif
 }
  
 /* -------------------------------------------------------------------- */

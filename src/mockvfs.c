@@ -145,6 +145,11 @@ static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
 /* macro falls back to a direct strcmp.                                  */
 /* -------------------------------------------------------------------- */
 
+/* These define the forward slash characters in ASCII and EBCDIC */
+
+#define PATH_SEPARATOR_ASCII  (char)0x2f  
+#define PATH_SEPARATOR_EBCDIC (char)0x61 
+
 #ifdef __MVS__
 
 static int mock_name_eq(const char *ascii_name, const char *ebcdic_lit)
@@ -284,7 +289,7 @@ static int mock_resolve(const char *path, int *exp_idx, int *file_idx)
     }
 
     /* Split the last path component off the rest */
-    last_slash = strrchr(path, '/');
+    last_slash = strrchr(path, PATH_SEPARATOR_ASCII);
     if (last_slash == NULL) {
         return MOCK_NOT_FOUND;
     }

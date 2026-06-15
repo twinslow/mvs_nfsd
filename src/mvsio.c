@@ -589,3 +589,227 @@ pds_member_entry_t *mvs_pds_get_member_entry(
 
     return &entry; // Return pointer to the static entry
 }
+
+/* -------------------------------------------------------------------- */
+/* Read cache                                                           */
+/* -------------------------------------------------------------------- */
+typedef struct mvs_rcache_entry {
+    uint8_t    status;     /* 0 = not in use, 1 = in use */
+
+    char       dsname[45];
+    char       member_name[9];
+    int        export_idx;
+
+    time_t     last_used_time; // Last used time for this cache entry, for LRU eviction
+
+    uint32_t   last_offset; // Last read offset from NFS client
+    uint32_t   last_nread;  // Number of bytes returned to client for last read
+    fpos_t     last_getpos; // File position on host at end of the last read
+
+} mvs_rcache_entry_t;
+
+static mvs_rcache_entry_t g_mvs_rcache_entries[MVS_RCACHE_ENTRIES];
+
+static void mvs_rcache_init(void) 
+{
+    memset(g_mvs_rcache_entries, 0, sizeof(g_mvs_rcache_entries));
+}
+
+static mvs_rcache_entry_t *mvs_rcache_find_entry(
+    const char *dsname, 
+    const char *member_name, 
+    int export_idx) 
+{
+    time_t now = time(NULL);
+
+    int i;
+    for (i = 0; i < MVS_RCACHE_ENTRIES; i++) {
+        if (g_mvs_rcache_entries[i].status == MVS_RCACHE_STATUS_USED &&
+            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS < now && 
+            strcmp(g_mvs_rcache_entries[i].dsname, dsname) == 0 &&
+            strcmp(g_mvs_rcache_entries[i].member_name, member_name) == 0 &&
+            g_mvs_rcache_entries[i].export_idx == export_idx) {
+            return &g_mvs_rcache_entries[i];
+        }
+    }
+    return NULL; // Not found
+}
+
+void mvs_rcache_entry_reset(mvs_rcache_entry *entry) {
+    memset((void) entry, 0, sizeof(mvs_rcache_entry_t));
+}
+
+static mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
+    int i;
+    time_t now = time(NULL);
+    int lru_index;
+
+    for (i = 0; i < MVS_RCACHE_ENTRIES; i++) {
+        if (g_mvs_rcache_entries[i].status == MVS_RCACHE_STATUS_UNUSED ||
+            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS < now) {
+            mvs_rcache_entry_reset(&g_mvs_rcache_entries[i]);
+            return &g_mvs_rcache_entries[i];
+        }
+    }
+
+    // No free entry found, evict the least recently used entry
+    lru_index = 0;
+    for (i = 1; i < MVS_RCACHE_ENTRIES; i++) {
+        if (g_mvs_rcache_entries[i].last_used_time < g_mvs_rcache_entries[lru_index].last_used_time) {
+            lru_index = i;
+        }
+    }
+    mvs_rcache_entry_reset(&g_mvs_rcache_entries[lru_index]);
+    return &g_mvs_rcache_entries[lru_index];
+}
+
+/* -------------------------------------------------------------------- */
+/* High-level file (PDS member) read                                    */
+/* -------------------------------------------------------------------- */
+
+
+int mvs_pds_member_open(
+    mvs_rcache_entry *cache_entry,
+    FILE **fh_return) 
+{
+    char *file_name_buff[55]
+    char *mode = "rt";
+
+    *fh_return = fopen(file_name_buff, mode);
+    if ( !*fh_return ) {
+        return -1;
+    }
+    return 0;
+}
+
+int mvs_pds_member_close(
+    mvs_rcache_entry *cache_entry,
+    FILE *fh) 
+{
+    return fclose(fh);
+}
+
+int mvs_pds_member_pread(
+    mvs_rcache_entry_t      *cache_entry, 
+    FILE                    *fh, 
+    uint8_t                 *buff,
+    uint32_t                count,
+    uint64_t                offset,
+    uint32_t                *nread,
+    int                     *eof) 
+{
+
+    int rc = 0;
+    size_t read_bytes;
+
+    if (offset > 0) {
+        if (cache_entry->last_getget &&
+            offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
+            /* We have a saved fgetpos value that we can use ...*/
+            rc = fsetpos(fh, cache_entry->last_getpos)
+        } else {
+            /* We did not have a usable fgetpos value ... so seek */
+            rc = fseek(fh, offset, SEEK_SET);
+        }
+        if ( rc < 0 ) {
+            mvs_rcache_entry_reset(cache_entry);
+            return -1;
+        }
+    }
+
+    /* Now read the data from the file of the required size */
+    read_bytes = fread(buff, count, 1, fh);
+
+    /* Did we hit an error */
+    if ( ferror(fh) ) {
+        fprintf(stderr, "fread - file in error, errno - %d", errno);
+        mvs_rcache_entry_reset(cache_entry);
+        return -1;        
+    }
+
+    /* Did we hit eof? */
+    *eof = feof(fh);
+
+    /* If we hit EOF, then we don't need the cache entry */
+    if ( *eof ) {
+        mvs_rcache_entry_reset(cache_entry);
+        return 0;
+    }
+
+    /* Update the cache entry */
+    cache_entry->last_used_time = time(NULL);
+    cache_entry->last_used_offset = offset;
+    cache_entry->last_used_nread = read_bytes;
+
+    rc = fgetpos(fh, &(cache_entry->last_used_getpos));
+    if ( rc ) {
+        fprintf(stderr, "fgetpos returned error, errno - %d", errno);
+        /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
+        mvs_rcache_entry_reset(cache_entry);
+    }
+
+    return 0;
+}
+
+int mvs_pds_member_read(
+    const char  *dsname,
+    const char  *member,
+    int          export_idx,
+    uint64_t     offset,
+    uint32_t     count,
+    uint8_t     *buf,
+    uint32_t    *nread,
+    int         *eof)
+{
+    mvs_rcache_entry_t *cache_entry;
+    FILE *fh;
+    int rc = 0;
+    int saved_errno;
+
+    // Get new or existing cache entry for this file
+    // Always start fresh when reading at offset 0
+    if (offset == 0) {
+        cache_entry = mvs_rcache_get_free_entry();
+    } else {
+        cache_entry = mvs_rcache_find_entry(dsname, member, export_idx);
+        if (cache_entry == NULL) {
+            cache_entry = mvs_rcache_get_free_entry();
+        }
+    }
+
+    // Setup new cache entrynm]
+    if ( cache_entry->status == MVS_RCACHE_STATUS_UNUSED ) {
+        strncpy(cache_entry->dsname, dsname, sizeof(cache_entry->dsname) - 1);
+        strncpy(cache_entry->member_name, member, sizeof(cache_entry->member_name) - 1);
+        cache_entry->export_idx = export_idx;
+        cache_entry->status = MVS_RCACHE_STATUS_USED;
+    }
+
+    // Open the file
+    rc = mvs_pds_member_open(cache_entry, &fh);
+    if ( retcode < 0 )
+        return -1;
+
+    // Read the requested data from the file
+    rc = mvs_pds_member_pread(cache_entry, fh, buf, count, offset, nread, eof);
+    if ( rc  < 0 ) {
+        saved_errno = errno;
+        (void)mvs_pds_member_close(cache_entry, fh);
+        errno = saved_errno;
+        return -1;
+    }
+
+    // Close the file
+    rc = mvs_pds_member_close(cache_entry, fh);
+    if ( retcode < 0 ) {
+        return -1;
+    }
+
+
+    // If offset is zero, then we are reading the file for the first time, so 
+    // we need to read from the start of the file and translate logical 
+    // records to ASCII lines until we have returned data to the caller that 
+    // ends on a logical record boundary (newline). We will save the file offset, 
+    // real block number and block offset for the next time we read this file.
+    return 0;
+}

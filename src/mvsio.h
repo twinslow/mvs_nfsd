@@ -30,6 +30,11 @@ typedef struct {
 #define MVS_PDSDIR_ALIAS_MASK   ((unsigned char) 0x80)
 #define MVS_PDSDIR_ISPF_EXT_STATS ((unsigned char) 0x04)
 
+#define MVS_RCACHE_ENTRIES                      20
+#define MVS_RCACHE_STATUS_USED                  1
+#define MVS_RCACHE_STATUS_UNUSED                0
+#define MVS_RCACHE_MAX_AGE_SECONDS              5
+
 /* -------------------------------------------------------------------- */
 /* Path classification                                                  */
 /* -------------------------------------------------------------------- */
@@ -126,5 +131,20 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     const char  *dsname,
     const char  *member,
     int          export_idx);
+
+/* -------------------------------------------------------------------- */
+/* High-level file read                                                 */
+/* -------------------------------------------------------------------- */
+
+int mvs_pds_member_read(
+    const char  *dsname,
+    const char  *member,
+    int          export_idx,
+    uint64_t     offset,
+    uint32_t     count,
+    uint8_t     *buf,
+    uint32_t    *nread,
+    int         *eof);
+
 
 #endif
