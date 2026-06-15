@@ -134,21 +134,22 @@ static MunitResult test_get_free_entry_reuses_expired(
     now = time(NULL);
     expired_index = 3;
 
-    /* Fill every slot as USED. All but one are fresh (unexpired); the
-     * one at expired_index is well past MAX_AGE and should be reused
-     * directly, without needing LRU eviction. */
+    /* Fill every slot as USED with a fresh (unexpired) timestamp first.
+     * If we made an entry "expired" mid-loop, the very next
+     * mvs_rcache_get_free_entry() call (for the following slot) would
+     * reclaim it immediately, shifting the rest of the fill by one. */
     for (i = 0; i < MVS_RCACHE_ENTRIES; i++) {
         digit = (char)('0' + (i % 10));
         strcpy(dsname, "MVS.TEST.DS");
         dsname[11] = digit;
         dsname[12] = '\0';
 
-        if (i == expired_index) {
-            entries[i] = fill_entry(dsname, "MEMBER", i, now - (MVS_RCACHE_MAX_AGE_SECONDS + 100));
-        } else {
-            entries[i] = fill_entry(dsname, "MEMBER", i, now);
-        }
+        entries[i] = fill_entry(dsname, "MEMBER", i, now);
     }
+
+    /* Now, after every slot is populated, make one entry's timestamp
+     * well past MAX_AGE so it should be reused directly. */
+    entries[expired_index]->last_used_time = now - (MVS_RCACHE_MAX_AGE_SECONDS + 100);
 
     reused = mvs_rcache_get_free_entry();
 
