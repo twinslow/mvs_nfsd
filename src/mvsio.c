@@ -7,6 +7,7 @@
 
 #include "nfsd.h"
 #include "mvsio.h"
+#include "ebcdic.h"
 
 
 
@@ -610,7 +611,7 @@ mvs_rcache_entry_t *mvs_rcache_find_entry(
     int i;
     for (i = 0; i < MVS_RCACHE_ENTRIES; i++) {
         if (g_mvs_rcache_entries[i].status == MVS_RCACHE_STATUS_USED &&
-            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS < now && 
+            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS >= now &&
             strcmp(g_mvs_rcache_entries[i].dsname, dsname) == 0 &&
             strcmp(g_mvs_rcache_entries[i].member_name, member_name) == 0 &&
             g_mvs_rcache_entries[i].export_idx == export_idx) {
@@ -620,8 +621,8 @@ mvs_rcache_entry_t *mvs_rcache_find_entry(
     return NULL; // Not found
 }
 
-void mvs_rcache_entry_reset(mvs_rcache_entry *entry) {
-    memset((void) entry, 0, sizeof(mvs_rcache_entry_t));
+void mvs_rcache_entry_reset(mvs_rcache_entry_t *entry) {
+    memset(entry, 0, sizeof(mvs_rcache_entry_t));
 }
 
 mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
@@ -654,11 +655,18 @@ mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
 
 
 int mvs_pds_member_open(
-    mvs_rcache_entry *cache_entry,
-    FILE **fh_return) 
+    mvs_rcache_entry_t *cache_entry,
+    FILE **fh_return)
 {
-    char *file_name_buff[55]
-    char *mode = "rt";
+    const char *open_prefix = "\DSN:"; /* matches prefix used by mvs_open_pds_dir */
+    char        file_name_buff[6 + 45 + 1 + 8 + 1]; /* prefix + dsname + '(' + member + ')' + null */
+    const char *mode = "rt";
+
+    strcpy(file_name_buff, open_prefix);
+    strcat(file_name_buff, cache_entry->dsname);
+    strcat(file_name_buff, "(");
+    strcat(file_name_buff, cache_entry->member_name);
+    strcat(file_name_buff, ")");
 
     *fh_return = fopen(file_name_buff, mode);
     if ( !*fh_return ) {
@@ -668,14 +676,15 @@ int mvs_pds_member_open(
 }
 
 int mvs_pds_member_close(
-    mvs_rcache_entry *cache_entry,
-    FILE *fh) 
+    mvs_rcache_entry_t *cache_entry,
+    FILE *fh)
 {
+    (void)cache_entry;
     return fclose(fh);
 }
 
 int mvs_pds_member_pread(
-    mvs_rcache_entry_t      *cache_entry, 
+    mvs_rcache_entry_t      *cache_entry,
     FILE                    *fh, 
     uint8_t                 *buff,
     uint32_t                count,
@@ -688,13 +697,13 @@ int mvs_pds_member_pread(
     size_t read_bytes;
 
     if (offset > 0) {
-        if (cache_entry->last_getget &&
+        if (cache_entry->has_last_getpos &&
             offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
             /* We have a saved fgetpos value that we can use ...*/
-            rc = fsetpos(fh, cache_entry->last_getpos)
+            rc = fsetpos(fh, &cache_entry->last_getpos);
         } else {
             /* We did not have a usable fgetpos value ... so seek */
-            rc = fseek(fh, offset, SEEK_SET);
+            rc = fseek(fh, (long)offset, SEEK_SET);
         }
         if ( rc < 0 ) {
             mvs_rcache_entry_reset(cache_entry);
@@ -703,17 +712,19 @@ int mvs_pds_member_pread(
     }
 
     /* Now read the data from the file of the required size */
-    read_bytes = fread(buff, count, 1, fh);
+    read_bytes = fread(buff, 1, (size_t)count, fh);
 
     /* Did we hit an error */
     if ( ferror(fh) ) {
         fprintf(stderr, "fread - file in error, errno - %d", errno);
         mvs_rcache_entry_reset(cache_entry);
-        return -1;        
+        return -1;
     }
 
     /* Did we hit eof? */
     *eof = feof(fh);
+
+    *nread = (uint32_t)read_bytes;
 
     /* If we hit EOF, then we don't need the cache entry */
     if ( *eof ) {
@@ -723,14 +734,16 @@ int mvs_pds_member_pread(
 
     /* Update the cache entry */
     cache_entry->last_used_time = time(NULL);
-    cache_entry->last_used_offset = offset;
-    cache_entry->last_used_nread = read_bytes;
+    cache_entry->last_offset = (uint32_t)offset;
+    cache_entry->last_nread = (uint32_t)read_bytes;
 
-    rc = fgetpos(fh, &(cache_entry->last_used_getpos));
+    rc = fgetpos(fh, &(cache_entry->last_getpos));
     if ( rc ) {
         fprintf(stderr, "fgetpos returned error, errno - %d", errno);
         /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
         mvs_rcache_entry_reset(cache_entry);
+    } else {
+        cache_entry->has_last_getpos = 1;
     }
 
     return 0;
@@ -762,7 +775,7 @@ int mvs_pds_member_read(
         }
     }
 
-    // Setup new cache entrynm]
+    // Setup new cache entry
     if ( cache_entry->status == MVS_RCACHE_STATUS_UNUSED ) {
         strncpy(cache_entry->dsname, dsname, sizeof(cache_entry->dsname) - 1);
         strncpy(cache_entry->member_name, member, sizeof(cache_entry->member_name) - 1);
@@ -772,7 +785,7 @@ int mvs_pds_member_read(
 
     // Open the file
     rc = mvs_pds_member_open(cache_entry, &fh);
-    if ( retcode < 0 )
+    if ( rc < 0 )
         return -1;
 
     // Read the requested data from the file
@@ -786,8 +799,14 @@ int mvs_pds_member_read(
 
     // Close the file
     rc = mvs_pds_member_close(cache_entry, fh);
-    if ( retcode < 0 ) {
+    if ( rc < 0 ) {
         return -1;
+    }
+
+    // Translate the data read from the host (EBCDIC) to ASCII for the
+    // NFS client.
+    if ( *nread > 0 ) {
+        ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
 
     return 0;

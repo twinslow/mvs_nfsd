@@ -148,16 +148,34 @@ typedef struct mvs_rcache_entry {
     uint32_t   last_offset; // Last read offset from NFS client
     uint32_t   last_nread;  // Number of bytes returned to client for last read
     fpos_t     last_getpos; // File position on host at end of the last read
+    uint8_t    has_last_getpos; // 1 if last_getpos holds a usable position
 
 } mvs_rcache_entry_t;
 
 void mvs_rcache_init(void);
 mvs_rcache_entry_t *mvs_rcache_find_entry(
-    const char *dsname, 
-    const char *member_name, 
+    const char *dsname,
+    const char *member_name,
     int export_idx);
-void mvs_rcache_entry_reset(mvs_rcache_entry *entry);
+void mvs_rcache_entry_reset(mvs_rcache_entry_t *entry);
 mvs_rcache_entry_t *mvs_rcache_get_free_entry(void);
+
+int mvs_pds_member_open(
+    mvs_rcache_entry_t *cache_entry,
+    FILE               **fh_return);
+
+int mvs_pds_member_close(
+    mvs_rcache_entry_t *cache_entry,
+    FILE               *fh);
+
+int mvs_pds_member_pread(
+    mvs_rcache_entry_t *cache_entry,
+    FILE               *fh,
+    uint8_t            *buff,
+    uint32_t            count,
+    uint64_t            offset,
+    uint32_t           *nread,
+    int                *eof);
 
 
 /* -------------------------------------------------------------------- */
