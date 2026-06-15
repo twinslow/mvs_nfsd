@@ -593,30 +593,14 @@ pds_member_entry_t *mvs_pds_get_member_entry(
 /* -------------------------------------------------------------------- */
 /* Read cache                                                           */
 /* -------------------------------------------------------------------- */
-typedef struct mvs_rcache_entry {
-    uint8_t    status;     /* 0 = not in use, 1 = in use */
-
-    char       dsname[45];
-    char       member_name[9];
-    int        export_idx;
-
-    time_t     last_used_time; // Last used time for this cache entry, for LRU eviction
-
-    uint32_t   last_offset; // Last read offset from NFS client
-    uint32_t   last_nread;  // Number of bytes returned to client for last read
-    fpos_t     last_getpos; // File position on host at end of the last read
-    uint8_t    has_last_getpos; // 1 if last_getpos holds a usable position
-
-} mvs_rcache_entry_t;
-
 static mvs_rcache_entry_t g_mvs_rcache_entries[MVS_RCACHE_ENTRIES];
 
-static void mvs_rcache_init(void) 
+void mvs_rcache_init(void) 
 {
     memset(g_mvs_rcache_entries, 0, sizeof(g_mvs_rcache_entries));
 }
 
-static mvs_rcache_entry_t *mvs_rcache_find_entry(
+mvs_rcache_entry_t *mvs_rcache_find_entry(
     const char *dsname, 
     const char *member_name, 
     int export_idx) 
@@ -626,7 +610,7 @@ static mvs_rcache_entry_t *mvs_rcache_find_entry(
     int i;
     for (i = 0; i < MVS_RCACHE_ENTRIES; i++) {
         if (g_mvs_rcache_entries[i].status == MVS_RCACHE_STATUS_USED &&
-            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS >= now &&
+            g_mvs_rcache_entries[i].last_used_time + MVS_RCACHE_MAX_AGE_SECONDS < now && 
             strcmp(g_mvs_rcache_entries[i].dsname, dsname) == 0 &&
             strcmp(g_mvs_rcache_entries[i].member_name, member_name) == 0 &&
             g_mvs_rcache_entries[i].export_idx == export_idx) {
@@ -636,11 +620,11 @@ static mvs_rcache_entry_t *mvs_rcache_find_entry(
     return NULL; // Not found
 }
 
-static void mvs_rcache_entry_reset(mvs_rcache_entry_t *entry) {
-    memset(entry, 0, sizeof(mvs_rcache_entry_t));
+void mvs_rcache_entry_reset(mvs_rcache_entry *entry) {
+    memset((void) entry, 0, sizeof(mvs_rcache_entry_t));
 }
 
-static mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
+mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
     int i;
     time_t now = time(NULL);
     int lru_index;
@@ -669,19 +653,12 @@ static mvs_rcache_entry_t *mvs_rcache_get_free_entry(void) {
 /* -------------------------------------------------------------------- */
 
 
-static int mvs_pds_member_open(
-    mvs_rcache_entry_t *cache_entry,
-    FILE **fh_return)
+int mvs_pds_member_open(
+    mvs_rcache_entry *cache_entry,
+    FILE **fh_return) 
 {
-    const char *open_prefix = "\DSN:"; /* matches prefix used by mvs_open_pds_dir */
-    char        file_name_buff[6 + 45 + 1 + 8 + 1]; /* prefix + dsname + '(' + member + ')' + null */
-    const char *mode = "rt";
-
-    strcpy(file_name_buff, open_prefix);
-    strcat(file_name_buff, cache_entry->dsname);
-    strcat(file_name_buff, "(");
-    strcat(file_name_buff, cache_entry->member_name);
-    strcat(file_name_buff, ")");
+    char *file_name_buff[55]
+    char *mode = "rt";
 
     *fh_return = fopen(file_name_buff, mode);
     if ( !*fh_return ) {
@@ -690,16 +667,15 @@ static int mvs_pds_member_open(
     return 0;
 }
 
-static int mvs_pds_member_close(
-    mvs_rcache_entry_t *cache_entry,
-    FILE *fh)
+int mvs_pds_member_close(
+    mvs_rcache_entry *cache_entry,
+    FILE *fh) 
 {
-    (void)cache_entry;
     return fclose(fh);
 }
 
-static int mvs_pds_member_pread(
-    mvs_rcache_entry_t      *cache_entry,
+int mvs_pds_member_pread(
+    mvs_rcache_entry_t      *cache_entry, 
     FILE                    *fh, 
     uint8_t                 *buff,
     uint32_t                count,
@@ -712,13 +688,13 @@ static int mvs_pds_member_pread(
     size_t read_bytes;
 
     if (offset > 0) {
-        if (cache_entry->has_last_getpos &&
+        if (cache_entry->last_getget &&
             offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
             /* We have a saved fgetpos value that we can use ...*/
-            rc = fsetpos(fh, &cache_entry->last_getpos);
+            rc = fsetpos(fh, cache_entry->last_getpos)
         } else {
             /* We did not have a usable fgetpos value ... so seek */
-            rc = fseek(fh, (long)offset, SEEK_SET);
+            rc = fseek(fh, offset, SEEK_SET);
         }
         if ( rc < 0 ) {
             mvs_rcache_entry_reset(cache_entry);
@@ -727,19 +703,17 @@ static int mvs_pds_member_pread(
     }
 
     /* Now read the data from the file of the required size */
-    read_bytes = fread(buff, 1, (size_t)count, fh);
+    read_bytes = fread(buff, count, 1, fh);
 
     /* Did we hit an error */
     if ( ferror(fh) ) {
         fprintf(stderr, "fread - file in error, errno - %d", errno);
         mvs_rcache_entry_reset(cache_entry);
-        return -1;
+        return -1;        
     }
 
     /* Did we hit eof? */
     *eof = feof(fh);
-
-    *nread = (uint32_t)read_bytes;
 
     /* If we hit EOF, then we don't need the cache entry */
     if ( *eof ) {
@@ -749,16 +723,14 @@ static int mvs_pds_member_pread(
 
     /* Update the cache entry */
     cache_entry->last_used_time = time(NULL);
-    cache_entry->last_offset = (uint32_t)offset;
-    cache_entry->last_nread = (uint32_t)read_bytes;
+    cache_entry->last_used_offset = offset;
+    cache_entry->last_used_nread = read_bytes;
 
-    rc = fgetpos(fh, &(cache_entry->last_getpos));
+    rc = fgetpos(fh, &(cache_entry->last_used_getpos));
     if ( rc ) {
         fprintf(stderr, "fgetpos returned error, errno - %d", errno);
         /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
         mvs_rcache_entry_reset(cache_entry);
-    } else {
-        cache_entry->has_last_getpos = 1;
     }
 
     return 0;
@@ -790,7 +762,7 @@ int mvs_pds_member_read(
         }
     }
 
-    // Setup new cache entry
+    // Setup new cache entrynm]
     if ( cache_entry->status == MVS_RCACHE_STATUS_UNUSED ) {
         strncpy(cache_entry->dsname, dsname, sizeof(cache_entry->dsname) - 1);
         strncpy(cache_entry->member_name, member, sizeof(cache_entry->member_name) - 1);
@@ -800,7 +772,7 @@ int mvs_pds_member_read(
 
     // Open the file
     rc = mvs_pds_member_open(cache_entry, &fh);
-    if ( rc < 0 )
+    if ( retcode < 0 )
         return -1;
 
     // Read the requested data from the file
@@ -814,15 +786,9 @@ int mvs_pds_member_read(
 
     // Close the file
     rc = mvs_pds_member_close(cache_entry, fh);
-    if ( rc < 0 ) {
+    if ( retcode < 0 ) {
         return -1;
     }
 
-
-    // If offset is zero, then we are reading the file for the first time, so 
-    // we need to read from the start of the file and translate logical 
-    // records to ASCII lines until we have returned data to the caller that 
-    // ends on a logical record boundary (newline). We will save the file offset, 
-    // real block number and block offset for the next time we read this file.
     return 0;
 }

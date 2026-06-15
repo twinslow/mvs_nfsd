@@ -132,6 +132,34 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     const char  *member,
     int          export_idx);
 
+
+/* -------------------------------------------------------------------- */
+/* Read cache                                                           */
+/* -------------------------------------------------------------------- */
+typedef struct mvs_rcache_entry {
+    uint8_t    status;     /* 0 = not in use, 1 = in use */
+
+    char       dsname[45];
+    char       member_name[9];
+    int        export_idx;
+
+    time_t     last_used_time; // Last used time for this cache entry, for LRU eviction
+
+    uint32_t   last_offset; // Last read offset from NFS client
+    uint32_t   last_nread;  // Number of bytes returned to client for last read
+    fpos_t     last_getpos; // File position on host at end of the last read
+
+} mvs_rcache_entry_t;
+
+void mvs_rcache_init(void);
+mvs_rcache_entry_t *mvs_rcache_find_entry(
+    const char *dsname, 
+    const char *member_name, 
+    int export_idx);
+void mvs_rcache_entry_reset(mvs_rcache_entry *entry);
+mvs_rcache_entry_t *mvs_rcache_get_free_entry(void);
+
+
 /* -------------------------------------------------------------------- */
 /* High-level file read                                                 */
 /* -------------------------------------------------------------------- */

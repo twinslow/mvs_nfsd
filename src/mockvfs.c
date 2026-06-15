@@ -142,7 +142,7 @@ static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
 /* a local buffer and then does a plain strcmp against the literal.     */
 /*                                                                      */
 /* On Linux both sides of every filename comparison are ASCII, so the   */
-/* macro falls back to a direct strcmp.                                  */
+/* macro falls back to a direct strcmp.                                 */
 /* -------------------------------------------------------------------- */
 
 /* These define the forward slash characters in ASCII and EBCDIC */
