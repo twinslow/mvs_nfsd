@@ -36,6 +36,7 @@
 
 #include "munit.h"
 #include "mvsio.h"
+#include "mvspdir.h"
 #include <string.h>
 
 #include "types.h"

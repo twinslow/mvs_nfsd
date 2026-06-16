@@ -20,6 +20,7 @@
 
 #include "munit.h"
 #include "mvsio.h"
+#include "mvsprw.h"
 #include <string.h>
 #include <time.h>
 

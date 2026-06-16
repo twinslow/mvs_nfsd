@@ -33,22 +33,23 @@
 #define PATH_SEPARATOR_ASCII  (char)0x2f  
 #define PATH_SEPARATOR_EBCDIC (char)0x61 
 
+#define MVSVFS_DIR_OPENLIST_USED             1
+#define MVSVFS_DIR_OPENLIST_FREE             0
 
 /* -------------------------------------------------------------------- */
 /* Directory handle type (opaque outside this file)                     */
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
-    //DIR     *dp;
-    uint64_t next_cookie;           /* 1-based index of the next entry to return */
-    int      pds_entries_cached;    /* Number of valid entries in the PDS member cache */      
-    pds_member_entry_t entry[MVSVFS_PDS_DIR_CACHE_SIZE]; 
-                                    /* Pre-read PDS member entries */
-    uint8_t  end_of_dir_read;       /* 1 if we've hit the end of the directory */
+    uint8_t             status; 
+    char                pds_dsname_ebcdic[45]; /* EBCDIC dataset name, from path */   
+    uint64_t            next_cookie;           /* 1-based index of the next entry to return */
+    int                 pds_entries_cached;    /* Number of valid entries in the PDS member cache */      
+    pds_member_entry_t  members[MVSVFS_PDS_DIR_CACHE_SIZE]; /* Pre-read PDS member entries */
+    uint8_t             end_of_dir_read;       /* 1 if we've hit the end of the directory */
 };
  
 /* Static pool of directory handles -- no malloc required */
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
-static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
 
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t as appropriate for a PDS dataset         */
@@ -200,6 +201,12 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         buf,
         nread,
         eof);
+
+    // Translate the data read from the host (EBCDIC) to ASCII for the
+    // NFS client.
+    if ( rc == 0 && *nread > 0 ) {
+        ebcdic_to_ascii(buf, buf, (size_t)*nread);
+    }
 
     return rc;
 }
@@ -378,30 +385,83 @@ uint32_t vfs_errno_to_nfs3(int err)
         default:            return NFS3ERR_IO;
     }
 }
- 
+
+/* -------------------------------------------------------------------- */
+/* dir_find_free                                                        */
+/* -------------------------------------------------------------------- */
+
+void dir_openlist_init() {
+    memset(g_dir_pool, 0, sizeof(g_dir_pool));
+}
+
+vfs_dir_t *dir_openlist_find_free() 
+{
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_FREE) {
+            memset(&g_dir_pool[i], 0, sizeof(vfs_dir_t));
+            return &g_dir_pool[i];
+        }
+    }
+    /* None free */
+    errno = EMFILE;
+    return NULL;
+}
+
+
+int dir_openlist_fill_members(vfs_dir_t *dir_openlist_entry) 
+{
+
+}
+
+
 /* -------------------------------------------------------------------- */
 /* vfs_opendir: open a directory for iteration.                         */
 /* Returns a handle from the static pool, or NULL on error.             */
 /* -------------------------------------------------------------------- */
 vfs_dir_t *vfs_opendir(const char *path)
 {
-    DIR *dp;
-    int  i;
- 
-    for (i = 0; i < MAX_OPEN_DIRS; i++) {
-        if (!g_dir_used[i]) break;
+    vfs_dir_t dir_openlist_entry;
+    char        ebcdic_path[MAX_PATH_LEN];
+    char        pds_dsname[45];
+    char        pds_member_name[9];
+    int         export_idx; 
+    int         end_of_dir;
+    int         num_of_members_returned;
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    /* Is this path to a directory or a member of a PDS */
+    int path_type = mvs_path_type(ebcdic_path, &export_idx);
+
+    if ( path_type != MVS_PATH_TYPE_DATASET ){
+        errno = ENOENT;
+        return -1;
     }
-    if (i == MAX_OPEN_DIRS) {
-        errno = EMFILE;
+
+    /* Get free open directory entry */
+    dir_openlist_entry = dir_openlist_find_free();
+    if ( !dir_openlist_entry )
         return NULL;
-    }
- 
-    dp = opendir(path);
-    if (!dp) return NULL;
- 
-    g_dir_pool[i].dp          = dp;
-    g_dir_pool[i].next_cookie = 1;
-    g_dir_used[i]             = 1;
+
+    **** MOVE THIS UP INTO dir_openlist_fill_members etc.
+    **** MOVE THIS UP INTO dir_openlist_fill_members etc.
+    **** MOVE THIS UP INTO dir_openlist_fill_members etc.
+
+    rc = mvs_pds_member_list(
+        pds_dsname, export_idx, /* start-member */ NULL,
+        /* max-members */ MVSVFS_PDS_DIR_CACHE_SIZE,
+        /* member-entries */ dir_openlist_entry->members,
+        &num_of_members_returned,
+        &end_of_dir);
+
+    strncpy(dir_openlist_entry->pds_dsname_ebcdic, pds_dsname, 
+        sizeof(dir_openlist_entry->pds_dsname_ebcdic));
+    dir_openlist_entry->status = MVSVFS_DIR_OPENLIST_USED;
+    dir_openlist_entry->next_cookie = 1;
+    dir_openlist_entry->pds_entries_cached = num_of_members_read;
+    dir_openlist_entry->end_of_dir_read = end_of_dir;
+
     return &g_dir_pool[i];
 }
  
@@ -412,21 +472,42 @@ vfs_dir_t *vfs_opendir(const char *path)
 /* position of this entry, for use as the NFS READDIR cookie).          */
 /* Returns 0 on success, -1 at end of directory or error.               */
 /* -------------------------------------------------------------------- */
-int vfs_readdir_next(vfs_dir_t *d, char *name,
-                     uint32_t maxname, uint64_t *fileid,
+int vfs_readdir_next(vfs_dir_t *dir_openlist_entry, 
+                     char *name, uint32_t maxname, 
+                     uint64_t *fileid,
                      uint64_t *cookie)
 {
-    struct dirent *de;
- 
+    int mem_num;
+    char *prev_last_read;
+
+    mem_num = dir_openlist_entry->next_cookie - 1;
+
+    /* Have we got to end of cached directory entries? */
+    if (mem_num >= dir_openlist_entry->pds_entries_cached) {
+        /* get more if we didn't get to end of directory */
+        if (dir_openlist_entry->end_of_dir_read) {
+            prev_last_read = dir_openlist_entry->
+                members[dir_openlist_entry->pds_entries_cached - 1].name;
+            
+
+        }
+    }
+    strncpy(name, dir_openlist_entry->members[mem_num].name, maxname - 1);
+    name[maxname - 1] = '\0';
+    ebcdic_to_ascii(name, name, maxname);
+
     de = readdir(d->dp);
     if (!de) return -1;
  
-    strncpy(name, de->d_name, maxname - 1);
-    name[maxname - 1] = '\0';
  
-    *fileid = (uint64_t)de->d_ino;
-    *cookie = d->next_cookie;
-    d->next_cookie++;
+    *fileid = mvs_fid_hash(
+        dir_openlist_entry->pds_dsname, 
+        dir_openlist_entry->members[memnum].name ); /* generate fileid based on dataset and member name */
+
+    /* Update cookie for next entry to be retrieved */
+    *cookie = dir_openlist_entry->next_cookie;
+    dir_openlist_entry->next_cookie++;
+
     return 0;
 }
  
@@ -461,9 +542,5 @@ void vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie)
 /* -------------------------------------------------------------------- */
 void vfs_closedir(vfs_dir_t *d)
 {
-    int idx;
-    if (!d) return;
-    closedir(d->dp);
-    idx = (int)(d - g_dir_pool);
-    if (idx >= 0 && idx < MAX_OPEN_DIRS) g_dir_used[idx] = 0;
+    d->status = MVSVFS_DIR_OPENLIST_FREE;
 }
