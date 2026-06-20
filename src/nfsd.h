@@ -485,6 +485,7 @@ export_t *exports_get(int idx);
 int       exports_get_id(const export_t *exp);
 export_t *exports_find_by_nfs_path(const char *nfs_path);
 export_t *exports_find_by_id(uint32_t id);
+export_t *exports_find_by_host_path(const char *host_path_ebcdic);
  
 /* -------------------------------------------------------------------- */
 /* Prototypes: fhandle.c                                                */
@@ -503,6 +504,9 @@ int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
 /* -------------------------------------------------------------------- */
 /* Prototypes: vfs.c                                                    */
 /* -------------------------------------------------------------------- */
+
+void dir_openlist_init();
+
 int        vfs_stat(const char *path, vfs_stat_t *st);
 int        vfs_pread(const char *path, void *buf, uint32_t count,
                uint64_t offset, uint32_t *nread, int *eof);
@@ -517,7 +521,7 @@ int        vfs_set_times(const char *path,
                int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec);
 int        vfs_fsstat(const char *path, vfs_fsstat_t *fs);
 uint32_t   vfs_errno_to_nfs3(int err);
-vfs_dir_t *vfs_opendir(const char *path);
+vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie);
 int        vfs_readdir_next(vfs_dir_t *d, char *name,
                uint32_t maxname, uint64_t *fileid, uint64_t *cookie);
 void       vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie);

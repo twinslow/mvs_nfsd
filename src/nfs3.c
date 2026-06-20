@@ -737,7 +737,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
 
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
-    dp = vfs_opendir(dir_path);
+    dp = vfs_opendir(dir_path, cookie);
     if (!dp) {
         xdr_write_uint32(out, vfs_errno_to_nfs3(errno));
         xdr_write_post_op_attr(out, &dir_st, has_dir);
@@ -749,7 +749,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_raw(out, zero8, 8);   /* cookieverf */
     reply_start = xdr_get_pos(out);
 
-    vfs_seekdir_to(dp, cookie);
+    /* vfs_seekdir_to(dp, cookie);  -- now called from vfs_opendir if appropriate. */
     eof = 1; wrote_one = 0;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
@@ -824,7 +824,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
 
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
-    dp = vfs_opendir(dir_path);
+    dp = vfs_opendir(dir_path, cookie);
     if (!dp) {
         xdr_write_uint32(out, vfs_errno_to_nfs3(errno));
         xdr_write_post_op_attr(out, &dir_st, has_dir);
@@ -840,7 +840,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     dir_rel[0] = '\0';
     fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
 
-    vfs_seekdir_to(dp, cookie);
+    /* vfs_seekdir_to(dp, cookie); -- now called as part of vfs_opendir */
     eof = 1; wrote_one = 0;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {

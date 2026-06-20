@@ -250,6 +250,10 @@ struct vfs_dir {
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
 
+void dir_openlist_init() {
+    memset(g_dir_used, 0, sizeof(g_dir_used));
+}
+
 /* -------------------------------------------------------------------- */
 /* mock_resolve: classify a path as directory, file, or not found.      */
 /*                                                                      */
@@ -583,7 +587,7 @@ uint32_t vfs_errno_to_nfs3(int err)
 /* vfs_opendir: open a mock directory handle for the given path.        */
 /* -------------------------------------------------------------------- */
 
-vfs_dir_t *vfs_opendir(const char *path)
+vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 {
     int exp_idx;
     int file_idx;
@@ -616,6 +620,8 @@ vfs_dir_t *vfs_opendir(const char *path)
     g_dir_pool[i].exp_idx     = exp_idx;
     g_dir_used[i]             = 1;
 
+    vfs_seekdir_to(&g_dir_pool[i], cookie);
+
     return &g_dir_pool[i];
 }
 
@@ -637,6 +643,8 @@ int vfs_readdir_next(vfs_dir_t *d, char *name,
     int      pos;
     uint32_t base_id;
 
+    printf("[MOCKVFS] vfs_readdir_next\n");
+
     pos = (int)(d->next_cookie - 1u);
     if (pos < 0 || pos >= MOCK_NUM_ENTRIES) {
         return -1; /* end of directory */
@@ -646,6 +654,7 @@ int vfs_readdir_next(vfs_dir_t *d, char *name,
     name[maxname - 1u] = '\0';
 #ifdef __MVS__
     /* s_dir_entries[] is EBCDIC; NFS clients require ASCII names */
+    printf("[MOCKVFS] vfs_readdir_next returning file-name=%s\n", name);
     ebcdic_to_ascii((uint8_t *)name, (const uint8_t *)name, strlen(name));
 #endif
 

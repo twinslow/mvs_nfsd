@@ -18,19 +18,19 @@ int mvs_path_type(const char *path, int *export_idx) {
     int i;
     int exp_count = exports_count();        /* export index number is zero based. */
     export_t *nfs_export;
-    size_t export_path_len;
+    size_t host_path_len;
 
     for (i = 0; i < exp_count; i++) {
         nfs_export = exports_get(i);
-        if (strcmp(path, nfs_export->export_path) == 0) {
+        if (strcmp(path, nfs_export->host_path_ebcdic) == 0) {
             *export_idx = i;
             return MVS_PATH_TYPE_DATASET; // Path is an export path
         }
         /* Does the given path up to the last '/' match an export_path? */
-        export_path_len = strlen(nfs_export->export_path);
-        if (export_path_len < strlen(path) && 
-            strncmp(path, nfs_export->export_path, export_path_len) == 0 &&
-            path[export_path_len] == '/') {
+        host_path_len = strlen(nfs_export->host_path_ebcdic);
+        if (host_path_len < strlen(path) && 
+            strncmp(path, nfs_export->host_path_ebcdic, host_path_len) == 0 &&
+            path[host_path_len] == '/') {
             *export_idx = i;
             return MVS_PATH_TYPE_PDS_MEMBER; // Path is a file (PDS member)
         }
@@ -53,24 +53,26 @@ int mvs_get_pds_dsn_and_member(
     char      *host_path;
     char       file_name[MAX_NAME];
     char       file_ext[MAX_FILE_EXT_LEN];
-    size_t     export_path_len;
+    size_t     host_path_len;
     char      *last_slash;
     char      *last_dot;
     size_t     member_name_len;
     size_t     i;
+    int        retcode;
 
-    export_path = exports_get(export_idx)->export_path;
-    host_path = exports_get(export_idx)->host_path;
+    export_path = exports_get(export_idx)->export_path_ebcdic;
+    host_path = exports_get(export_idx)->host_path_ebcdic;
 
     /* The dataset name is the host path from the export definition */
     strncpy(pds_dsname, host_path, 44);
     pds_dsname[44] = '\0'; // Ensure null-termination
 
     /* The member name is the part of the path after the export path */
-    export_path_len = strlen(export_path);
-    if (strlen(path) <= export_path_len) {
+    host_path_len = strlen(host_path);
+    if (strlen(path) <= host_path_len) {
         pds_member_name[0] = '\0'; // No member name, this is the dataset itself
-        return 0;
+        retcode = 0;
+        goto return_exit;
     }
 
     /* Extract the file name from the end of the path, which can include file extension*/
@@ -103,10 +105,19 @@ int mvs_get_pds_dsn_and_member(
     if (exports_get(export_idx)->file_ext[0] != '\0') {
         if (strcasecmp(file_ext, exports_get(export_idx)->file_ext) != 0) {
             errno = ENOENT; // File extension does not match expected extension, treat as file not found
-            return -1;
+            retcode = -1;
+            goto return_exit;
         }
     }
-    return 0;
+
+    retcode = 0;
+    
+return_exit:
+
+    log_debug("mvs_get_pds_dsn_and_member: Returning dsname %s and member %s, with retcode %d",
+        pds_dsname, pds_member_name, retcode);
+
+    return retcode;
 }
 
 /* -------------------------------------------------------------------- */

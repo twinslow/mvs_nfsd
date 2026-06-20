@@ -26,6 +26,7 @@
  
 #include "nfsd.h"
 #include "ebcdic.h"
+#include "logger.h"
 
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
@@ -37,7 +38,7 @@ static int       g_nexports = 0;
 int exports_load(const char *config_file)
 {
     FILE *fp;
-    char  line[MAX_PATH * 2 + 4];
+    char  line[512];
     char *p;
     char *tok;
     char *rest;
@@ -66,9 +67,9 @@ int exports_load(const char *config_file)
         if (*p == '\0' || *p == '#') continue;
  
         if (g_nexports >= MAX_EXPORTS) {
-            fprintf(stderr,
+            log_error(
                 "nfsd: warning: max exports (%d) reached, "
-                "ignoring extra lines\n", MAX_EXPORTS);
+                "ignoring extra lines", MAX_EXPORTS);
             break;
         }
  
@@ -78,10 +79,12 @@ int exports_load(const char *config_file)
         if (*p) { *p = '\0'; p++; }
  
         strncpy(g_exports[g_nexports].export_path_ebcdic, tok, MAX_PATH - 1);
+        strncpy(g_exports[g_nexports].export_path, tok, MAX_PATH - 1);
         g_exports[g_nexports].export_path_ebcdic[MAX_PATH - 1] = '\0';
-
-        ebcdic_to_ascii(g_exports[g_nexports].export_path, tok, MAX_PATH - 1);
         g_exports[g_nexports].export_path[MAX_PATH - 1] = '\0';
+
+        ebcdic_to_ascii(g_exports[g_nexports].export_path, 
+            g_exports[g_nexports].export_path, MAX_PATH - 1);
  
         /* Skip whitespace between tokens */
         while (*p && isspace((unsigned char)*p)) p++;
@@ -94,8 +97,8 @@ int exports_load(const char *config_file)
             rest[--len] = '\0';
  
         if (len == 0) {
-            fprintf(stderr,
-                "nfsd: warning: missing host path for export %s\n",
+            log_error(
+                "nfsd: warning: missing host path for export %s",
                 g_exports[g_nexports].export_path_ebcdic);
             continue;
         }
@@ -112,7 +115,7 @@ int exports_load(const char *config_file)
         /* Use the last qualifier of the host dsname as a filename extension,
          * translating the filename extension to lower case.
          */
-        dot = strrchr(g_exports[g_nexports].host_path, '.');
+        dot = strrchr(g_exports[g_nexports].host_path_ebcdic, '.');
         if (dot) {
             strncpy(g_exports[g_nexports].file_ext, dot + 1, MAX_FILE_EXT_LEN - 1);
             g_exports[g_nexports].file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
@@ -124,8 +127,7 @@ int exports_load(const char *config_file)
             g_exports[g_nexports].file_ext[0] = '\0';
         }
 
-        fprintf(stderr,
-            "nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')\n",
+        log_info("nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')",
             g_exports[g_nexports].export_path_ebcdic,
             g_exports[g_nexports].host_path_ebcdic,
             g_exports[g_nexports].file_ext);
@@ -142,15 +144,13 @@ int exports_load(const char *config_file)
         struct stat st;
         for (i = 0; i < g_nexports; i++) {
             if (stat(g_exports[i].host_path, &st) < 0) {
-                fprintf(stderr,
-                    "nfsd: warning: host path for export %s does not "
-                    "exist or is not accessible: %s\n",
+                log_error("nfsd: warning: host path for export %s does not "
+                    "exist or is not accessible: %s",
                     g_exports[i].export_path,
                     g_exports[i].host_path);
             } else if (!S_ISDIR(st.st_mode)) {
-                fprintf(stderr,
-                    "nfsd: warning: host path for export %s is not "
-                    "a directory: %s\n",
+                log_error("nfsd: warning: host path for export %s is not "
+                    "a directory: %s",
                     g_exports[i].export_path,
                     g_exports[i].host_path);
             }
@@ -212,3 +212,17 @@ export_t *exports_find_by_id(uint32_t id)
     if (id >= (uint32_t)g_nexports) return NULL;
     return &g_exports[(int)id];
 }
+
+/* ------------------------------------------------------------------ */
+/* exports_find_by_host_path: return pointer to export[idx], or NULL  */
+/* ------------------------------------------------------------------ */
+export_t *exports_find_by_host_path(const char *host_path_ebcdic)
+{
+    int i;
+    for (i = 0; i < g_nexports; i++) {
+        if ( !strcmp(host_path_ebcdic, g_exports[i].host_path_ebcdic) )
+            return &g_exports[i];
+    }
+    return NULL;
+}
+

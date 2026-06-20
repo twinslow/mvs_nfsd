@@ -8,6 +8,7 @@
 #include "nfsd.h"
 #include "mvsio.h"
 #include "mvspdir.h"
+#include "logger.h"
 
 /* -------------------------------------------------------------------- */
 /* Open a PDS dataset so that we can read the directory contents        */
@@ -20,21 +21,31 @@ int mvs_open_pds_dir(
     FILE *pds_dir_fh_local;
     const char *open_prefix = "//DSN:";
     char  open_path_name[6 + 45]; // 6 for prefix + 44 for max dsname length + null terminator
+    char  *open_mode = "rb,klen=0,lrecl=256,blksize=256,recfm=u,force";
+
+    log_debug("mvs_open_pds_dir: Opening PDS %s for directory read", dsname);
 
     if (strlen(dsname) > 44) {
+        log_error("mvs_open_pds_dir: Dataset name %s is too long", dsname);
         errno = EINVAL; // Dataset name too long
         return -1;
     }
 
+    strcpy(open_path_name, open_prefix);
+    strcat(open_path_name, dsname);
+
     // Open the dataset ... recfm=U and return a handle for reading directory blocks
-    pds_dir_fh_local = fopen(strcat(strcpy(open_path_name, open_prefix), dsname), 
-        "rb,klen=0,lrecl=256,blksize=256,recfm=u,force");
+    log_debug("mvs_open_pds_dir: Calling fopen on Opening PDS %s for directory read, mode \"%s\"", 
+        open_path_name, open_mode);
+    pds_dir_fh_local = fopen(open_path_name, open_mode);
     if (pds_dir_fh_local == NULL) {
-        // fopen failed, errno is set by fopen
+        log_error("mvs_open_pds_dir: fopen for %s failed, error %s", 
+            dsname, strerror(errno));
         return -1;
     }
 
     *pds_dir_fh = pds_dir_fh_local;
+    log_debug("mvs_open_pds_dir: fopen OK for %s", dsname);
     return 0; // Success
 }
 
@@ -240,11 +251,13 @@ int mvs_pds_member_entry_set(
     short       user_data_count_hw;
     uint8_t    *blockptr = (uint8_t *)start_blockptr;
 
+
     mvs_pds_member_entry_init(entry);
 
     // Copy member name, trim trailing blanks and null terminate.
     bytes_to_string((unsigned char *)entry->name, blockptr, 8);
     blockptr += 8;
+    log_debug("mvs_pds_member_entry_set:   Processing member %s", entry->name);
 
     // Copy TTR - relative track number and record number
     entry->first_block_tt = *( (uint16_t *)blockptr );
@@ -343,12 +356,15 @@ int mvs_process_dir_block(
     dir_block_end = blockptr + *(uint16_t *)blockptr;
     blockptr += 2;
 
+    log_debug("mvs_process_dir_block: Looking for members starting at %s", start_member);
+
     while (blockptr < dir_block_end) {
         if ( memcmp(blockptr, MVS_PDSDIR_ENDMARK, 8) == 0) {
             // We've reached the end of the directory
             *end_of_dir = 1;   
             break;
         }
+        log_debug("mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
         if (memcmp(blockptr, start_member, 8) >= 0) {
             blockptr += mvs_extract_dir_entry(blockptr, member_entries, max_members, num_members_returned);
             if (*num_members_returned >= max_members) {
@@ -379,7 +395,7 @@ int mvs_read_pds_dir(
         // Read the end mark for the directory?
         // Otherwise, process directory block
         mvs_process_dir_block(block, start_member, max_members, member_entries, num_members_returned, end_of_dir);        
-        if ( *num_members_returned >= max_members) {
+        if ( *num_members_returned >= max_members || *end_of_dir) {
             break;
         }
 
@@ -431,7 +447,6 @@ int mvs_pds_member_list(
     // Close the dataset
     return retcode;
 }
-
 
 
 /* -------------------------------------------------------------------- */

@@ -50,6 +50,7 @@
 #endif
 
 #include "nfsd.h"
+#include "logger.h"
 
 /* ------------------------------------------------------------------ */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
@@ -97,7 +98,7 @@ static int getopt(int argc, char *argv[], const char *optstring)
     /* Look the letter up in the option string */
     p = strchr(optstring, (int)(unsigned char)c);
     if (p == NULL) {
-        fprintf(stderr, "unknown option -- %c\n", c);
+        log_error("unknown option -- %c", c);
         optopt = (int)(unsigned char)c;
         return (int)'?';
     }
@@ -112,7 +113,7 @@ static int getopt(int argc, char *argv[], const char *optstring)
             optarg = argv[optind];
             optind++;
         } else {
-            fprintf(stderr, "option requires an argument -- %c\n", c);
+            log_error("option requires an argument -- %c", c);
             optopt = (int)(unsigned char)c;
             return (int)'?';
         }
@@ -191,7 +192,7 @@ static int make_listen_sock(int port)
     addr.sin_port        = htons((uint16_t)port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "nfsd: bind port %d: %s\n", port, strerror(errno));
+        log_error("nfsd: bind port %d: %s", port, strerror(errno));
         exit(1);
     }
     if (listen(fd, 8) < 0) { perror("listen"); exit(1); }
@@ -215,7 +216,7 @@ static void accept_conn(int lsock, int proto)
     if (cfd < 0) return;
 
     if (g_nconns >= MAX_CONNECTIONS) {
-        fprintf(stderr, "nfsd: connection table full (%d), dropping\n",
+        log_error("nfsd: connection table full (%d), dropping",
                 MAX_CONNECTIONS);
         close(cfd);
         return;
@@ -273,40 +274,43 @@ int main(int argc, char *argv[])
     int            cib_rc;          /* getcib return code                  */
 #endif
 
-    fprintf(stderr, "nfsd: starting up\n");
+    log_set_level(LOG_DEBUG);
+    log_set_timestamps(1);
 
+    log_info("nfsd: starting up");
+
+    dir_openlist_init();
+    
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p':
             if (parse_port(optarg, &port_pmap)  < 0) {
-                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                log_error("nfsd: invalid port: %s", optarg);
                 return 101;
             }
             break;
         case 'm':
             if (parse_port(optarg, &port_mount) < 0) {
-                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                log_error("nfsd: invalid port: %s", optarg);
                 return 102;
             }
             break;
         case 'n':
             if (parse_port(optarg, &port_nfs)   < 0) {
-                fprintf(stderr, "nfsd: invalid port: %s\n", optarg);
+                log_error("nfsd: invalid port: %s", optarg);
                 return 103;
             }
             break;
         case 'v': g_verbose  = 1;            break;
         default:
-            fprintf(stderr,
-                "usage: %s [-p pmap] [-m mount] [-n nfs] <config>\n",
+            log_error("usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
                 argv[0]);
             return 104;
         }
     }
 
     if (optind >= argc) {
-        fprintf(stderr,
-            "usage: %s [-p pmap] [-m mount] [-n nfs] <config>\n",
+        log_error("usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
             argv[0]);
         return 105;
     }
@@ -314,10 +318,10 @@ int main(int argc, char *argv[])
     /* Load export configuration */
     n = exports_load(argv[optind]);
     if (n < 0) {
-        fprintf(stderr, "nfsd: cannot open config: %s\n", argv[optind]);
+        log_error("nfsd: cannot open config: %s", argv[optind]);
         return 106;
     }
-    fprintf(stderr, "nfsd: loaded %d export(s) from %s\n",
+    log_info("nfsd: loaded %d export(s) from %s",
             n, argv[optind]);
 
     fh_init();
@@ -356,8 +360,8 @@ int main(int argc, char *argv[])
     mount_sock = make_listen_sock(port_mount);
     nfs_sock   = make_listen_sock(port_nfs);
 
-    fprintf(stderr,
-        "nfsd: Listening -- portmapper=%d  mount=%d  nfs=%d\n",
+    log_info(
+        "Listening -- portmapper=%d  mount=%d  nfs=%d",
         port_pmap, port_mount, port_nfs);
 
     /* ---- Main select() event loop ---- */
@@ -370,7 +374,7 @@ int main(int argc, char *argv[])
                         &modify_len);
         if (cib_rc == 2) {
             /* STOP (P) command received -- exit the loop cleanly */
-            fprintf(stderr, "nfsd: MVS STOP command received, shutting down\n");
+            log_info("MVS STOP command received, shutting down");
             break;
         }
         if (cib_rc == 1) {
@@ -378,9 +382,9 @@ int main(int argc, char *argv[])
              * Future: parse modify_buf for supported sub-commands. */
             if (modify_len > 0) {
                 modify_buf[modify_len] = '\0';
-                fprintf(stderr, "nfsd: MVS MODIFY ignored: %s\n", modify_buf);
+                log_warn("MVS MODIFY ignored: %s", modify_buf);
             } else {
-                fprintf(stderr, "nfsd: MVS MODIFY received (no data)\n");
+                log_error("MVS MODIFY received (no data)");
             }
         }
 #endif
@@ -429,13 +433,13 @@ int main(int argc, char *argv[])
         }
     }
 
-    fprintf(stderr, "nfsd: Closing sockets\n");
+    log_info("Closing sockets");
 
     closesocket(pmap_sock);
     closesocket(mount_sock);
     closesocket(nfs_sock);
 
-    fprintf(stderr, "nfsd: Shutting down\n \n \n");
+    log_info("Shutting down");
 
     return 0;
 }

@@ -44,6 +44,10 @@ struct vfs_dir {
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 static int       g_dir_used[MAX_OPEN_DIRS]; /* 1 if slot is in use */
  
+void dir_openlist_init() {
+    memset(g_dir_used, 0, sizeof(g_dir_used));
+}
+
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t from lstat() of path.                    */
 /* Returns 0 on success, -1 on error (errno set).                       */
@@ -279,8 +283,9 @@ uint32_t vfs_errno_to_nfs3(int err)
 /* -------------------------------------------------------------------- */
 /* vfs_opendir: open a directory for iteration.                         */
 /* Returns a handle from the static pool, or NULL on error.             */
+/* Positions the next read operation as per cookie value.               */
 /* -------------------------------------------------------------------- */
-vfs_dir_t *vfs_opendir(const char *path)
+vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 {
     DIR *dp;
     int  i;
@@ -299,6 +304,9 @@ vfs_dir_t *vfs_opendir(const char *path)
     g_dir_pool[i].dp          = dp;
     g_dir_pool[i].next_cookie = 1;
     g_dir_used[i]             = 1;
+
+    vfs_seekdir_to(&g_dir_pool[i], cookie);
+
     return &g_dir_pool[i];
 }
  
