@@ -582,8 +582,7 @@ int dir_openlist_search_members(
     }
     return -1;  /* All entries are <= member_name */
 }
-#if 0
-// This is from Claude ...
+
 /* Operator bitmask values */
 #define OP_LT   1   /* <  : strictly less than    */
 #define OP_EQ   2   /* =  : equal                 */
@@ -591,7 +590,7 @@ int dir_openlist_search_members(
 #define OP_LE   (OP_LT | OP_EQ)   /* 3: <= */
 #define OP_GE   (OP_GT | OP_EQ)   /* 6: >= */
 
-int dir_openlist_search_members(
+int dir_openlist_search_members2(
     vfs_dir_t          *dir_entry,
     const char         *member_name,
     int                 operator,
@@ -654,7 +653,6 @@ int dir_openlist_search_members(
 
     return -1;
 }
-#endif 
 
 /* -------------------------------------------------------------------- */
 /* Translate ASCII path name into EBCDIC and extract DSN and mem name   */
@@ -965,5 +963,5 @@ void vfs_closedir(vfs_dir_t *dir_entry)
     log_debug("vfs_closedir: path=%s", dir_entry->pds_dsname_ebcdic);
 
     mvs_close_pds_dir(dir_entry->pds_fh);
-    dir_openlist_free(dir_entry);
+    //dir_openlist_free(dir_entry);
 }
