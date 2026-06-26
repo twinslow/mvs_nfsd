@@ -64,29 +64,55 @@ static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 /* or a PDS member.                                                     */
 /* Returns 0 on success, -1 on error (errno set).                       */
 /* -------------------------------------------------------------------- */
+static uint64_t vfs_stat_member_size_calc(
+    int export_idx,
+    int member_size)
+{
+    export_t        *exp;
+    mvs_dcb_info_t  *dcb;
+    uint64_t         calc_estimated_size;
+
+    exp = exports_get(export_idx);
+    dcb = &exp->dcbinfo;
+
+    if (dcb->recfm & MVS_DCB_RECFM_F ) {
+        calc_estimated_size = member_size * (1 + dcb->lrecl);
+    } else if (dcb->recfm & MVS_DCB_RECFM_V ) {
+        calc_estimated_size = member_size * (1 + dcb->lrecl / 2);
+    } else {
+        calc_estimated_size = 4096;
+    }
+
+    return calc_estimated_size;
+}
+
+
 static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
 {
+    pds_member_entry_t   mem_entry;
     pds_member_entry_t  *member_entry;
     char                 pds_dsname[45];
     char                 pds_member_name[9];
+    uint64_t             estimated_size;
 
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
 
-
-    member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx);
+    member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx, &mem_entry);
     if (member_entry == NULL) {
         errno = ENOENT;
         return -1;  
     }
 
+    estimated_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
+
     vs->ftype = NF3REG;
-    vs->mode = 0444; /* read-only permissions for everyone */
+    vs->mode = 0777; /* read/write/execute permissions for everyone */
     vs->nlink = 1;   /* convention for files: one link from parent directory */
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
-    vs->size = member_entry->size;
-    vs->used = member_entry->size; /* for simplicity, assume used space equals size */
+    vs->size = estimated_size;
+    vs->used = estimated_size; 
     vs->rdev_maj = 0;
     vs->rdev_min = 0;
     vs->fsid = (uint64_t)export_idx + 1; /* unique filesystem ID based on export index */
@@ -109,7 +135,7 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
     struct timeval tv;
 
     vs->ftype = NF3DIR;
-    vs->mode = 0555; /* read/execute permissions for everyone */
+    vs->mode = 0777; /* read/write/execute permissions for everyone */
     vs->nlink = 2;   /* convention for directories: link from parent and self-link */
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
@@ -140,11 +166,13 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
 void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
     log_debug("vfs_stat: Result for path=%s ending retcode=%d", 
         log_ascii(path), rc);
-    log_debug("vfs_stat:      vs->size      = %d", vs->size);
-    log_debug("vfs_stat:      vs->used      = %d", vs->used);
-    log_debug("vfs_stat:      vs->fsid      = %d", vs->fsid);
-    log_debug("vfs_stat:      vs->fileid    = 0x%016X", vs->fileid);
-    log_debug("vfs_stat:      vs->raw_ino   = 0x%08X", vs->raw_ino);
+    if ( rc == 0 ) {
+        log_debug("vfs_stat:      vs->size      = %lld", vs->size);
+        log_debug("vfs_stat:      vs->used      = %lld", vs->used);
+        log_debug("vfs_stat:      vs->fsid      = %lld", vs->fsid);
+        log_debug("vfs_stat:      vs->fileid    = 0x%016X", vs->fileid);
+        log_debug("vfs_stat:      vs->raw_ino   = 0x%08X", vs->raw_ino);
+    }
 }
 
 int vfs_stat(const char *path, vfs_stat_t *vs)
@@ -194,7 +222,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     int         export_idx; 
     int         path_type;
 
-    log_debug("vfs_pread: path=%s, count=%d, offset=%d", 
+    log_debug("vfs_pread: path=%s, count=%d, offset=%lld", 
         log_ascii(path), count, offset);
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
@@ -202,7 +230,8 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
 
     /* Is this path to a directory or a member of a PDS */
     path_type = mvs_path_type(ebcdic_path, &export_idx);
-
+    log_debug("vfs_pread: mvs_path_type returned type = %d, export_idx = %d",
+        path_type, export_idx);
     if (path_type == MVS_PATH_TYPE_DATASET) {
         errno = EACCES;
         return -1;
@@ -212,7 +241,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     }
 
     /* Split the path into dataset and member name. */
-    mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
+    mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname, pds_member_name, export_idx);
 
     /* We've confirmed that we have a dataset and member name, so we can read. */
     /* The below read routine handles file open, caching last op info and fclose. */
@@ -231,6 +260,9 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     if ( rc == 0 && *nread > 0 ) {
         ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
+
+    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d", 
+        log_ascii(path), *nread, *eof);
 
     return rc;
 }
@@ -739,7 +771,8 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     int         retcode;
     int         path_type;
 
-    log_debug("vfs_opendir: path=%s", log_ascii(path));
+    log_debug("vfs_opendir: Starting with path=%s cookie='%-8.8s' (0x%016llX) ", 
+        log_ascii(path), (char *)&cookie, cookie);
 
     retcode = path_to_dsn_member(
         path, MVS_PATH_TYPE_DATASET,
@@ -810,23 +843,27 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
                      uint64_t *fileid,
                      uint64_t *cookie)
 {
-    uint8_t             load_from_dir;
+    uint8_t             load_from_dir = 0;
     char                member_name[9];
     pds_member_entry_t *last_cached;
     int                 retcode;
     pds_member_entry_t *member_info;
 
-    log_debug("vfs_readdir_next: path=%s", dir_entry->pds_dsname_ebcdic);
+    //log_debug("vfs_readdir_next: path=%s cookie='%-8.8s' (0x%016llX)", 
+    //    dir_entry->pds_dsname_ebcdic, (char *)cookie, *cookie);
 
     /* Convert cookie back to EBCDIC string with null terminator */
-    from_cookie(dir_entry->next_cookie, member_name);
+    //from_cookie(dir_entry->next_cookie, member_name);
+    from_cookie(*cookie, member_name);
 
     /* Decide whether or not we need to load more members from PDS DIR */
+    last_cached = &(dir_entry->members[dir_entry->pds_entries_cached - 1]);
+    //log_debug("vfs_readdir_next:       number of members cached = %d, last entry cached = %s",
+    //    dir_entry->pds_entries_cached, last_cached->name);
     if ( dir_entry->pds_entries_cached == 0 )
         load_from_dir = 1;
     /* We have cached members but do potentially have the next one as requested? */
     else {
-        last_cached = &(dir_entry->members[dir_entry->pds_entries_cached]);
         /* If the "cookie" is >= the last cached member name, then we need to read more */
         if (strcmp(member_name, last_cached->name) >= 0) {
             /* No we don't */
@@ -838,7 +875,9 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     if ( load_from_dir ) {
         if (dir_entry->end_of_dir_read) {
             /* We already reached end of PDS directory ... nothing to load */
-            return -1;
+            log_debug("vfs_readdir_next: end of directory on path=%s", dir_entry->pds_dsname_ebcdic);
+            retcode = -1;
+            goto error_exit_no_log;
         }
 
         retcode = mvs_read_pds_dir(
@@ -848,20 +887,27 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
             /* member-entries */ dir_entry->members,
             &(dir_entry->pds_entries_cached),
             &(dir_entry->end_of_dir_read) );
-        if ( retcode )
-            return -1;
+        if ( retcode ) {
+            log_debug("vfs_readdir_next: mvs_read_pds_dir returned error %d", retcode);
+            retcode = -1;
+            goto error_exit;
+        }
     }
 
     /* Now we've loaded directory member info (or possible, nothing) search what we have */
     retcode = dir_openlist_search_members(
         dir_entry, member_name, SEARCH_MEMBER_GT, &member_info);
-    if ( retcode )
-        /* Error */
-        return -1;
+    if ( retcode ) {
+        log_debug("vfs_readdir_next: dir_openlist_search_members returned error %d", retcode);
+        retcode = -1;
+        goto error_exit;
+    }
 
     if ( !member_info ) {
         /* No member found */
-        return -1;
+        log_debug("vfs_readdir_next: member not found");
+        retcode = -1;
+        goto error_exit;
     }
 
     /* Return the file name, generated from the member name found */
@@ -877,10 +923,20 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     *cookie = to_cookie(member_info->name);
     dir_entry->next_cookie = *cookie;
 
-    log_debug("vfs_readdir_next: path %s, file-name %s", 
-        dir_entry->pds_dsname_ebcdic, log_ascii(name));
+    log_debug("vfs_readdir_next: Ending and returning filename %s for path %s", 
+        log_ascii(name), dir_entry->pds_dsname_ebcdic);
         
     return 0;
+
+error_exit:
+
+    log_debug("vfs_readdir_next: Returning error ... retcode %d on path=%s", 
+        retcode, dir_entry->pds_dsname_ebcdic);
+
+error_exit_no_log:
+
+    return retcode;
+
 }    
  
 /* -------------------------------------------------------------------- */

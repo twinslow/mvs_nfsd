@@ -27,13 +27,41 @@
 #include "nfsd.h"
 #include "ebcdic.h"
 #include "logger.h"
+#include "mvsio.h"
 
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
  
 /* ------------------------------------------------------------------ */
-/* exports_load: parse config_file and populate the exports table.      */
-/* Returns number of exports loaded, or -1 on error.                   */
+/* Get the DCB info for the dataset in the export                     */
+/* ------------------------------------------------------------------ */
+int exports_get_dcb_info(int export_num) {
+    int rc;
+
+    rc = mvs_get_dcb_info_dsn(
+        g_exports[export_num].host_path_ebcdic,
+        &g_exports[export_num].dcbinfo);
+    if ( rc < 0 )
+        log_error("export_load: Host path %s - get dcb rc = %d", 
+            g_exports[export_num].host_path_ebcdic, rc);
+    else {
+        log_info("export_load: Host path %s - get dcb rc = %d",
+            g_exports[export_num].host_path_ebcdic, rc);
+
+        log_info("export_load: Host path %s - DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
+            g_exports[export_num].host_path_ebcdic, 
+            g_exports[export_num].dcbinfo.dsorg, 
+            g_exports[export_num].dcbinfo.recfm, 
+            g_exports[export_num].dcbinfo.lrecl, 
+            g_exports[export_num].dcbinfo.blksize);
+    }
+
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* exports_load: parse config_file and populate the exports table.    */
+/* Returns number of exports loaded, or -1 on error.                  */
 /* ------------------------------------------------------------------ */
 int exports_load(const char *config_file)
 {
@@ -131,12 +159,15 @@ int exports_load(const char *config_file)
             g_exports[g_nexports].export_path_ebcdic,
             g_exports[g_nexports].host_path_ebcdic,
             g_exports[g_nexports].file_ext);
-            
+        
+        exports_get_dcb_info(g_nexports);
+
         g_nexports++;
     }
  
     fclose(fp);
  
+
     /* Validate that each host_path exists and is a directory */
 #ifndef __MVS__
     {

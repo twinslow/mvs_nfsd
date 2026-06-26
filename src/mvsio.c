@@ -4,11 +4,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <time.h>
+#include <io.h>
 
 #include "nfsd.h"
 #include "mvsio.h"
 #include "ebcdic.h"
-
+#include "logger.h"
 
 
 /* -------------------------------------------------------------------- */
@@ -58,10 +59,14 @@ int mvs_get_pds_dsn_and_member(
     char      *last_dot;
     size_t     member_name_len;
     size_t     i;
-    int        retcode;
+    int        retcode = 0;
+    export_t  *exp;
 
-    export_path = exports_get(export_idx)->export_path_ebcdic;
-    host_path = exports_get(export_idx)->host_path_ebcdic;
+    exp = exports_get(export_idx);
+    export_path = exp->export_path_ebcdic;
+    host_path = exp->host_path_ebcdic;
+    file_name[0] = '\0';
+    file_ext[0] = '\0';
 
     /* The dataset name is the host path from the export definition */
     strncpy(pds_dsname, host_path, 44);
@@ -81,6 +86,10 @@ int mvs_get_pds_dsn_and_member(
     if (last_slash) {
         strncpy(file_name, last_slash + 1, MAX_NAME - 1);
         file_name[MAX_NAME - 1] = '\0'; // Ensure null-termination
+    } else {
+        log_error("mvs_get_pds_dsn_and_member: Logic error ... no slash found in path %s", path);
+        pds_member_name[0] = '\0'; 
+        goto return_exit;
     }
     /* Get the file extension (if any) from the file name */
     last_dot = strrchr(file_name, '.');
@@ -95,15 +104,15 @@ int mvs_get_pds_dsn_and_member(
     member_name_len = strlen(file_name);
     if (member_name_len > 8) member_name_len = 8;
     for (i = 0; i < member_name_len; i++) {
-        pds_member_name[i] = toupper((unsigned char)file_name[i]);  
+        pds_member_name[i] = toupper(file_name[i]);  
     }
 
-    pds_member_name[member_name_len] = '\0'; // Ensure null-termination
+    pds_member_name[member_name_len] = '\0'; 
 
     /*Does the file name extension match the expected extension which is in the export definition?*/
     /*Case of file extension does not matter                                                      */
     if (exports_get(export_idx)->file_ext[0] != '\0') {
-        if (strcasecmp(file_ext, exports_get(export_idx)->file_ext) != 0) {
+        if (strcasecmp(file_ext, exp->file_ext) != 0) {
             errno = ENOENT; // File extension does not match expected extension, treat as file not found
             retcode = -1;
             goto return_exit;
@@ -113,7 +122,8 @@ int mvs_get_pds_dsn_and_member(
     retcode = 0;
     
 return_exit:
-
+    log_debug("mvs_get_pds_dsn_and_member: Extracted file_name '%s', ext '%s', export has file ext '%s'",
+        file_name, file_ext, exp->file_ext);
     log_debug("mvs_get_pds_dsn_and_member: Returning dsname %s and member %s, with retcode %d",
         pds_dsname, pds_member_name, retcode);
 
@@ -141,4 +151,33 @@ int bcd_byte_to_int(unsigned char bcdval_in)
     return 10 * ((bcdval >> 4) & 0x0F) + (bcdval & 0x0F);
 }
 
+/* -------------------------------------------------------------------- */
+/* Get basic DCB info for dataset                                       */
+/* -------------------------------------------------------------------- */
+int mvs_get_dcb_info_dsn(const char *dsname, mvs_dcb_info_t *dcb) {
+    int fh;
+    int rc;
+    int open_flags = _O_BINARY|_O_RDONLY;
+    int permission_flags = 0;
+    char filename[6 + 44 + 1];
+    char *opendcb = "";
+
+    strcpy(filename, "//DSN:");
+    strcat(filename, dsname);
+
+    fh = _open(filename, open_flags, permission_flags, opendcb);
+    if ( fh < 0 )
+        return -1;
+
+    rc = __getdcb(fh, 
+        &dcb->dsorg, &dcb->recfm, &dcb->keylen,
+        &dcb->lrecl, &dcb->blksize );
+    
+    _close(fh);
+    return rc;
+}
+
+char *mvs_dcb_dsorg_to_str(uint8_t dsorg) {
+    
+}
 

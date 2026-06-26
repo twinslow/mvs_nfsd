@@ -36,4 +36,27 @@ void bytes_to_string(
 
 int    bcd_byte_to_int(unsigned char bcdval_in);
 
+/* -------------------------------------------------------------------- */
+/* Get DCB info for dataset                                             */
+/* -------------------------------------------------------------------- */
+
+typedef struct {
+    uint8_t     dsorg;
+    uint8_t     recfm;
+    uint8_t     keylen;
+    uint16_t    lrecl;
+    uint16_t    blksize;
+} mvs_dcb_info_t;
+
+#define MVS_DCB_DSORG_PO        0x40
+#define MVS_DCB_DSORG_PS        0x02
+#define MVS_DCB_RECFM_V         0x40
+#define MVS_DCB_RECFM_VB        0x50
+#define MVS_DCB_RECFM_F         0x80
+#define MVS_DCB_RECFM_FB        0x90
+#define MVS_DCB_RECFM_U         0xC0
+
+int mvs_get_dcb_info_dsn(const char *dsname, mvs_dcb_info_t *dcb);
+
+
 #endif

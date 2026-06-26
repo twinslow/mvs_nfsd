@@ -257,7 +257,7 @@ int mvs_pds_member_entry_set(
     // Copy member name, trim trailing blanks and null terminate.
     bytes_to_string((unsigned char *)entry->name, blockptr, 8);
     blockptr += 8;
-    log_debug("mvs_pds_member_entry_set:   Processing member %s", entry->name);
+    // log_debug("mvs_pds_member_entry_set:   Processing member %s", entry->name);
 
     // Copy TTR - relative track number and record number
     entry->first_block_tt = *( (uint16_t *)blockptr );
@@ -356,15 +356,16 @@ int mvs_process_dir_block(
     dir_block_end = blockptr + *(uint16_t *)blockptr;
     blockptr += 2;
 
-    log_debug("mvs_process_dir_block: Looking for members starting at %s", start_member);
+    //log_debug("mvs_process_dir_block: Looking for members starting at %s", start_member);
 
     while (blockptr < dir_block_end) {
         if ( memcmp(blockptr, MVS_PDSDIR_ENDMARK, 8) == 0) {
             // We've reached the end of the directory
+            //log_debug("mvs_process_dir_block: Found PDS directory end mark - set end_of_dir = 1");
             *end_of_dir = 1;   
             break;
         }
-        log_debug("mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
+    //  log_debug("mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
         if (memcmp(blockptr, start_member, 8) >= 0) {
             blockptr += mvs_extract_dir_entry(blockptr, member_entries, max_members, num_members_returned);
             if (*num_members_returned >= max_members) {
@@ -389,13 +390,21 @@ int mvs_read_pds_dir(
     uint8_t block[256];
     size_t bytes_read;
 
+    *num_members_returned = 0;
+    *end_of_dir = 0;
+
+    log_debug("mvs_read_pds_dir: Start reading at member %s and return max members %d", 
+        start_member, max_members);
+
     read_and_skip_block_length(pds_dir_fh); 
     while (bytes_read = fread(block, 1, sizeof(block), pds_dir_fh) == 256) {
-
+        //log_debug("mvs_read_pds_dir: Read directory block ... first mem %-8.8s", &block[2]);
         // Read the end mark for the directory?
         // Otherwise, process directory block
         mvs_process_dir_block(block, start_member, max_members, member_entries, num_members_returned, end_of_dir);        
         if ( *num_members_returned >= max_members || *end_of_dir) {
+            //log_debug("mvs_read_pds_dir: Ending read directory -- *num_members_returned = %d, *end_of_dir = %d",
+            //    *num_members_returned, *end_of_dir);
             break;
         }
 
@@ -455,33 +464,38 @@ int mvs_pds_member_list(
 pds_member_entry_t *mvs_pds_get_member_entry(
     const char *dsname, 
     const char *member, 
-    int export_idx)
+    int export_idx,
+    pds_member_entry_t *entry)
 {
     int rc;
-    int num_members_returned;
+    int num_members_returned = 0;
     int end_of_dir;
 
-    static pds_member_entry_t entry; // Static to allow returning pointer
+    log_debug("mvs_pds_get_member_entry: Getting member info for '%s(%s)'",
+        dsname, member);
 
     rc = mvs_pds_member_list(
         dsname, export_idx, member, 1, 
-        &entry, &num_members_returned, &end_of_dir);
-
+        entry, &num_members_returned, &end_of_dir);
+    log_debug("mvs_pds_get_member_entry: mvs_pds_member_list completed rc = %d, num_members_returned = %d", 
+        rc, num_members_returned);
     if (rc < 0) {
         errno = EINVAL; // Other error
         return NULL; // Error occurred
     }
+
     if (num_members_returned == 0) {
         errno = ENOENT; // Member not found
         return NULL;
     }
     // It is possible that the member we got back is just a greater
     // than entry and the one we were looking for. 
-    if (strcmp(entry.name, member) != 0) {
+    log_debug("mvs_pds_get_member_entry: entry.name = %s", entry->name);
+    if (strcmp(entry->name, member) != 0) {
         errno = ENOENT; // Member not found
         return NULL;
     }
 
-    return &entry; // Return pointer to the static entry
+    return entry; // Return pointer to the static entry
 }
 

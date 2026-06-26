@@ -24,7 +24,7 @@
  * below and commenting out the #include.
  */
 #include "types.h"
- 
+#include "mvsio.h" 
 /*
  * For MVS, we use short aliases for all functions and globals to
  * avoid name mangling issues with the C runtime. The aliases are defined
@@ -343,6 +343,7 @@ typedef struct {
     char host_path[MAX_PATH];   /* local path on this host, but in ASCII: /home/user/foo or MVS PDS dataset name */
     char host_path_ebcdic[MAX_PATH];   /* local path on this host: /home/user/foo or MVS PDS dataset name */
     char file_ext[MAX_FILE_EXT_LEN]; /* optional extension to add to all files in this export */
+    mvs_dcb_info_t      dcbinfo;
 } export_t;
  
 /* XDR encode/decode buffer */

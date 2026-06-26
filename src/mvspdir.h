@@ -103,7 +103,8 @@ int mvs_pds_member_list(
 pds_member_entry_t *mvs_pds_get_member_entry(
     const char  *dsname,
     const char  *member,
-    int          export_idx);
+    int          export_idx,
+    pds_member_entry_t *member_entry);
 
 
 

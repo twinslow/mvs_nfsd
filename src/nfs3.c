@@ -17,6 +17,7 @@
 #include <errno.h>
 #include "nfsd.h"
 #include "ebcdic.h"
+#include "logger.h"
 
 /* Static I/O buffers -- one READ and one WRITE buffer */
 static uint8_t g_read_buf [MAX_READ_SIZE];
@@ -256,6 +257,10 @@ static void proc_getattr(xdr_t *in, xdr_t *out, uint32_t xid)
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
+
+    log_debug("nfs3.proc_getattr: Starting for path %s",
+        log_ascii(path));
+
     if (vfs_stat(path, &st) < 0) {
         xdr_write_uint32(out, vfs_errno_to_nfs3(errno)); return;
     }
@@ -295,6 +300,9 @@ static void proc_setattr(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
+
+    log_debug("nfs3.proc_setattr: Starting for path %s",
+        log_ascii(path));
 
     has_pre  = (vfs_stat(path, &pre) == 0);
 
@@ -356,6 +364,10 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
 
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
+
+    log_debug("nfs3.proc_lookup: Starting for obj_path %s",
+        log_ascii(obj_path));
+
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
     if (vfs_stat(obj_path, &obj_st) < 0) {
@@ -391,6 +403,7 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
     char          path[MAX_PATH];
     vfs_stat_t    st;
     int           has_st;
+    uint32_t      granted;
 
     xdr_read_fhandle3(in, &fh, &ok);
     requested = xdr_read_uint32(in);
@@ -409,13 +422,20 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
         return;
     }
 
+    log_debug("nfs3.proc_access: Starting for path %s, requested 0x%08X, auth_uid=%d, auth_gid=%d",
+        log_ascii(path), requested, auth_uid, auth_gid);
+
     has_st = (vfs_stat(path, &st) == 0);
+
+    granted = has_st
+                ? check_access(&st, auth_uid, auth_gid, requested)
+                : 0u;
 
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &st, has_st);
-    xdr_write_uint32(out, has_st
-                         ? check_access(&st, auth_uid, auth_gid, requested)
-                         : 0u);
+    xdr_write_uint32(out, granted);
+
+    log_debug("nfs3.proc_access: Returned granted 0x%08X", granted);
 }
 
 /* ------------------------------------------------------------------ */
@@ -432,6 +452,7 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
     int           has_st;
     uint32_t      nread = 0;
     int           eof   = 0;
+    uint64_t      stat_size;
 
     xdr_read_fhandle3(in, &fh, &ok);
     offset = xdr_read_uint64(in);
@@ -450,6 +471,10 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
     }
 
     if (count > MAX_READ_SIZE) count = MAX_READ_SIZE;
+
+    log_debug("nfs3.proc_read: Starting for path %s",
+        log_ascii(path));
+
     has_st = (vfs_stat(path, &st) == 0);
 
     if (vfs_pread(path, g_read_buf, count, offset, &nread, &eof) < 0) {
@@ -458,6 +483,13 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
+    if (eof) {
+        stat_size = st.size;
+        st.size = offset + nread;
+        log_info("proc_read: Forcing file %s attribute size (post op) to %lld bytes from %lld bytes",
+            log_ascii(path), st.size, stat_size);
+    }
+    
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &st, has_st);
     xdr_write_uint32(out, nread);
@@ -498,6 +530,9 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
+
+    log_debug("nfs3.proc_write: Starting for path %s",
+        log_ascii(path));
 
     has_pre  = (vfs_stat(path, &pre) == 0);
     if (data_len < count) count = data_len;
@@ -575,6 +610,10 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
 
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
+
+        log_debug("nfs3.proc_create: Starting for path %s",
+        log_ascii(obj_path));
+
     has_dir_pre = (vfs_stat(dir_path, &dir_pre) == 0);
 
     /* GUARDED: fail if the file already exists */
@@ -683,6 +722,10 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
 
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
+
+    log_debug("nfs3.proc_remove: Starting for path %s",
+        log_ascii(obj_path));
+
     has_pre = (vfs_stat(dir_path, &dir_pre) == 0);
 
     status = (vfs_remove(obj_path) < 0)
@@ -695,7 +738,7 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
 }
 
 /* ------------------------------------------------------------------ */
-/* READDIR                                                              */
+/* READDIR                                                            */
 /* ------------------------------------------------------------------ */
 static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
 {
@@ -735,6 +778,9 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
+    log_debug("nfs3.proc_readdir: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
+        log_ascii(dir_path), (char *)&cookie, cookie);
+
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
     dp = vfs_opendir(dir_path, cookie);
@@ -751,6 +797,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
 
     /* vfs_seekdir_to(dp, cookie);  -- now called from vfs_opendir if appropriate. */
     eof = 1; wrote_one = 0;
+    ecookie = cookie;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
         name_len = (uint32_t)strlen(ename);
@@ -775,10 +822,14 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, 0u);              /* end of list */
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
+
+    log_debug("nfs3.proc_readdir: Ending for path %s, wrote_one=%d eof=%d",
+       log_ascii(dir_path), wrote_one, eof);
+
 }
 
 /* ------------------------------------------------------------------ */
-/* READDIRPLUS                                                          */
+/* READDIRPLUS                                                        */
 /* ------------------------------------------------------------------ */
 static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
 {
@@ -822,6 +873,9 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
+    log_debug("nfs3.proc_readdirplus: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
+        log_ascii(dir_path), (char *)&cookie, cookie);
+
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
 
     dp = vfs_opendir(dir_path, cookie);
@@ -842,6 +896,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
 
     /* vfs_seekdir_to(dp, cookie); -- now called as part of vfs_opendir */
     eof = 1; wrote_one = 0;
+    ecookie = cookie;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
         snprintf(entry_path, MAX_PATH, "%s%c%s", 
@@ -891,6 +946,9 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, 0u);              /* end of entry list */
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
+
+    log_debug("nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d",
+       log_ascii(dir_path), wrote_one, eof);
 }
 
 /* ------------------------------------------------------------------ */
@@ -912,6 +970,9 @@ static void proc_fsstat(xdr_t *in, xdr_t *out, uint32_t xid)
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
+
+    log_debug("nfs3.proc_fsstat: Starting for path %s",
+        log_ascii(path));
 
     has_st = (vfs_stat(path, &st) == 0);
 
@@ -951,6 +1012,9 @@ static void proc_fsinfo(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
 
+    log_debug("nfs3.proc_fsinfo: Starting for path %s",
+        log_ascii(path));
+
     has_st = (vfs_stat(path, &st) == 0);
 
     xdr_write_uint32(out, NFS3_OK);
@@ -986,6 +1050,9 @@ static void proc_pathconf(xdr_t *in, xdr_t *out, uint32_t xid)
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
+
+    log_debug("nfs3.proc_pathconf: Starting for path %s",
+        log_ascii(path));
 
     has_st = (vfs_stat(path, &st) == 0);
 
@@ -1025,6 +1092,9 @@ static void proc_commit(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_wcc_data(out, NULL, 0, NULL, 0);
         return;
     }
+
+    log_debug("nfs3.proc_commit: Starting for path %s",
+        log_ascii(path));
 
     has_pre = has_post = (vfs_stat(path, &pre) == 0);
     if (has_pre) post = pre;
@@ -1080,6 +1150,9 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
     snprintf(to_path,   MAX_PATH, "%s%c%s", 
         tdir_path, ebcdic_to_ascii_c('/'), tname);
 
+    log_debug("nfs3.proc_rename: Starting for from_path %s to_path %s",
+        log_ascii(from_path), log_ascii(to_path));
+
     has_fpre = (vfs_stat(fdir_path, &fpre) == 0);
     has_tpre = (vfs_stat(tdir_path, &tpre) == 0);
 
@@ -1115,6 +1188,8 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
 /* ------------------------------------------------------------------ */
 static void proc_notsupp(xdr_t *out, uint32_t xid)
 {
+    log_debug("nfs3.proc_notsupp: Starting");
+
     rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
     xdr_write_uint32(out, NFS3ERR_NOTSUPP);
     xdr_write_post_op_attr(out, NULL, 0);   /* best-effort WCC/attr */
