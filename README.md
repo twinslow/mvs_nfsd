@@ -91,6 +91,16 @@ nc -zv 192.168.1.168 12048
 nc -zv 192.168.1.168 11111
 ```
 
+# Using Windows NFS client
+
+The following command worked on Windows 11 Pro after installing 
+"Services For NFS" / "Client for NFS". This command is default ports returned
+from the integrated portmapper on `port 111`.
+
+```
+mount -o "nolock,nfsvers=3,tcp,soft,timeo=10" 192.168.1.168:/exports/jcllib x:
+```
+
 ### Non-root (high ports — for development and testing)
 
 ```bash

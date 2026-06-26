@@ -74,14 +74,20 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
     char                 pds_dsname[45];
     char                 pds_member_name[9];
     uint64_t             estimated_size;
+    int                  retcode;
 
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
 
-    member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx, &mem_entry);
-    if (member_entry == NULL) {
-        errno = ENOENT;
-        return -1;  
+    /* First look to see if we have the info cached */
+    retcode = mvsvfs_find_cached_member(pds_dsname, pds_member_name, &member_entry);
+    if ( retcode < 0 ) {
+        /* Nope, so we will get it from the PDS dir */
+        member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx, &mem_entry);
+        if (member_entry == NULL) {
+            errno = ENOENT;
+            return -1;  
+        }
     }
 
     estimated_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
@@ -718,7 +724,7 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
 
     /* Now we've loaded directory member info (or possible, nothing) search what we have */
     retcode = dir_openlist_search_members(
-        dir_entry, member_name, SEARCH_MEMBER_GT, &member_info);
+        dir_entry, member_name, SEARCH_OP_GT, &member_info);
     if ( retcode ) {
         log_debug("vfs_readdir_next: dir_openlist_search_members returned error %d", retcode);
         retcode = -1;
@@ -787,5 +793,40 @@ void vfs_closedir(vfs_dir_t *dir_entry)
     log_debug("vfs_closedir: path=%s", dir_entry->pds_dsname_ebcdic);
 
     mvs_close_pds_dir(dir_entry->pds_fh);
-    //dir_openlist_free(dir_entry);
+}
+
+/* -------------------------------------------------------------------- */
+/* mvsvfs_find_cached_member: look up a member entry in the open        */
+/* directory cache.                                                     */
+/*                                                                      */
+/* Parameters:                                                          */
+/*   pds_dsname   -- EBCDIC dataset name to locate in the pool          */
+/*   member_name  -- EBCDIC member name to find within that directory   */
+/*   member_entry -- set to the address of the matching cache entry     */
+/*                   on success; unchanged on failure                   */
+/*                                                                      */
+/* Returns 0 on success, -1 if the pool entry was not found (or has    */
+/* timed out) or if no matching member exists in the cached directory.  */
+/* -------------------------------------------------------------------- */
+int mvsvfs_find_cached_member(
+    const char          *pds_dsname,
+    const char          *member_name,
+    pds_member_entry_t **member_entry)
+{
+    vfs_dir_t *dir;
+    int        retcode;
+    dir = dir_openlist_find_by_dsname(pds_dsname);
+    if (dir == NULL) {
+        log_debug("mvsvfs_find_cached_member: No valid vfs_dir_t pool entry found for PDS %s", pds_dsname);
+        return -1;
+    }
+    
+    retcode = dir_openlist_search_members(
+        dir, member_name, SEARCH_OP_EQ, member_entry);
+    if ( retcode != 0 ) {
+        log_debug("mvsvfs_find_cached_member: Member entry not found for PDS %s member %s", pds_dsname, member_name);
+    } else {
+        log_debug("mvsvfs_find_cached_member: Cached member entry found for PDS %s member %s", pds_dsname, member_name);
+    }
+    return retcode;
 }

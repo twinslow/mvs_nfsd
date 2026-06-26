@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 #include "nfsd.h"     /* MAX_OPEN_DIRS */
 #include "mvsdol.h"
@@ -31,19 +32,26 @@ void dir_openlist_init(void)
 
 /* -------------------------------------------------------------------- */
 /* Find a vfs_dir_t entry which is not being used                       */
+/* Also reclaims USED entries that have exceeded the idle timeout.      */
 /* -------------------------------------------------------------------- */
 
 vfs_dir_t *dir_openlist_find_free(void)
 {
-    int i;
+    int    i;
+    time_t now;
 
+    now = time(NULL);
     for (i = 0; i < MAX_OPEN_DIRS; i++) {
-        if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_FREE) {
+        if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_FREE ||
+                (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_USED &&
+                 difftime(now, g_dir_pool[i].last_used_time) >
+                         MVSVFS_DIR_OPENLIST_TIMEOUT_SECS)) {
             memset(&g_dir_pool[i], 0, sizeof(vfs_dir_t));
+            g_dir_pool[i].last_used_time = now;
             return &g_dir_pool[i];
         }
     }
-    /* None free */
+    /* None free or expired */
     errno = EMFILE;
     return NULL;
 }
@@ -59,48 +67,27 @@ void dir_openlist_free(vfs_dir_t *entry)
 }
 
 /* -------------------------------------------------------------------- */
-/* Binary search of member info list (GT only)                          */
+/* Find a USED, non-expired entry by PDS dataset name                   */
 /* -------------------------------------------------------------------- */
 
-int dir_openlist_search_membersX(
-    vfs_dir_t           *dir_entry,
-    const char          *member_name,
-    int                  operator, /* ignored: only GT is implemented */
-    pds_member_entry_t **member_info)
+vfs_dir_t *dir_openlist_find_by_dsname(const char *pds_dsname_ebcdic)
 {
-    int  num_in_list = dir_entry->pds_entries_cached;
-    int  slice_low, slice_high, mid_point;
-    int  cmp_result;
+    int    i;
+    time_t now;
 
-    *member_info = NULL;
-    if (num_in_list == 0)
-        return -1;
-
-    slice_low  = 0;
-    slice_high = num_in_list - 1;
-
-    while (slice_low <= slice_high) {
-        mid_point  = (slice_low + slice_high) / 2;
-        cmp_result = strcmp(dir_entry->members[mid_point].name, member_name);
-
-        if (cmp_result <= 0) {
-            /* mid_point is <= search key: answer must be above it */
-            slice_low = mid_point + 1;
-        } else {
-            /* mid_point is a candidate (GT); try to find a lower one */
-            slice_high = mid_point - 1;
+    now = time(NULL);
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        if (g_dir_pool[i].status != MVSVFS_DIR_OPENLIST_USED)
+            continue;
+        if (difftime(now, g_dir_pool[i].last_used_time) >
+                MVSVFS_DIR_OPENLIST_TIMEOUT_SECS)
+            continue;
+        if (strcmp(g_dir_pool[i].pds_dsname_ebcdic, pds_dsname_ebcdic) == 0) {
+            g_dir_pool[i].last_used_time = now;
+            return &g_dir_pool[i];
         }
     }
-
-    /*
-     * slice_low now points to the leftmost entry whose name is strictly
-     * greater than member_name, or is out of range if no such entry exists.
-     */
-    if (slice_low < num_in_list) {
-        *member_info = &(dir_entry->members[slice_low]);
-        return 0;
-    }
-    return -1;  /* All entries are <= member_name */
+    return NULL;
 }
 
 /* -------------------------------------------------------------------- */

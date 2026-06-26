@@ -26,6 +26,7 @@
 #include "mvsdol.h"   /* full struct vfs_dir, SEARCH_OP_*, prototypes */
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 /* -------------------------------------------------------------------- */
 /* Helpers                                                               */
@@ -41,6 +42,26 @@ static vfs_dir_t *pool_alloc(void)
     if (d != NULL)
         d->status = MVSVFS_DIR_OPENLIST_USED;
     return d;
+}
+
+/* Grab a free pool slot, mark it USED, and copy a dataset name into
+ * pds_dsname_ebcdic.  Returns the slot pointer.                        */
+static vfs_dir_t *pool_alloc_named(const char *dsname)
+{
+    vfs_dir_t *d;
+
+    d = pool_alloc();
+    if (d != NULL) {
+        strncpy(d->pds_dsname_ebcdic, dsname, 44);
+        d->pds_dsname_ebcdic[44] = '\0';
+    }
+    return d;
+}
+
+/* Backdate last_used_time so that the entry appears to have timed out. */
+static void expire_entry(vfs_dir_t *d)
+{
+    d->last_used_time = time(NULL) - MVSVFS_DIR_OPENLIST_TIMEOUT_SECS - 1;
 }
 
 /* Populate one pds_member_entry_t with the given name. */
@@ -179,14 +200,45 @@ static MunitResult test_find_free_distinct_slots(
     return MUNIT_OK;
 }
 
+static MunitResult test_find_free_reclaims_timed_out(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *slots[MAX_OPEN_DIRS];
+    vfs_dir_t *reclaimed;
+    int        i;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+
+    /* Fill every pool slot. */
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        slots[i] = pool_alloc();
+        munit_assert_not_null(slots[i]);
+    }
+
+    /* Pool is fully exhausted: must fail. */
+    munit_assert_null(dir_openlist_find_free());
+
+    /* Expire the first slot. */
+    expire_entry(slots[0]);
+
+    /* find_free must now reclaim it. */
+    reclaimed = dir_openlist_find_free();
+    munit_assert_not_null(reclaimed);
+    munit_assert_ptr_equal(reclaimed, slots[0]);
+    return MUNIT_OK;
+}
+
 static MunitTest find_free_tests[] = {
-    { "/returns_entry",   test_find_free_returns_entry,   NULL, NULL,
+    { "/returns_entry",        test_find_free_returns_entry,        NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
-    { "/entry_is_zeroed", test_find_free_entry_is_zeroed, NULL, NULL,
+    { "/entry_is_zeroed",      test_find_free_entry_is_zeroed,      NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
-    { "/exhausted",       test_find_free_exhausted,       NULL, NULL,
+    { "/exhausted",            test_find_free_exhausted,            NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
-    { "/distinct_slots",  test_find_free_distinct_slots,  NULL, NULL,
+    { "/distinct_slots",       test_find_free_distinct_slots,       NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/reclaims_timed_out",   test_find_free_reclaims_timed_out,   NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
@@ -666,19 +718,158 @@ static MunitTest search_le_tests[] = {
 };
 
 /* ==================================================================== */
+/* dir_openlist_find_by_dsname                                          */
+/* ==================================================================== */
+
+/* Found: USED, non-expired entry with matching name is returned. */
+static MunitResult test_find_by_dsname_found(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    vfs_dir_t *found;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = pool_alloc_named("MY.TEST.PDS");
+    munit_assert_not_null(d);
+
+    found = dir_openlist_find_by_dsname("MY.TEST.PDS");
+
+    munit_assert_ptr_equal(found, d);
+    return MUNIT_OK;
+}
+
+/* Not found: no entry with the requested name. */
+static MunitResult test_find_by_dsname_not_found(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *found;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    pool_alloc_named("MY.TEST.PDS");
+
+    found = dir_openlist_find_by_dsname("OTHER.PDS");
+
+    munit_assert_null(found);
+    return MUNIT_OK;
+}
+
+/* Timed out: expired entry is not returned. */
+static MunitResult test_find_by_dsname_timed_out(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    vfs_dir_t *found;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = pool_alloc_named("MY.TEST.PDS");
+    munit_assert_not_null(d);
+    expire_entry(d);
+
+    found = dir_openlist_find_by_dsname("MY.TEST.PDS");
+
+    munit_assert_null(found);
+    return MUNIT_OK;
+}
+
+/* Ignores FREE: a FREE entry whose dsname happens to match is skipped. */
+static MunitResult test_find_by_dsname_ignores_free(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    vfs_dir_t *found;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    /* Allocate, write name, then release back to FREE. */
+    d = pool_alloc_named("MY.TEST.PDS");
+    munit_assert_not_null(d);
+    dir_openlist_free(d);
+
+    found = dir_openlist_find_by_dsname("MY.TEST.PDS");
+
+    munit_assert_null(found);
+    return MUNIT_OK;
+}
+
+/* Multiple entries: correct entry is returned when pool has several. */
+static MunitResult test_find_by_dsname_multiple(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d0;
+    vfs_dir_t *d1;
+    vfs_dir_t *d2;
+    vfs_dir_t *found;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d0 = pool_alloc_named("FIRST.PDS");
+    d1 = pool_alloc_named("TARGET.PDS");
+    d2 = pool_alloc_named("THIRD.PDS");
+    munit_assert_not_null(d0);
+    munit_assert_not_null(d1);
+    munit_assert_not_null(d2);
+
+    found = dir_openlist_find_by_dsname("TARGET.PDS");
+
+    munit_assert_ptr_equal(found, d1);
+    return MUNIT_OK;
+}
+
+/* Hit refreshes timestamp: after a find, last_used_time is not earlier
+ * than it was before the call (guards against silent expiry of active
+ * entries between two consecutive find calls). */
+static MunitResult test_find_by_dsname_refreshes_timestamp(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    time_t     before;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = pool_alloc_named("MY.TEST.PDS");
+    munit_assert_not_null(d);
+
+    before = time(NULL);
+    dir_openlist_find_by_dsname("MY.TEST.PDS");
+
+    munit_assert(d->last_used_time >= before);
+    return MUNIT_OK;
+}
+
+static MunitTest find_by_dsname_tests[] = {
+    { "/found",               test_find_by_dsname_found,               NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/not_found",           test_find_by_dsname_not_found,           NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/timed_out",           test_find_by_dsname_timed_out,           NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/ignores_free",        test_find_by_dsname_ignores_free,        NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/multiple",            test_find_by_dsname_multiple,            NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/refreshes_timestamp", test_find_by_dsname_refreshes_timestamp, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
 /* Suite registration                                                    */
 /* ==================================================================== */
 
 static MunitSuite sub_suites[] = {
-    { "/init",          init_tests,         NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/find_free",     find_free_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/free",          free_tests,         NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/empty",  search_empty_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/eq",     search_eq_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/gt",     search_gt_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/lt",     search_lt_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/ge",     search_ge_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/search/le",     search_le_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/init",            init_tests,             NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/find_free",       find_free_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/free",            free_tests,             NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/find_by_dsname",  find_by_dsname_tests,   NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/empty",    search_empty_tests,     NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/eq",       search_eq_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/gt",       search_gt_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/lt",       search_lt_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/ge",       search_ge_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/le",       search_le_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 

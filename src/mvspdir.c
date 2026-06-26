@@ -175,6 +175,9 @@ void mvs_extract_ispf_stats(
     time_t    temptime = 0;
     int       seconds;
 
+    /* Mark this entry as being based around ISPF stats */
+    entry->info_flags = MVS_PDSDIR_IFLG_ISPFSTATS;
+
     entry->ver = userdata[0];
     entry->mod = userdata[1];
     entry->ispf_flags = userdata[2];

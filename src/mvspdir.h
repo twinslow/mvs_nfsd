@@ -19,7 +19,10 @@ typedef struct {
     uint8_t          mod;
     uint8_t          first_block_rec;
     uint8_t          ispf_flags;
+    uint8_t          info_flags;
 } pds_member_entry_t;
+
+#define MVS_PDSDIR_IFLG_ISPFSTATS        0x80
 
 #define MVS_PDSDIR_ENDMARK          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
 #define MVS_PDSDIR_USERDATA_COUNT_MASK ((unsigned char) 0x1F)

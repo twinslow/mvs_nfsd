@@ -26,29 +26,32 @@
 #define MVSDOL_H_INCLUDED
 
 #include <stdio.h>
+#include <time.h>
 #include "types.h"
 #include "mvspdir.h"  /* pds_member_entry_t */
 
 /* -------------------------------------------------------------------- */
-/* Pool slot status and cache size                                       */
+/* Pool slot status, cache size, and entry timeout                       */
 /* -------------------------------------------------------------------- */
-#define MVSVFS_DIR_OPENLIST_FREE    0
-#define MVSVFS_DIR_OPENLIST_USED    1
-#define MVSVFS_PDS_DIR_CACHE_SIZE   100  /* PDS directory entries cached per open dir */
+#define MVSVFS_DIR_OPENLIST_FREE          0
+#define MVSVFS_DIR_OPENLIST_USED          1
+#define MVSVFS_PDS_DIR_CACHE_SIZE         250  /* PDS directory entries cached per open dir */
+#define MVSVFS_DIR_OPENLIST_TIMEOUT_SECS  5    /* seconds before an idle USED entry expires */
 
 /* -------------------------------------------------------------------- */
 /* Concrete definition of the vfs_dir_t handle (forward-declared in     */
 /* nfsd.h as an incomplete struct for callers that only hold pointers).  */
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
-    uint8_t             status;                         /* OPENLIST_FREE / OPENLIST_USED */
+    uint8_t             status;                     /* OPENLIST_FREE / OPENLIST_USED */
     int                 export_idx;
-    FILE               *pds_fh;                         /* file handle for the open dir  */
-    char                pds_dsname_ebcdic[45];           /* EBCDIC dataset name from path */
-    uint64_t            next_cookie;                     /* 1-based index of next entry   */
-    int                 pds_entries_cached;              /* valid entries in members[]    */
+    FILE               *pds_fh;                     /* file handle for the open dir  */
+    char                pds_dsname_ebcdic[45];      /* EBCDIC dataset name from path */
+    uint64_t            next_cookie;                /* This 64bit value is actually the EBCDIC member name  */
+    int                 pds_entries_cached;         /* Num of valid entries in members[]  */
     pds_member_entry_t  members[MVSVFS_PDS_DIR_CACHE_SIZE];
-    int                 end_of_dir_read;                 /* 1 when end-of-directory seen  */
+    int                 end_of_dir_read;            /* 1 when end-of-directory seen  */
+    time_t              last_used_time;             /* wall-clock time of last access */
 };
 
 /* -------------------------------------------------------------------- */
@@ -60,9 +63,6 @@ struct vfs_dir {
 #define SEARCH_OP_LE   (SEARCH_OP_LT | SEARCH_OP_EQ)    /* 3: <= */
 #define SEARCH_OP_GE   (SEARCH_OP_GT | SEARCH_OP_EQ)    /* 6: >= */
 
-/* Legacy single-operator constant (dir_openlist_search_members only)    */
-#define SEARCH_MEMBER_GT    SEARCH_OP_GT
-
 /* -------------------------------------------------------------------- */
 /* Prototypes                                                            */
 /* -------------------------------------------------------------------- */
@@ -70,30 +70,27 @@ struct vfs_dir {
 /* Initialise the pool (call once at startup). */
 void dir_openlist_init(void);
 
-/* Return a pointer to a free, zeroed handle, or NULL (errno=EMFILE). */
+/* Return a pointer to a free, zeroed handle, or NULL (errno=EMFILE).
+ * USED entries that have exceeded MVSVFS_DIR_OPENLIST_TIMEOUT_SECS are
+ * reclaimed and may be returned.  The returned entry has last_used_time
+ * set to the current time. */
 vfs_dir_t *dir_openlist_find_free(void);
 
 /* Release a handle back to the pool. */
 void dir_openlist_free(vfs_dir_t *entry);
 
-/*
- * Binary search of the cached member list for the first entry that is
- * strictly greater than member_name.  Sets *member_info on success.
- * Returns 0 if found, -1 if not.
- * (operator argument is accepted but currently ignored -- GT only.)
- */
-int dir_openlist_search_members(
-    vfs_dir_t           *dir_entry,
-    const char          *member_name,
-    int                  operator,
-    pds_member_entry_t **member_info);
+/* Search the pool for a USED, non-expired entry whose pds_dsname_ebcdic
+ * matches the supplied name.  Refreshes last_used_time on a hit.
+ * Returns NULL if not found or if the matching entry has timed out. */
+vfs_dir_t *dir_openlist_find_by_dsname(const char *pds_dsname_ebcdic);
 
 /*
  * Binary search of the cached member list with a full operator set
- * (OP_LT, OP_EQ, OP_GT, OP_LE, OP_GE).  Sets *member_info on success.
+ * (SEARCH_OP_LT, SEARCH_OP_EQ, SEARCH_OP_GT, SEARCH_OP_LE, SEARCH_OP_GE).  
+ * Sets *member_info on success.
  * Returns 0 if found, -1 if not.
  */
-int dir_openlist_search_members2(
+int dir_openlist_search_members(
     vfs_dir_t           *dir_entry,
     const char          *member_name,
     int                  operator,
