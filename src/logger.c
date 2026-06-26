@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdarg.h>
+#include <mvsutils.h>  /* _write2op */
 #include "ebcdic.h"
 #else
 #include <stdio.h>
@@ -101,13 +102,18 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
     FILE       *fp;
     struct tm  *tm_ptr;
     time_t      now;
-    char        ts_buf[22]; /* "YYYY-MM-DD HH:MM:SS " + NUL */
+    char        ts_buf[22];   /* "YYYY-MM-DD HH:MM:SS " + NUL */
+    char        msg_buf[480]; /* formatted message body        */
+    char        wto_buf[490]; /* "[LEVEL] " + msg_buf          */
 
     if (level < g_log_level) return;
 
     fp = (g_log_fp != NULL) ? g_log_fp : stderr;
 
-    /* Optional timestamp prefix */
+    /* Format message body once; reuse for both the log stream and WTO. */
+    vsprintf(msg_buf, fmt, ap);
+
+    /* Optional timestamp prefix (log stream only, not WTO). */
     if (g_log_timestamps) {
         now    = time(NULL);
         tm_ptr = gmtime(&now);
@@ -123,10 +129,17 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
         }
     }
 
-    fprintf(fp,  "[%s] ", level_tag(level));
-    vfprintf(fp, fmt, ap);
-    fprintf(fp,  "\n");
+    fprintf(fp, "[%s] %s\n", level_tag(level), msg_buf);
     fflush(fp);
+
+#ifdef __MVS__
+    /* Write INFO and above to the operator console via WTO.
+       No timestamp -- operator messages should be concise. */
+    if (level >= LOG_INFO) {
+        sprintf(wto_buf, "[%s] %s", level_tag(level), msg_buf);
+        _write2op(wto_buf);
+    }
+#endif
 }
 
 /* -------------------------------------------------------------------- */

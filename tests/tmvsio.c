@@ -27,9 +27,13 @@
 
 /* ======================================================================
  * Fixture: single export
- *   NFS path  : /dinonfs/src
- *   host path : TEMP.DINONFS.C
- *   extension : c
+ *   export_path (NFS) : /dinonfs/src
+ *   host_path (MVS)   : TEMP.DINONFS.C
+ *   extension         : c
+ *
+ * mvs_path_type() matches on host_path_ebcdic (the host path field).
+ * On Linux, host_path_ebcdic is identical to host_path (no EBCDIC
+ * conversion), so tests pass the host path directly.
  * ====================================================================== */
 
 static void *setup_single(const MunitParameter params[], void *user_data)
@@ -45,6 +49,9 @@ static void *setup_single(const MunitParameter params[], void *user_data)
  *   [0] /dinonfs/src  -> TEMP.DINONFS.C    (c)
  *   [1] /dinonfs/hdr  -> TEMP.DINONFS.H    (h)
  *   [2] /dinonfs/jcl  -> TEMP.DINONFS.CNTL (jcl)
+ *
+ * Tests pass the host_path (e.g. "TEMP.DINONFS.C") to mvs_path_type()
+ * since that is what host_path_ebcdic is set to on Linux.
  * ====================================================================== */
 
 static void *setup_multi(const MunitParameter params[], void *user_data)
@@ -72,56 +79,56 @@ static void *setup_empty(const MunitParameter params[], void *user_data)
  * Tests: exact match returns MVS_PATH_TYPE_DATASET
  * ====================================================================== */
 
-/* Path exactly matches the single export path -> DATASET, idx == 0 */
+/* Host path exactly matches host_path_ebcdic -> DATASET, idx == 0 */
 static MunitResult test_exact_match_is_dataset(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src", &idx);
+    result = mvs_path_type("TEMP.DINONFS.C", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(idx,    ==, 0);
     return MUNIT_OK;
 }
 
-/* Path exactly matches the first of three exports -> DATASET, idx == 0 */
+/* Host path matches first export's host_path_ebcdic -> DATASET, idx == 0 */
 static MunitResult test_exact_match_first_of_multi(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src", &idx);
+    result = mvs_path_type("TEMP.DINONFS.C", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(idx,    ==, 0);
     return MUNIT_OK;
 }
 
-/* Path exactly matches the second export -> DATASET, idx == 1 */
+/* Host path matches second export's host_path_ebcdic -> DATASET, idx == 1 */
 static MunitResult test_exact_match_second_export(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/hdr", &idx);
+    result = mvs_path_type("TEMP.DINONFS.H", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(idx,    ==, 1);
     return MUNIT_OK;
 }
 
-/* Path exactly matches the third export -> DATASET, idx == 2 */
+/* Host path matches third export's host_path_ebcdic -> DATASET, idx == 2 */
 static MunitResult test_exact_match_third_export(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/jcl", &idx);
+    result = mvs_path_type("TEMP.DINONFS.CNTL", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(idx,    ==, 2);
@@ -132,14 +139,14 @@ static MunitResult test_exact_match_third_export(const MunitParameter params[], 
  * Tests: path under an export returns MVS_PATH_TYPE_PDS_MEMBER
  * ====================================================================== */
 
-/* export_path/member -> PDS_MEMBER, idx == 0 */
+/* host_path/member -> PDS_MEMBER, idx == 0 */
 static MunitResult test_member_path_is_pds_member(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/nfsd.c", &idx);
+    result = mvs_path_type("TEMP.DINONFS.C/nfsd.c", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
     munit_assert_int(idx,    ==, 0);
@@ -153,7 +160,7 @@ static MunitResult test_member_path_second_export(const MunitParameter params[],
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/hdr/types.h", &idx);
+    result = mvs_path_type("TEMP.DINONFS.H/types.h", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
     munit_assert_int(idx,    ==, 1);
@@ -167,7 +174,7 @@ static MunitResult test_member_path_third_export(const MunitParameter params[], 
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/jcl/compile.jcl", &idx);
+    result = mvs_path_type("TEMP.DINONFS.CNTL/compile.jcl", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
     munit_assert_int(idx,    ==, 2);
@@ -193,30 +200,30 @@ static MunitResult test_unrelated_path_no_match(const MunitParameter params[], v
     return MUNIT_OK;
 }
 
-/* Path shares a prefix with the export but has no '/' separator ->
- * e.g. "/dinonfs/srcextra" should NOT match "/dinonfs/src" */
+/* Path shares a prefix with host_path_ebcdic but has no '/' separator ->
+ * e.g. "TEMP.DINONFS.Cextra" should NOT match "TEMP.DINONFS.C" */
 static MunitResult test_prefix_without_slash_no_match(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/srcextra", &idx);
+    result = mvs_path_type("TEMP.DINONFS.Cextra", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
 
-/* Path is a strict prefix (shorter) of the export path -> no match.
- * e.g. "/dinonfs/sr" does not match "/dinonfs/src" */
+/* Path is a strict prefix (shorter) of host_path_ebcdic -> no match.
+ * e.g. "TEMP.DINONFS" does not match "TEMP.DINONFS.C" */
 static MunitResult test_shorter_than_export_no_match(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/sr", &idx);
+    result = mvs_path_type("TEMP.DINONFS", &idx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(idx, ==, -1);
@@ -251,20 +258,20 @@ static MunitResult test_root_path_no_match(const MunitParameter params[], void *
     return MUNIT_OK;
 }
 
-/* Path that is the export path with a trailing slash -> no match.
- * "/dinonfs/src/" is neither an exact match nor a member path because
- * there is no filename component after the slash. */
+/* Path that is the host_path with a trailing slash -> no exact match.
+ * "TEMP.DINONFS.C/" is not a DATASET match but the length and slash
+ * checks pass, so the implementation returns PDS_MEMBER. */
 static MunitResult test_trailing_slash_no_match(const MunitParameter params[], void *data)
 {
     int idx = -1;
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/", &idx);
+    result = mvs_path_type("TEMP.DINONFS.C/", &idx);
 
     /*
-     * The implementation returns PDS_MEMBER for "/dinonfs/src/" because
-     * path[export_path_len] == '/' and the length check passes.
+     * The implementation returns PDS_MEMBER for "TEMP.DINONFS.C/" because
+     * path[host_path_len] == '/' and the length check passes.
      * This test documents current behaviour: callers must strip trailing
      * slashes before calling mvs_path_type.
      */

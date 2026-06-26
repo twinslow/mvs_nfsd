@@ -37,12 +37,16 @@ void stub_add_export(const char *export_path,
                      const char *file_ext)
 {
     export_t *e = &s_exports[s_nexports++];
-    strncpy(e->export_path, export_path, MAX_PATH - 1);
-    e->export_path[MAX_PATH - 1] = '\0';
-    strncpy(e->host_path,   host_path,   MAX_PATH - 1);
-    e->host_path[MAX_PATH - 1] = '\0';
-    strncpy(e->file_ext,    file_ext,    MAX_FILE_EXT_LEN - 1);
-    e->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+    strncpy(e->export_path,        export_path, MAX_PATH - 1);
+    e->export_path[MAX_PATH - 1]        = '\0';
+    strncpy(e->export_path_ebcdic, export_path, MAX_PATH - 1);
+    e->export_path_ebcdic[MAX_PATH - 1] = '\0';
+    strncpy(e->host_path,          host_path,   MAX_PATH - 1);
+    e->host_path[MAX_PATH - 1]          = '\0';
+    strncpy(e->host_path_ebcdic,   host_path,   MAX_PATH - 1);
+    e->host_path_ebcdic[MAX_PATH - 1]   = '\0';
+    strncpy(e->file_ext,           file_ext,    MAX_FILE_EXT_LEN - 1);
+    e->file_ext[MAX_FILE_EXT_LEN - 1]   = '\0';
 }
 
 /* -----------------------------------------------------------------------

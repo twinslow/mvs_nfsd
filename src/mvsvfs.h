@@ -11,7 +11,6 @@
  
 #define VFS_NODE_TYPE_VFS_DIR        1
 #define VFS_NODE_TYPE_PDS_DIR        2
-#define MVSVFS_PDS_DIR_CACHE_SIZE    100 /* Number of PDS directory entries to cache */ 
 #define MAX_PATH_LEN                 256
 
 typedef struct vfs_node_vfs_dir {

@@ -20,12 +20,12 @@ typedef struct mvs_rcache_entry {
     char       member_name[9];
     int        export_idx;
 
-    time_t     last_used_time; // Last used time for this cache entry, for LRU eviction
+    time_t     last_used_time; /* last used time for this cache entry, for LRU eviction */
 
-    uint32_t   last_offset; // Last read offset from NFS client
-    uint32_t   last_nread;  // Number of bytes returned to client for last read
-    fpos_t     last_getpos; // File position on host at end of the last read
-    uint8_t    has_last_getpos; // 1 if last_getpos holds a usable position
+    uint32_t   last_offset;    /* last read offset from NFS client */
+    uint32_t   last_nread;     /* number of bytes returned to client for last read */
+    fpos_t     last_getpos;    /* file position on host at end of the last read */
+    uint8_t    has_last_getpos;/* 1 if last_getpos holds a usable position */
 
 } mvs_rcache_entry_t;
 

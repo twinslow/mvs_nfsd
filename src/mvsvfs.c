@@ -12,10 +12,9 @@
  *   - Fixed-length record to byte-stream conversion (insert \n at
  *     each record boundary)
  *
- * The struct vfs_dir type is defined here (opaque to the rest of the
- * code) so that directory iteration can use OS-native constructs.
- *
- * The static dir_pool avoids malloc() for maximum portability.
+ * The struct vfs_dir type and the open-directory pool are defined in
+ * mvsdol.c/mvsdol.h.  Directory iteration uses the dir_openlist_*
+ * functions from that module.
  */
  
 #define _POSIX_C_SOURCE 200809L
@@ -34,30 +33,11 @@
 #include "nfsd.h"
 #include "hexdump.h"
 #include "mvsvfs.h"
+#include "mvsdol.h"
 #include "logger.h"
 
 #define PATH_SEPARATOR_ASCII  (char)0x2f  
 #define PATH_SEPARATOR_EBCDIC (char)0x61 
-
-#define MVSVFS_DIR_OPENLIST_USED             1
-#define MVSVFS_DIR_OPENLIST_FREE             0
-
-/* -------------------------------------------------------------------- */
-/* Directory handle type (opaque outside this file)                     */
-/* -------------------------------------------------------------------- */
-struct vfs_dir {
-    uint8_t             status; 
-    int                 export_idx;
-    FILE               *pds_fh;                /* File handle for open dir */
-    char                pds_dsname_ebcdic[45]; /* EBCDIC dataset name, from path */   
-    uint64_t            next_cookie;           /* 1-based index of the next entry to return */
-    int                 pds_entries_cached;    /* Number of valid entries in the PDS member cache */      
-    pds_member_entry_t  members[MVSVFS_PDS_DIR_CACHE_SIZE]; /* Pre-read PDS member entries */
-    int                 end_of_dir_read;       /* 1 if we've hit the end of the directory */
-};
- 
-/* Static pool of directory handles -- no malloc required */
-static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t as appropriate for a PDS dataset         */
@@ -497,162 +477,6 @@ vfs_closedir
 
 
 
-
-/* -------------------------------------------------------------------- */
-/* Initialize the vfs_dir_t pool/list                                   */
-/* -------------------------------------------------------------------- */
-void dir_openlist_init() {
-    memset(g_dir_pool, 0, sizeof(g_dir_pool));
-}
-
-/* -------------------------------------------------------------------- */
-/* Find a vfs_dir_t entry which is not being used                       */
-/* -------------------------------------------------------------------- */
-vfs_dir_t *dir_openlist_find_free() 
-{
-    int i;
-
-    for (i = 0; i < MAX_OPEN_DIRS; i++) {
-        if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_FREE) {
-            memset(&g_dir_pool[i], 0, sizeof(vfs_dir_t));
-            return &g_dir_pool[i];
-        }
-    }
-    /* None free */
-    errno = EMFILE;
-    return NULL;
-}
-
-/* -------------------------------------------------------------------- */
-/* Mark the given entry as free and clean it up.                        */
-/* -------------------------------------------------------------------- */
-void dir_openlist_free(vfs_dir_t *entry) {
-    memset(entry, 0, sizeof(vfs_dir_t));
-    entry->status = MVSVFS_DIR_OPENLIST_FREE;
-}
-
-/* -------------------------------------------------------------------- */
-/* Binary search of member info list                                    */
-/* -------------------------------------------------------------------- */
-
-//#define SEARCH_MEMBER_LT        1
-//#define SEARCH_MEMBER_LE        2
-//#define SEARCH_MEMBER EQ        3
-//#define SEARCH_MEMBER_GE        4
-#define SEARCH_MEMBER_GT        5
-
-int dir_openlist_search_members(
-    vfs_dir_t          *dir_entry,
-    const char         *member_name,
-    int                 operator, /* Ignored, because we've only implemented GT at this time */
-    pds_member_entry_t **member_info)
-{
-    int  num_in_list = dir_entry->pds_entries_cached;
-    int  slice_low, slice_high, mid_point;
-    int  cmp_result;
-
-    *member_info = NULL;
-    if (num_in_list == 0)
-        return -1;
-
-    slice_low  = 0;
-    slice_high = num_in_list - 1;
-
-    while (slice_low <= slice_high) {
-        mid_point  = (slice_low + slice_high) / 2;
-        cmp_result = strcmp(dir_entry->members[mid_point].name, member_name);
-
-        if (cmp_result <= 0) {
-            /* mid_point is <= search key: answer must be above it */
-            slice_low = mid_point + 1;
-        } else {
-            /* mid_point is a candidate (GT); try to find a lower one */
-            slice_high = mid_point - 1;
-        }
-    }
-
-    /*
-     * slice_low now points to the leftmost entry whose name is
-     * strictly greater than member_name, or is out of range if
-     * no such entry exists.
-     */
-    if (slice_low < num_in_list) {
-        *member_info = &(dir_entry->members[slice_low]);
-        return 0;
-    }
-    return -1;  /* All entries are <= member_name */
-}
-
-/* Operator bitmask values */
-#define OP_LT   1   /* <  : strictly less than    */
-#define OP_EQ   2   /* =  : equal                 */
-#define OP_GT   4   /* >  : strictly greater than */
-#define OP_LE   (OP_LT | OP_EQ)   /* 3: <= */
-#define OP_GE   (OP_GT | OP_EQ)   /* 6: >= */
-
-int dir_openlist_search_members2(
-    vfs_dir_t          *dir_entry,
-    const char         *member_name,
-    int                 operator,
-    pds_member_entry_t **member_info)
-{
-    int  num_in_list = dir_entry->pds_entries_cached;
-    int  slice_low, slice_high, mid_point;
-    int  cmp_result;
-
-    *member_info = NULL;
-    if (num_in_list == 0)
-        return -1;
-
-    slice_low  = 0;
-    slice_high = num_in_list - 1;
-
-    while (slice_low <= slice_high) {
-        mid_point  = (slice_low + slice_high) / 2;
-        cmp_result = strcmp(dir_entry->members[mid_point].name, member_name);
-
-        if (cmp_result < 0) {
-            slice_low = mid_point + 1;
-        } else if (cmp_result > 0) {
-            slice_high = mid_point - 1;
-        } else {
-            /* Exact match at mid_point */
-            if (operator & OP_EQ) {
-                *member_info = &(dir_entry->members[mid_point]);
-                return 0;
-            }
-            /* Exact match but operator doesn't include EQ:
-               nudge the search to the appropriate side */
-            if (operator & OP_GT)
-                slice_low  = mid_point + 1;  /* want something strictly after */
-            else
-                slice_high = mid_point - 1;  /* want something strictly before */
-            break;
-        }
-    }
-
-    /*
-     * No exact match found (or exact match excluded by operator).
-     * slice_low is the insertion point:
-     *   members[slice_low-1].name  <  member_name
-     *   members[slice_low].name    >  member_name
-     */
-    if (operator & OP_GT) {
-        /* Leftmost entry strictly greater than member_name */
-        if (slice_low < num_in_list) {
-            *member_info = &(dir_entry->members[slice_low]);
-            return 0;
-        }
-    } else if (operator & OP_LT) {
-        /* Rightmost entry strictly less than member_name */
-        if (slice_low > 0) {
-            *member_info = &(dir_entry->members[slice_low - 1]);
-            return 0;
-        }
-    }
-
-    return -1;
-}
 
 /* -------------------------------------------------------------------- */
 /* Translate ASCII path name into EBCDIC and extract DSN and mem name   */

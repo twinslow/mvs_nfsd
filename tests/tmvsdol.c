@@ -1,0 +1,691 @@
+/*
+ * tests/tmvsdol.c
+ *
+ * Unit tests for the mvsdol.c directory open-list pool:
+ *   dir_openlist_init
+ *   dir_openlist_find_free
+ *   dir_openlist_free
+ *   dir_openlist_search_members  (full operator set: EQ, GT, LT, GE, LE)
+ *
+ * Tests for the pool functions call dir_openlist_init() at the start of
+ * each test to ensure a clean, all-free baseline; the static pool is
+ * shared across calls within the same process.
+ *
+ * Tests for dir_openlist_search_members operate on a locally declared
+ * vfs_dir_t populated directly, so they do not touch the pool at all.
+ *
+ * Member list used by all search tests (5 entries, sorted):
+ *   [0] ALPHA   [1] DELTA   [2] HOTEL   [3] MIKE   [4] ZULU
+ *
+ * JCC C89 compliance: all variable declarations precede executable
+ * statements within each function body.  Only block comments are used.
+ */
+
+#include "munit.h"
+#include "nfsd.h"     /* MAX_OPEN_DIRS, vfs_dir_t forward decl */
+#include "mvsdol.h"   /* full struct vfs_dir, SEARCH_OP_*, prototypes */
+#include <string.h>
+#include <errno.h>
+
+/* -------------------------------------------------------------------- */
+/* Helpers                                                               */
+/* -------------------------------------------------------------------- */
+
+/* Grab a free pool slot and mark it USED so subsequent find_free
+ * calls skip it.  Returns the slot pointer.                            */
+static vfs_dir_t *pool_alloc(void)
+{
+    vfs_dir_t *d;
+
+    d = dir_openlist_find_free();
+    if (d != NULL)
+        d->status = MVSVFS_DIR_OPENLIST_USED;
+    return d;
+}
+
+/* Populate one pds_member_entry_t with the given name. */
+static void set_member(pds_member_entry_t *m, const char *name)
+{
+    memset(m, 0, sizeof(pds_member_entry_t));
+    strncpy(m->name, name, sizeof(m->name) - 1);
+    m->name[sizeof(m->name) - 1] = '\0';
+}
+
+/* Build a local vfs_dir_t with five sorted members for search tests. */
+static void make_five_member_dir(vfs_dir_t *d)
+{
+    memset(d, 0, sizeof(vfs_dir_t));
+    set_member(&d->members[0], "ALPHA");
+    set_member(&d->members[1], "DELTA");
+    set_member(&d->members[2], "HOTEL");
+    set_member(&d->members[3], "MIKE");
+    set_member(&d->members[4], "ZULU");
+    d->pds_entries_cached = 5;
+}
+
+/* ==================================================================== */
+/* dir_openlist_init                                                     */
+/* ==================================================================== */
+
+static MunitResult test_init_zeros_pool(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    int        i;
+    (void)params; (void)data;
+
+    /* Dirty the pool first. */
+    dir_openlist_init();
+    d = dir_openlist_find_free();
+    munit_assert_not_null(d);
+    d->status = MVSVFS_DIR_OPENLIST_USED;
+
+    /* Re-initialise: every slot must be obtainable as FREE. */
+    dir_openlist_init();
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        d = dir_openlist_find_free();
+        munit_assert_not_null(d);
+        munit_assert_int(d->status, ==, MVSVFS_DIR_OPENLIST_FREE);
+        d->status = MVSVFS_DIR_OPENLIST_USED;  /* consume slot */
+    }
+    return MUNIT_OK;
+}
+
+static MunitTest init_tests[] = {
+    { "/zeros_pool", test_init_zeros_pool, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_find_free                                                */
+/* ==================================================================== */
+
+static MunitResult test_find_free_returns_entry(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = dir_openlist_find_free();
+
+    munit_assert_not_null(d);
+    return MUNIT_OK;
+}
+
+static MunitResult test_find_free_entry_is_zeroed(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = dir_openlist_find_free();
+
+    munit_assert_not_null(d);
+    munit_assert_int(d->status,               ==, MVSVFS_DIR_OPENLIST_FREE);
+    munit_assert_int(d->export_idx,           ==, 0);
+    munit_assert_int(d->pds_entries_cached,   ==, 0);
+    munit_assert_int(d->end_of_dir_read,      ==, 0);
+    munit_assert_int(d->pds_dsname_ebcdic[0], ==, '\0');
+    return MUNIT_OK;
+}
+
+static MunitResult test_find_free_exhausted(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    int        i;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+
+    /* Fill every slot. */
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        d = pool_alloc();
+        munit_assert_not_null(d);
+    }
+
+    /* Next call must fail and set errno = EMFILE. */
+    errno = 0;
+    d = dir_openlist_find_free();
+
+    munit_assert_null(d);
+    munit_assert_int(errno, ==, EMFILE);
+    return MUNIT_OK;
+}
+
+static MunitResult test_find_free_distinct_slots(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *slots[MAX_OPEN_DIRS];
+    int        i, j;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        slots[i] = pool_alloc();
+        munit_assert_not_null(slots[i]);
+    }
+
+    /* Every returned pointer must be unique. */
+    for (i = 0; i < MAX_OPEN_DIRS - 1; i++) {
+        for (j = i + 1; j < MAX_OPEN_DIRS; j++) {
+            munit_assert(slots[i] != slots[j]);
+        }
+    }
+    return MUNIT_OK;
+}
+
+static MunitTest find_free_tests[] = {
+    { "/returns_entry",   test_find_free_returns_entry,   NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/entry_is_zeroed", test_find_free_entry_is_zeroed, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/exhausted",       test_find_free_exhausted,       NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/distinct_slots",  test_find_free_distinct_slots,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_free                                                     */
+/* ==================================================================== */
+
+static MunitResult test_free_clears_entry(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *d;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+    d = dir_openlist_find_free();
+    munit_assert_not_null(d);
+
+    d->status             = MVSVFS_DIR_OPENLIST_USED;
+    d->export_idx         = 3;
+    d->pds_entries_cached = 7;
+    d->end_of_dir_read    = 1;
+    strncpy(d->pds_dsname_ebcdic, "MY.TEST.PDS", 44);
+
+    dir_openlist_free(d);
+
+    munit_assert_int(d->status,               ==, MVSVFS_DIR_OPENLIST_FREE);
+    munit_assert_int(d->export_idx,           ==, 0);
+    munit_assert_int(d->pds_entries_cached,   ==, 0);
+    munit_assert_int(d->end_of_dir_read,      ==, 0);
+    munit_assert_int(d->pds_dsname_ebcdic[0], ==, '\0');
+    return MUNIT_OK;
+}
+
+static MunitResult test_free_makes_slot_reusable(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t *first;
+    vfs_dir_t *reused;
+    (void)params; (void)data;
+
+    dir_openlist_init();
+
+    first = pool_alloc();
+    munit_assert_not_null(first);
+
+    /* Free the slot; the next find_free must return it again. */
+    dir_openlist_free(first);
+    reused = dir_openlist_find_free();
+
+    munit_assert_ptr_equal(reused, first);
+    return MUNIT_OK;
+}
+
+static MunitTest free_tests[] = {
+    { "/clears_entry",        test_free_clears_entry,        NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/makes_slot_reusable", test_free_makes_slot_reusable, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- empty list                             */
+/* ==================================================================== */
+
+static MunitResult test_search_empty_list(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    memset(&dir, 0, sizeof(dir));  /* pds_entries_cached = 0 */
+    info = NULL;
+
+    rc = dir_openlist_search_members(&dir, "ALPHA", SEARCH_OP_EQ, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_empty_tests[] = {
+    { "/empty_list", test_search_empty_list, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- SEARCH_OP_EQ                          */
+/* ==================================================================== */
+
+static MunitResult test_search_eq_found(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    rc = dir_openlist_search_members(&dir, "HOTEL", SEARCH_OP_EQ, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "HOTEL");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_eq_first(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    rc = dir_openlist_search_members(&dir, "ALPHA", SEARCH_OP_EQ, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "ALPHA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_eq_last(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    rc = dir_openlist_search_members(&dir, "ZULU", SEARCH_OP_EQ, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "ZULU");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_eq_not_found(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    rc = dir_openlist_search_members(&dir, "GAMMA", SEARCH_OP_EQ, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_eq_tests[] = {
+    { "/found",     test_search_eq_found,     NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/first",     test_search_eq_first,     NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/last",      test_search_eq_last,      NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/not_found", test_search_eq_not_found, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- SEARCH_OP_GT                          */
+/* ==================================================================== */
+
+static MunitResult test_search_gt_between(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GAMMA sorts between DELTA and HOTEL; GT must return HOTEL. */
+    rc = dir_openlist_search_members(&dir, "GAMMA", SEARCH_OP_GT, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "HOTEL");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_gt_on_exact(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GT on an exact match must skip it and return the next entry. */
+    rc = dir_openlist_search_members(&dir, "DELTA", SEARCH_OP_GT, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "HOTEL");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_gt_before_all(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* Key before all entries: GT must return the first entry. */
+    rc = dir_openlist_search_members(&dir, "AAAA", SEARCH_OP_GT, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "ALPHA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_gt_after_all(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GT on the last entry: no greater entry exists. */
+    rc = dir_openlist_search_members(&dir, "ZULU", SEARCH_OP_GT, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_gt_tests[] = {
+    { "/between",    test_search_gt_between,    NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/on_exact",   test_search_gt_on_exact,   NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/before_all", test_search_gt_before_all, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/after_all",  test_search_gt_after_all,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- SEARCH_OP_LT                          */
+/* ==================================================================== */
+
+static MunitResult test_search_lt_between(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GAMMA sorts between DELTA and HOTEL; LT must return DELTA. */
+    rc = dir_openlist_search_members(&dir, "GAMMA", SEARCH_OP_LT, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "DELTA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_lt_on_exact(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* LT on an exact match must skip it and return the previous entry. */
+    rc = dir_openlist_search_members(&dir, "HOTEL", SEARCH_OP_LT, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "DELTA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_lt_before_all(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* Key before all entries: no lesser entry exists. */
+    rc = dir_openlist_search_members(&dir, "AAAA", SEARCH_OP_LT, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_lt_tests[] = {
+    { "/between",    test_search_lt_between,    NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/on_exact",   test_search_lt_on_exact,   NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/before_all", test_search_lt_before_all, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- SEARCH_OP_GE                          */
+/* ==================================================================== */
+
+static MunitResult test_search_ge_exact(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GE on an exact match must return that entry. */
+    rc = dir_openlist_search_members(&dir, "DELTA", SEARCH_OP_GE, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "DELTA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_ge_between(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GAMMA falls between DELTA and HOTEL; GE must return HOTEL. */
+    rc = dir_openlist_search_members(&dir, "GAMMA", SEARCH_OP_GE, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "HOTEL");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_ge_after_all(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* Key strictly past the last entry: no GE entry exists. */
+    rc = dir_openlist_search_members(&dir, "ZZZZZ", SEARCH_OP_GE, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_ge_tests[] = {
+    { "/exact",     test_search_ge_exact,     NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/between",   test_search_ge_between,   NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/after_all", test_search_ge_after_all, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* dir_openlist_search_members -- SEARCH_OP_LE                          */
+/* ==================================================================== */
+
+static MunitResult test_search_le_exact(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* LE on an exact match must return that entry. */
+    rc = dir_openlist_search_members(&dir, "MIKE", SEARCH_OP_LE, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "MIKE");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_le_between(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* GAMMA falls between DELTA and HOTEL; LE must return DELTA. */
+    rc = dir_openlist_search_members(&dir, "GAMMA", SEARCH_OP_LE, &info);
+
+    munit_assert_int(rc, ==, 0);
+    munit_assert_not_null(info);
+    munit_assert_string_equal(info->name, "DELTA");
+    return MUNIT_OK;
+}
+
+static MunitResult test_search_le_before_all(
+    const MunitParameter params[], void *data)
+{
+    vfs_dir_t           dir;
+    pds_member_entry_t *info;
+    int                 rc;
+    (void)params; (void)data;
+
+    make_five_member_dir(&dir);
+
+    /* Key before all entries: no lesser-or-equal entry exists. */
+    rc = dir_openlist_search_members(&dir, "AAAA", SEARCH_OP_LE, &info);
+
+    munit_assert_int(rc, ==, -1);
+    munit_assert_null(info);
+    return MUNIT_OK;
+}
+
+static MunitTest search_le_tests[] = {
+    { "/exact",      test_search_le_exact,      NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/between",    test_search_le_between,    NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/before_all", test_search_le_before_all, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
+/* Suite registration                                                    */
+/* ==================================================================== */
+
+static MunitSuite sub_suites[] = {
+    { "/init",          init_tests,         NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/find_free",     find_free_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/free",          free_tests,         NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/empty",  search_empty_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/eq",     search_eq_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/gt",     search_gt_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/lt",     search_lt_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/ge",     search_ge_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/search/le",     search_le_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
+};
+
+MunitSuite tmvsdol_suite = {
+    "/mvsdol",
+    NULL,
+    sub_suites,
+    1,
+    MUNIT_SUITE_OPTION_NONE
+};

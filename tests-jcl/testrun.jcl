@@ -1,9 +1,9 @@
 //TONYWUT1 JOB (NFSD),
 //            'Test dino-nfs mods',
-//            CLASS=A,NOTIFY=TONYW,
-//            MSGCLASS=X,
-//            REGION=8M,
-//            MSGLEVEL=(1,1)
+//            CLASS=A,NOTIFY=TONYW,REGION=8M,
+//            MSGCLASS=X,MSGLEVEL=(1,1),
+//            COND=(0,LT)
+//*
 //********************************************************************
 //*
 //* Name: TESTRUN
@@ -11,6 +11,7 @@
 //* Desc: Build and run the mUnit tests for NFSD server
 //*
 //********************************************************************
+//* 
 //JCCCMOD PROC SOUT='*',JCC='JCC',
 //          INFILE='TONYW.DINONFS.C',
 //          OBJFILE='TONYW.DINONFS.OBJLIB',
@@ -58,6 +59,7 @@
 //*
 //********************************************************************
 //EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC                                
+//MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                
 //MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR                                 
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW                                 
@@ -68,6 +70,7 @@
 //*                                                                   
 //********************************************************************
 //TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS                                
+//TMVSDOL  EXEC JCCCTST,MODNAME=TMVSDOL                               
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
 //TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
 //TMVSIO3  EXEC JCCCTST,MODNAME=TMVSIO3                               
@@ -75,7 +78,7 @@
 //*                                                                   
 //********************************************************************
 //*                                                                   
-//* Compile, link and run tests                                       
+//* Compile RUNALL, then link and run tests                           
 //*                                                                   
 //********************************************************************
 //JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',         
@@ -85,11 +88,14 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.TESTS.H                     
 //COMPILE.SYSPRINT DD SYSOUT=*                                        
 //PRELINK.I DD DISP=SHR,DSN=SYSD.MUNIT.OBJLIB(MUNIT)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO3)             

@@ -506,7 +506,7 @@ int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
 /* Prototypes: vfs.c                                                    */
 /* -------------------------------------------------------------------- */
 
-void dir_openlist_init();
+void dir_openlist_init(void);
 
 int        vfs_stat(const char *path, vfs_stat_t *st);
 int        vfs_pread(const char *path, void *buf, uint32_t count,
