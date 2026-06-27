@@ -14,6 +14,14 @@ dependencies beyond standard C and POSIX sockets.
 - **Single-threaded.** One `select()` loop, no threads, no `fork()`.
   Up to 16 concurrent TCP connections.
 
+## Project status
+
+* Directory listing of a mounted PDS - Working
+* Read a file - Somewhat working
+* Create, write, rename files -- Not implemented
+
+This project is still in a proof of concept state. 
+
 ## Files
 
 | File | Purpose |
