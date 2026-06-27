@@ -1,66 +1,180 @@
-# nfsd — Minimal NFSv3 Server
+# nfsd — Minimal NFSv3 Server for MVS 3.8J
 
-A minimal NFSv3 (RFC 1813) server written in pure C with no external library
-dependencies beyond standard C and POSIX sockets.
+A minimal NFSv3 (RFC 1813) server written in pure C, targeting MVS 3.8J
+(Hercules emulated mainframe) as the primary platform.  The server exposes
+MVS Partitioned Datasets (PDS) as NFS-mounted directories, making PDS members
+visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
+
+The server also builds and runs on Linux (gcc/glibc), where it serves local
+POSIX directories.  The Linux build is used for development, unit testing, and
+verifying the protocol layer before deploying to MVS.
 
 ## Design goals
 
-- **No external libraries.** Only standard C socket calls.
-- **Endian-agnostic.** All XDR encoding uses explicit byte manipulation,
-  not `htonl()`/`ntohl()`.  Correct on both little-endian (Linux x86_64)
-  and big-endian (MVS/S370) hosts.
-- **Portability-first.** Every OS-specific call is isolated in `vfs.c`.
-  Replace that single file for a new platform.
+- **No external libraries.** Standard C and POSIX sockets only.
+- **Endian-agnostic.** All XDR encoding uses explicit byte manipulation —
+  correct on both little-endian (Linux x86_64) and big-endian (MVS/S370)
+  without relying on `htonl()`/`ntohl()`.
+- **Portability-first.** Platform-specific code is isolated in the `mvsvfs.c`
+  layer (MVS) and `vfs.c` (Linux/POSIX).  The protocol, RPC, and XDR layers
+  are platform-neutral.
 - **Single-threaded.** One `select()` loop, no threads, no `fork()`.
   Up to 16 concurrent TCP connections.
+- **No malloc.** All buffers and caches use static arrays, making the server
+  suitable for MVS where heap allocation is limited.
+- **C89 compliant.** The server compiles with JCC (MVS C compiler) targeting
+  C89.  No C99 features are used in the MVS-specific code.
 
 ## Project status
 
-* Directory listing of a mounted PDS - Working
-* Read a file - Somewhat working
-* Create, write, rename files -- Not implemented
+| Feature | Status |
+|---|---|
+| Directory listing of a mounted PDS | Working |
+| Read a file (PDS member) | Working |
+| File size (true text-mode size cached) | Working |
+| Create / write files | Not implemented |
+| Rename files | Not implemented |
 
-This project is still in a proof of concept state. 
+## Source files
 
-## Files
+### Protocol layer (platform-neutral)
 
 | File | Purpose |
 |---|---|
-| `nfsd.h` | All shared types, constants, and prototypes |
+| `nfsd.h` | All shared types, constants, prototypes, and MVS name aliases |
+| `types.h` | Portable integer types (`uint8_t`, `uint32_t`, `uint64_t`, etc.) |
 | `xdr.c` | XDR encode/decode — pure byte manipulation |
 | `rpc.c` | RPC TCP framing, call parsing, reply headers |
 | `exports.c` | Config file parser and export table |
 | `fhandle.c` | File handle encoding and path cache |
-| `vfs.c` | **VFS abstraction — POSIX implementation** |
 | `portmap.c` | Portmapper protocol (port 111) |
 | `mount3.c` | MOUNT protocol (port 20048) |
 | `nfs3.c` | NFSv3 procedure implementations |
 | `nfsd.c` | `main()`, `select()` loop, connection table |
-| `Makefile` | Build |
-| `nfsd.conf` | Sample config |
-| `nfsd_test.py` | Functional test client (no root required) |
+
+### VFS abstraction
+
+| File | Purpose |
+|---|---|
+| `vfs.c` | POSIX VFS implementation (Linux development and testing) |
+| `mockvfs.c` | Stub VFS used by the Linux unit-test build |
+| `mvsvfs.c/h` | MVS VFS implementation — replaces `vfs.c` on MVS |
+
+### MVS subsystem
+
+| File | Purpose |
+|---|---|
+| `mvsio.c/h` | Path classification (`mvs_path_type`), DCB info retrieval |
+| `mvspdir.c/h` | PDS directory block parsing; ISPF statistics extraction |
+| `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
+| `mvsprw.c/h` | PDS member read with sequential-read position cache |
+| `mvsfsz.c/h` | File-size cache — stores true text-mode sizes of PDS members |
+| `mvsfid.c/h` | Stable 64-bit file ID generation from dataset + member name |
+| `ebcdic.c/h` | EBCDIC ↔ ASCII translation tables |
+
+### Utilities
+
+| File | Purpose |
+|---|---|
+| `logger.c/h` | Levelled logging (`log_debug/info/warn/error/fatal`); MVS WTO support |
+| `hexdump.c/h` | Hex dump helper for debug output |
+| `ressock.c` | Reserved-port socket helper |
+| `asmutils.h` | Assembler utility macros (MVS) |
+| `getcib.asm` | CIB (Console Information Block) reader — MVS assembler module |
+
+### JCL
+
+| File | Purpose |
+|---|---|
+| `jcl/makejcc.jcl` | JCL to compile and link the server on MVS using the JCC compiler |
+| `tests-jcl/testrun.jcl` | JCL to run the unit-test build on MVS |
+
+### Tests
+
+| File | Purpose |
+|---|---|
+| `tests/runall.c` | munit test runner — aggregates all test suites |
+| `tests/tstubs.c/h` | Export-table and path stubs shared by all test modules |
+| `tests/tmvsio.c` | Tests for `mvs_path_type()` (path classification) |
+| `tests/tmvsio2.c` | Tests for `mvs_get_pds_dsn_and_member()` |
+| `tests/tmvsio3.c` | Tests for EBCDIC / DCB helpers |
+| `tests/tmvsio4.c` | Tests for ISPF statistics parsing |
+| `tests/tmvsdol.c` | Tests for directory open-list pool |
+| `tests/tmvsfsz.c` | Tests for the file-size cache |
 
 ## Building
 
+### Linux (development)
+
 ```bash
-make              # debug build
+make              # debug build  → build/nfsd
 make RELEASE=1    # optimised build
 make clean
 ```
 
 Requires: gcc, glibc headers.  No other dependencies.
 
+### Linux unit tests
+
+The test suite uses [munit](https://github.com/nemequ/munit).  Place
+`munit.h` and `munit.c` in the `tests/` directory, then:
+
+```bash
+cc -std=c99 -Wall -I src -I tests \
+   tests/runall.c tests/tstubs.c \
+   tests/tmvsio.c tests/tmvsio2.c tests/tmvsio3.c tests/tmvsio4.c \
+   tests/tmvsdol.c tests/tmvsfsz.c \
+   src/mvsio.c src/mvsdol.c src/mvsfsz.c tests/munit.c \
+   -o tests/runall
+
+tests/runall
+```
+
+### MVS (JCC compiler)
+
+Upload the source to `TONYW.DINONFS.C` (or your equivalent PDS) and submit
+`jcl/makejcc.jcl`.  The JCL compiles each module with JCC and links them
+into a load module.
+
+Key JCC flag: `-o` (lowercase) produces object code.  `-O` (uppercase)
+produces assembler source — do not confuse the two.
+
+```
+PARM='-I//DDN:JCCINCL //DDN:SYSIN -o -LIST=//DDN:SYSPRINT -D__MVS__'
+```
+
 ## Config file
+
+### Linux / POSIX format
 
 ```
 # nfsd.conf
-# Format: <nfs-export-path>  <local-host-path>
+# <nfs-export-path>  <local-host-path>
 /export/src    /home/user/src
 /export/data   /home/user/data
 ```
 
 Lines beginning with `#` are comments.  Blank lines are ignored.
 Up to 16 exports are supported.
+
+### MVS format
+
+Each NFS export maps to one or more MVS PDS datasets.  Each dataset entry
+declares a file extension that is appended to member names on the wire.
+
+```
+/export/tonyw/library {
+    TONYW.LIBRARY.CNTL      fileext="jcl"
+    TONYW.LIBRARY.C         fileext="c"
+    TONYW.LIBRARY.H         fileext="h"
+}
+/export/sys1/proclib {
+    SYS1.PROCLIB            fileext="jclproc"
+}
+```
+
+NFS clients see `MYMEMBER.c`, `MYMEMBER.jcl`, etc.  The server strips the
+extension, uppercases the stem, and looks up the member in the appropriate PDS.
 
 ## Running
 
@@ -70,7 +184,7 @@ Stop the system portmapper first:
 
 ```bash
 sudo systemctl stop rpcbind   # or portmap, depending on distro
-sudo ./nfsd nfsd.conf
+sudo ./build/nfsd nfsd.conf
 ```
 
 Mount from a client:
@@ -79,19 +193,18 @@ Mount from a client:
 # Via portmapper (automatic port discovery):
 sudo mount -t nfs -o nfsvers=3,nolock server:/export/src /mnt/src
 
-# With explicit ports (bypasses portmapper):
+# With explicit ports:
 sudo mount -t nfs \
      -o nfsvers=3,port=2049,mountport=20048,nolock \
      server:/export/src /mnt/src
 
-
-# The following command worked to mount the file system on Ubuntu 24.04.4 LTS
+# Tested on Ubuntu 24.04.4 LTS:
 sudo mount -t nfs \
      -o nfsvers=3,port=12049,mountport=12048,nolock,tcp,soft,timeo=10 \
      192.168.1.168:/export/src /mnt/test
 ```
 
-The following commands can be used to test connectivity to the ports:
+Test port connectivity:
 
 ```bash
 nc -zv 192.168.1.168 12049
@@ -99,20 +212,18 @@ nc -zv 192.168.1.168 12048
 nc -zv 192.168.1.168 11111
 ```
 
-# Using Windows NFS client
+### Windows NFS client
 
-The following command worked on Windows 11 Pro after installing 
-"Services For NFS" / "Client for NFS". This command is default ports returned
-from the integrated portmapper on `port 111`.
+After installing "Services For NFS" / "Client for NFS" on Windows 11 Pro:
 
 ```
 mount -o "nolock,nfsvers=3,tcp,soft,timeo=10" 192.168.1.168:/exports/jcllib x:
 ```
 
-### Non-root (high ports — for development and testing)
+### Non-root (high ports — development and testing)
 
 ```bash
-./nfsd -p 11111 -m 12048 -n 12049 nfsd.conf
+./build/nfsd -p 11111 -m 12048 -n 12049 nfsd.conf
 ```
 
 Mount using explicit ports:
@@ -130,21 +241,6 @@ sudo mount -t nfs \
 | `-p PORT` | 111 | Portmapper port |
 | `-m PORT` | 20048 | MOUNT protocol port |
 | `-n PORT` | 2049 | NFS protocol port |
-
-## Testing without root
-
-`nfsd_test.py` is a self-contained Python 3 test client that exercises every
-implemented procedure.  Start the server on high ports, then run the tests:
-
-```bash
-# Terminal 1:
-./nfsd -p 11111 -m 12048 -n 12049 nfsd.conf
-
-# Terminal 2:
-python3 nfsd_test.py 127.0.0.1 11111 12048 12049
-```
-
-Expected output: 23 tests, 0 failures.
 
 ## Implemented NFS3 procedures
 
@@ -171,157 +267,41 @@ Expected output: 23 tests, 0 failures.
 | LINK | NFS3ERR_NOTSUPP |
 | MKNOD | NFS3ERR_NOTSUPP |
 
-## File handle design
+## MVS architecture
 
-Each file handle is 16 bytes (well within the NFS3 64-byte limit):
+### VFS mapping
 
-```
-bytes  0- 3: magic      = 0x4E465333 ('NFS3')
-bytes  4- 7: export_id  (index into exports table)
-bytes  8-11: dev        (st_dev, 32-bit)
-bytes 12-15: ino        (st_ino, 32-bit)
-```
+The NFS path-to-PDS mapping is performed by `mvsio.c`:
 
-All four fields are stored big-endian on the wire regardless of host
-endianness.  See `fh_encode()` / `fh_decode()` in `fhandle.c`.
+- `mvs_path_type()` classifies an incoming path as a PDS dataset reference
+  (`MVS_PATH_TYPE_DATASET`) or a PDS member reference (`MVS_PATH_TYPE_PDS_MEMBER`).
+  It matches against `host_path_ebcdic` in the export table.
+- `mvs_get_pds_dsn_and_member()` extracts the dataset name and member name
+  from a path.
 
-A path cache (512 entries, round-robin eviction) maps `(export_id, dev, ino)`
-to the file's relative path from the export root.  It is populated on every
-LOOKUP and READDIRPLUS call.
+### VFS node types
 
-## Porting to MVS 3.8j
+`mvsvfs.c` builds a virtual directory tree from the config file.  Two node
+types are used:
 
-### Replace `vfs.c`
-
-Every operating-system-specific call is in `vfs.c`.  The interface is:
+**`vfs-dir` (type 1)** — a synthetic directory that exists only in the VFS,
+with no corresponding MVS dataset.
 
 ```c
-int        vfs_stat(const char *path, vfs_stat_t *st);
-int        vfs_pread(path, buf, count, offset, *nread, *eof);
-int        vfs_pwrite(path, buf, count, offset);
-int        vfs_create(path, mode);
-int        vfs_remove(path);
-int        vfs_truncate(path, size);
-int        vfs_set_times(path, set_atime, atime_sec, set_mtime, mtime_sec);
-int        vfs_fsstat(path, *fs);
-uint32_t   vfs_errno_to_nfs3(int err);
-vfs_dir_t *vfs_opendir(path);
-int        vfs_readdir_next(d, name, maxname, *fileid, *cookie);
-void       vfs_seekdir_to(d, cookie);
-void       vfs_closedir(d);
-```
-
-For MVS, `path` will be a PDS dataset + member reference rather than a POSIX
-path.  The mapping from `export_id + relpath` to `dataset(member)` happens
-entirely inside the new `vfs.c`.
-
-### Planning notes for MVS
-
-- **Directories** → PDS datasets (each export maps to one PDS).
-- **Files** → PDS members (names up to 8 chars, uppercase).
-- **mtime** → ISPF statistics block (last modified date + time).
-- **File size** → calculated from number of records × record length (LRECL)
-  for fixed-length datasets; exact for variable-length.
-- **Text files** → strip trailing spaces from each fixed-length record and
-  append `\n` on read.  Reverse on write.
-- **EBCDIC/ASCII** → translate in `vfs_pread` (output) and `vfs_pwrite`
-  (input) using a lookup table.  The RPC/XDR layer always works in ASCII
-  for filenames (clients send ASCII; translate on the way in and out).
-- **No malloc** → already the case; `vfs.c` uses a static dir pool.
-- **Socket calls** → `nfsd.c` and `rpc.c` use standard BSD sockets.
-  Replace with the Hercules TCP/IP instruction interface.
-
-### Compiler flags for GCCMVS
-
-```makefile
-CC     = gccmvs
-CFLAGS = -std=c99 -D__MVS__
-```
-
-The `#include <stdint.h>` fallback comment in `nfsd.h` shows how to define
-`uint8_t` / `uint32_t` / `uint64_t` manually if the GCCMVS environment does
-not provide `stdint.h`.
-
-## Known limitations
-
-- File handle path cache (512 entries) can evict entries for deep directory
-  trees; stale file handles will return `NFS3ERR_STALE`.
-- `st_ino` and `st_dev` are truncated to 32 bits in the file handle.  On
-  filesystems with 64-bit inodes this can theoretically cause collisions.
-- SETATTR does not implement `mode`, `uid`, or `gid` changes (silently
-  ignored).
-- No locking (`nolock` mount option recommended).
-- No security: all clients have full read/write access.
-
-
-# MVS VFS and mapping
-
-```
-# MVS mapping format
-/export/tonyw/library {
-    TONYW.LIBRARY.CNTL      fileext="jcl"
-    TONYW.LIBRARY.C         fileext="c"
-    TONYW.LIBRARY.H         fileext="h"
-}
-/export/sys1/proclib {
-    SYS1.PROCLIB            fileext="jclproc"
-    SYS1.PARMLIB            fileext="txt"
-}
-/export/sys1/parmlib {
-    SYS1.PARMLIB            fileext="txt"
-}
-```
-
-## VFS Nodes
-
-An array of nodes, which create the virtual file system structure (the directories) 
-and how those directories relate to the real MVS DASD layout.
-
-### Node types
-
-* `vfs-dir` - A fixed directory node, which exists only in the VFS
-* `pds-dir` - A directory node, which maps to a single MVS PDS
-
-### Node type `vfs-dir` (type ID `1`)
-
-This node type creates a constant and fake directory node in the VFS. It has the following attributes --
-
-* vfs-node-number - This node's ID number
-* parent-vfs-node-number - The node ID of the parent node
-* next-node-number - The next sibling node number
-* node-type - The type of this node (type 1)
-* first-child-node-number - The first child node
-* directory-name - The name of the directory this node represents
-
-```c
-struct vfs_node_vfs_dir {
+typedef struct vfs_node_vfs_dir {
     uint32_t        node_num;
     uint32_t        parent_node_num;
     uint32_t        next_node_num;
     uint8_t         node_type;
     uint32_t        first_child_node_num;
     unsigned char * directory_name;
-};
+} vfs_node_vfs_dir_t;
 ```
 
-### Node type `pds-dir` (type ID `2`)
-
-This node maps a MVS partitioned dataset into this VFS directory. It has the following attributes --
-
-* `vfs-node-number` - This node's ID number
-* `parent-vfs-node-number` - The node ID of the parent node
-* `next-node-number` - The next sibling node number
-* `node-type` - The type of this node (type 2)
-* `first-child-node-number` - The first child node
-* `directory-name` - The name of the directory this node represents
-* `file-name-ext` - The file name extension that will be applied to the translated 
-  names of the PDS directory members. This is also used to locate the correct 
-  MVS PDS for new files being created and existing files being updated
-* `MVS PDS dataset name` - The MVS dataset name
-* `MVS vol-ser` - The MVS dataset's volume serial number
+**`pds-dir` (type 2)** — a directory node that maps to a single MVS PDS.
 
 ```c
-struct vfs_node_pds_dir {
+typedef struct vfs_node_pds_dir {
     uint32_t        node_num;
     uint32_t        parent_node_num;
     uint32_t        next_node_num;
@@ -331,8 +311,147 @@ struct vfs_node_pds_dir {
     unsigned char * file_name_ext;
     unsigned char   mvs_pds_dsname[45];
     unsigned char   mvs_vol_ser[7];
-};
+} vfs_node_pds_dir_t;
 ```
 
+### Directory open-list pool (`mvsdol.c`)
 
-##
+PDS directory scans are expensive.  `mvsdol.c` maintains a static pool of
+`vfs_dir_t` handles, each caching up to 250 sorted `pds_member_entry_t`
+records from a recent directory read.
+
+- Pool entries time out after **5 seconds** of inactivity and are reclaimed
+  by the next `dir_openlist_find_free()` call.
+- `dir_openlist_find_by_dsname()` looks up a live, non-expired entry by
+  dataset name so a second `READDIR`/`READDIRPLUS` for the same PDS reuses
+  the cached scan.
+- Binary search with full operator support (`LT`, `EQ`, `GT`, `LE`, `GE`)
+  is provided by `dir_openlist_search_members()` for cookie-based resumption.
+
+### ISPF statistics (`mvspdir.c`)
+
+ISPF writes an 18-byte statistics block into the PDS directory user-data
+field for each member it has touched.  `mvs_extract_ispf_stats()` decodes
+this block and populates `pds_member_entry_t` with:
+
+- Member name, version/modification counters
+- Creation and last-change dates
+- Line count (ISPF member size)
+- Modification timestamp (converted to `time_t`)
+- `info_flags |= MVS_PDSDIR_IFLG_ISPFSTATS` to record that ISPF stats
+  were present
+
+Members without ISPF stats get synthetic values from `mvs_set_no_ispf_stats()`.
+
+### File-size cache (`mvsfsz.c`)
+
+Computing the true byte size of a PDS member requires opening the file and
+reading it in text mode (stripping trailing spaces and converting fixed-length
+records to newline-terminated lines).  This is expensive.
+
+`mvsfsz.c` caches the result in a static table of up to 16 entries
+(configurable via `MVSFSZ_CACHE_CAPACITY`), keyed on dataset name + member
+name.  Each entry stores:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `file_size` | `uint64_t` | true text-mode size in bytes |
+| `ttr_tt` | `uint16_t` | PDS TTR track address — detects member replacement |
+| `ttr_r` | `uint8_t` | PDS TTR record number |
+| `ispf_size` | `int32_t` | ISPF line count — detects content change |
+| `ispf_mtime` | `int32_t` | ISPF modification timestamp — detects edits |
+
+The caller is responsible for validity: retrieve the entry with `mvsfsz_get()`,
+compare the validity fields against the current PDS directory entry, and call
+`mvsfsz_invalidate()` if any field differs before re-reading.
+
+`mvsfsz_put()` has upsert semantics — updating an existing key does not
+increment the count or require a free slot.
+
+### Read cache (`mvsprw.c`)
+
+`mvsprw.c` maintains a small cache (`MVS_RCACHE_ENTRIES = 20`) of read state
+for open PDS members.  Each entry stores the last read offset and the
+corresponding `fpos_t` so that sequential NFS READ calls can continue from
+the previous file position without rewinding to the start of the member.
+
+`mvs_pds_member_pread()` and `mvs_pds_member_read()` both return a
+`uint64_t *real_file_size` output parameter that is set to the true file size
+when EOF is reached during a read.  This value is passed up to `vfs_pread()`
+and used to populate the file-size cache via `mvsfsz_put()`.
+
+### File identifiers (`mvsfid.c`)
+
+NFS requires a stable 64-bit file ID (inode number) for each file and
+directory.  On MVS there are no POSIX inodes, so `mvs_fid_hash()` computes
+a stable 64-bit hash from the dataset name and member name:
+
+- `mvs_fid_hash(dsname, member)` → 64-bit fileid for `vfs_stat_t.fileid`
+- `mvs_fid_ino32(dsname, member)` → 32-bit fold for the file-handle cache key
+
+Domain separation ensures that a dataset-only hash never collides with a
+dataset+member hash.
+
+### EBCDIC/ASCII translation
+
+All internal strings (dataset names, member names, paths) are kept in ASCII
+on Linux and in EBCDIC on MVS.  The `export_t` struct carries both variants:
+
+| Field | Contains |
+|---|---|
+| `host_path` | ASCII host/dataset path |
+| `host_path_ebcdic` | EBCDIC copy (== ASCII on Linux test builds) |
+| `export_path` | ASCII NFS export path |
+| `export_path_ebcdic` | EBCDIC copy |
+
+`mvs_path_type()` always compares incoming paths against `host_path_ebcdic`.
+
+### Logging
+
+`logger.c` provides five levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
+On MVS, `INFO` and above are also sent to the operator console via WTO
+(`_write2op`).  The `log_ascii()` helper converts an ASCII string to EBCDIC
+for use as a `%s` argument on MVS, where `fprintf()` expects EBCDIC.
+
+### MVS name-length limits
+
+The MVS linkage editor truncates external names to 8 characters.  All
+functions and globals in the MVS build are mapped to short names via
+`#define` blocks at the top of each header (e.g. `xdr_init_read` →
+`xdrInRd`, `vfs_pread` → `vfsPread`).  The block is guarded by
+`#if defined(__MVS__)` so Linux builds use the full names.
+
+## File handle design
+
+Each file handle is 16 bytes (well within the NFS3 64-byte limit):
+
+```
+bytes  0- 3: magic      = 0x4E465333 ('NFS3')
+bytes  4- 7: export_id  (index into exports table)
+bytes  8-11: raw_dev    (export_id cast to uint32_t, on MVS)
+bytes 12-15: raw_ino    (mvs_fid_ino32(dsname, member), on MVS)
+```
+
+On the Linux/POSIX build `raw_dev` and `raw_ino` hold `st_dev` and `st_ino`
+from `stat()`.
+
+All fields are stored big-endian on the wire.  See `fh_encode()` /
+`fh_decode()` in `fhandle.c`.
+
+A path cache (512 entries, round-robin eviction) maps `(export_id, raw_dev,
+raw_ino)` to the file's relative path from the export root.  It is populated
+on every LOOKUP and READDIRPLUS call.
+
+## Known limitations
+
+- File handle path cache (512 entries) can evict entries under heavy load;
+  stale file handles return `NFS3ERR_STALE`.
+- File size cache (`mvsfsz`) holds a maximum of 16 entries; members that cycle
+  out lose their cached size and will require a full re-read to repopulate.
+  An LRU eviction policy is planned.
+- Read cache (`mvsprw`) holds 20 entries; entries time out after 5 seconds of
+  inactivity.
+- SETATTR does not implement `mode`, `uid`, or `gid` changes (silently ignored).
+- No locking (`nolock` mount option recommended).
+- No authentication: all clients have full read/write access.
+- Create/write/rename operations are not yet implemented on the MVS VFS layer.
