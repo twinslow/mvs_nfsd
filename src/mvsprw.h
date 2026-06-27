@@ -52,7 +52,8 @@ int mvs_pds_member_pread(
     uint32_t            count,
     uint64_t            offset,
     uint32_t           *nread,
-    int                *eof);
+    int                *eof,
+    uint64_t           *real_file_size);
 
 
 /* -------------------------------------------------------------------- */
@@ -67,7 +68,7 @@ int mvs_pds_member_read(
     uint32_t     count,
     uint8_t     *buf,
     uint32_t    *nread,
-    int         *eof);
-
+    int         *eof,
+    uint64_t    *real_file_size);
 
 #endif

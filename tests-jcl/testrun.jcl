@@ -60,6 +60,7 @@
 //********************************************************************
 //EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC                                
 //MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                
+//MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                                
 //MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR                                 
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW                                 
@@ -71,6 +72,7 @@
 //********************************************************************
 //TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS                                
 //TMVSDOL  EXEC JCCCTST,MODNAME=TMVSDOL                               
+//TMVSFSZ  EXEC JCCCTST,MODNAME=TMVSFSZ                               
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
 //TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
 //TMVSIO3  EXEC JCCCTST,MODNAME=TMVSIO3                               
@@ -90,12 +92,14 @@
 //PRELINK.I DD DISP=SHR,DSN=SYSD.MUNIT.OBJLIB(MUNIT)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSFSZ)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO3)             

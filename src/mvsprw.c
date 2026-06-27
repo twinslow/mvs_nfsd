@@ -107,11 +107,14 @@ int mvs_pds_member_pread(
     uint32_t                count,
     uint64_t                offset,
     uint32_t                *nread,
-    int                     *eof) 
+    int                     *eof,
+    uint64_t                *file_size) 
 {
 
     int rc = 0;
     size_t read_bytes;
+    uint64_t real_file_size;
+    char     discard[1024];
 
     if (offset > 0) {
         if (cache_entry->has_last_getpos &&
@@ -146,6 +149,8 @@ int mvs_pds_member_pread(
     /* If we hit EOF, then we don't need the cache entry */
     if ( *eof ) {
         mvs_rcache_entry_reset(cache_entry);
+        if ( offset == 0 )
+            *file_size = *nread;
         return 0;
     }
 
@@ -163,6 +168,15 @@ int mvs_pds_member_pread(
         cache_entry->has_last_getpos = 1;
     }
 
+    /* If we started reading from the beginning of the file, with offset = 0 then let's find out the real file size */
+    if ( offset == 0 ) {
+        real_file_size = *nread;
+        if ( !*eof ) {
+            while ( !feof(fh) )
+                real_file_size += fread(discard, 1, (size_t)discard, fh);            
+        }
+        *file_size = real_file_size;
+    }
     return 0;
 }
 
@@ -174,7 +188,8 @@ int mvs_pds_member_read(
     uint32_t     count,
     uint8_t     *buf,
     uint32_t    *nread,
-    int         *eof)
+    int         *eof,
+    uint64_t    *real_file_size)
 {
     mvs_rcache_entry_t *cache_entry;
     FILE *fh;
@@ -206,7 +221,7 @@ int mvs_pds_member_read(
         return -1;
 
     // Read the requested data from the file
-    rc = mvs_pds_member_pread(cache_entry, fh, buf, count, offset, nread, eof);
+    rc = mvs_pds_member_pread(cache_entry, fh, buf, count, offset, nread, eof, real_file_size);
     if ( rc  < 0 ) {
         saved_errno = errno;
         (void)mvs_pds_member_close(cache_entry, fh);

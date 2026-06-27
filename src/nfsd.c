@@ -51,6 +51,7 @@
 
 #include "nfsd.h"
 #include "logger.h"
+#include "mvsfsz.h"
 
 /* ------------------------------------------------------------------ */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
@@ -280,6 +281,7 @@ int main(int argc, char *argv[])
     log_info("nfsd: starting up");
 
     dir_openlist_init();
+    mvsfsz_init();
     
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {

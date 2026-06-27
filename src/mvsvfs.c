@@ -32,6 +32,7 @@
 #include "mvsprw.h"
 #include "nfsd.h"
 #include "hexdump.h"
+#include "mvsfsz.h"
 #include "mvsvfs.h"
 #include "mvsdol.h"
 #include "logger.h"
@@ -67,14 +68,15 @@ static uint64_t vfs_stat_member_size_calc(
 }
 
 
-static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
+static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs, int real_file_size)
 {
     pds_member_entry_t   mem_entry;
     pds_member_entry_t  *member_entry;
     char                 pds_dsname[45];
     char                 pds_member_name[9];
-    uint64_t             estimated_size;
-    int                  retcode;
+    uint64_t             set_size;
+    int                  retcode, rc2;
+    mvsfsz_entry_t       file_size_entry;
 
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
@@ -90,15 +92,35 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
         }
     }
 
-    estimated_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
+    if ( real_file_size >= 0 ) {
+        /* We've been given the real file size, so we'll save that in the file size cache */
+        rc2 = mvsfsz_put(pds_dsname, pds_member_name, real_file_size,
+            member_entry->first_block_tt, member_entry->first_block_rec,
+            member_entry->size, member_entry->chgdate);
+        if ( rc2 == 0 )
+            log_info("vfs_stat_pds_member: Saved file size %d to size cache for %s(%s)",
+                real_file_size, pds_dsname, pds_member_name);
+        else
+            log_error("vfs_stat_pds_member: Failed to save file size %d to cache for %s(%s)",
+                rc2, real_file_size, pds_dsname, pds_member_name);
+        set_size = real_file_size;
+    } else {
+        /* No real file size, so we'll attempt to get from cache */
+        rc2 = mvsfsz_get(pds_dsname, pds_member_name, &file_size_entry);
+        if ( rc2 == 0 )
+            set_size = file_size_entry.file_size;
+        else
+            /* Didn't find in cache, so estimate */
+            set_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
+    }
 
     vs->ftype = NF3REG;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
     vs->nlink = 1;   /* convention for files: one link from parent directory */
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
-    vs->size = estimated_size;
-    vs->used = estimated_size; 
+    vs->size = set_size;
+    vs->used = set_size; 
     vs->rdev_maj = 0;
     vs->rdev_min = 0;
     vs->fsid = (uint64_t)export_idx + 1; /* unique filesystem ID based on export index */
@@ -115,6 +137,7 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
 
     return 0;
 }
+
 
 static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
 {
@@ -161,7 +184,7 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
     }
 }
 
-int vfs_stat(const char *path, vfs_stat_t *vs)
+int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
 {
     int export_idx;
     char ebcdic_path[MAX_PATH_LEN];
@@ -177,7 +200,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     path_type = mvs_path_type(ebcdic_path, &export_idx);
 
     if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
-        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs);
+        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs, real_file_size);
         dump_stat_result(path, retcode, vs);
         return retcode;
     } else if (path_type == MVS_PATH_TYPE_DATASET) {
@@ -189,7 +212,13 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     log_debug("vfs_stat: Result error ... returning -1");
     return -1;
 }
- 
+
+/* This is just a wrapper to allow call with no actual file size specified */
+int vfs_stat(const char *path, vfs_stat_t *vs)
+{
+    return vfs_stat_set_file_size(path, vs, -1);
+}
+
 /* -------------------------------------------------------------------- */
 /* vfs_pread: positional read from path.                                */
 /* Opens, reads count bytes at offset, closes.                          */
@@ -198,15 +227,20 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 /* -------------------------------------------------------------------- */
 
 int vfs_pread(const char *path, void *buf, uint32_t count,
-              uint64_t offset, uint32_t *nread, int *eof)
+              uint64_t offset, uint32_t *nread, int *eof,
+              uint64_t *real_file_size)
 {
     int         saved_errno;
-    int         rc;
+    int         rc, rc2, saved;
     char        ebcdic_path[MAX_PATH_LEN];
     char        pds_dsname[45];
     char        pds_member_name[9];
     int         export_idx; 
     int         path_type;
+    uint64_t    actual_file_size;
+    pds_member_entry_t *member_entry;
+    vfs_stat_t  vs; 
+
 
     log_debug("vfs_pread: path=%s, count=%d, offset=%lld", 
         log_ascii(path), count, offset);
@@ -239,7 +273,8 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         count,
         buf,
         nread,
-        eof);
+        eof,
+        real_file_size);
 
     // Translate the data read from the host (EBCDIC) to ASCII for the
     // NFS client.
@@ -247,12 +282,13 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
 
-    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d", 
-        log_ascii(path), *nread, *eof);
+    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d, real_file_size=%ulld", 
+        log_ascii(path), *nread, *eof, *real_file_size);
 
     return rc;
 }
- 
+
+
 /* -------------------------------------------------------------------- */
 /* vfs_pwrite: positional write to path.                                */
 /* Opens for writing, writes count bytes at offset, fsyncs, closes.     */

@@ -5,8 +5,8 @@
  *   cc -std=c99 -Wall -I src -I tests \
  *      tests/runall.c tests/tstubs.c \
  *      tests/tmvsio.c tests/tmvsio2.c tests/tmvsio3.c tests/tmvsio4.c \
- *      tests/tmvsdol.c \
- *      src/mvsio.c src/mvsdol.c tests/munit.c \
+ *      tests/tmvsdol.c tests/tmvsfsz.c \
+ *      src/mvsio.c src/mvsdol.c src/mvsfsz.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
@@ -31,12 +31,13 @@ extern MunitSuite tmvsio2_suite;
 extern MunitSuite tmvsio3_suite;
 extern MunitSuite tmvsio4_suite;
 extern MunitSuite tmvsdol_suite;
+extern MunitSuite tmvsfsz_suite;
 
 /*
  * NUM_SUITES: count of module suites (excluding the NULL terminator).
  * Increment this by one each time a new extern suite is added.
  */
-#define NUM_SUITES 5
+#define NUM_SUITES 6
 
 /* -----------------------------------------------------------------------
  * main: build the root suite from all module suites and run it.
@@ -57,6 +58,7 @@ int main(int argc, char *argv[])
     all_suites[2] = tmvsio3_suite;
     all_suites[3] = tmvsio4_suite;
     all_suites[4] = tmvsdol_suite;
+    all_suites[5] = tmvsfsz_suite;
 
     /* NULL terminator entry */
     memset(&all_suites[NUM_SUITES], 0, sizeof(MunitSuite));

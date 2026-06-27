@@ -509,8 +509,9 @@ int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
 void dir_openlist_init(void);
 
 int        vfs_stat(const char *path, vfs_stat_t *st);
+int        vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size);
 int        vfs_pread(const char *path, void *buf, uint32_t count,
-               uint64_t offset, uint32_t *nread, int *eof);
+               uint64_t offset, uint32_t *nread, int *eof, uint64_t *real_file_size);
 int        vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset);
 int        vfs_create(const char *path, uint32_t mode);
