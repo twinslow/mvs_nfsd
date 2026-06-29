@@ -105,12 +105,12 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs,
                 rc2, real_file_size, pds_dsname, pds_member_name);
         set_size = real_file_size;
     } else {
-        /* No real file size, so we'll attempt to get from cache */
-        rc2 = mvsfsz_get(pds_dsname, pds_member_name, &file_size_entry);
-        if ( rc2 == 0 )
-            set_size = file_size_entry.file_size;
-        else
-            /* Didn't find in cache, so estimate */
+        /* Get the member size from the cache, or if required it will read the member. */
+        rc2 = mvsfsz_get_member_size(
+            pds_dsname, pds_member_name, 
+            member_entry, &set_size);
+
+        if ( rc2 != 0 )
             set_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
     }
 

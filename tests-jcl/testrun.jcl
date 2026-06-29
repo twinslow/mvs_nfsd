@@ -104,5 +104,8 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO3)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO4)             
-//          DD DSN=&&OBJ,DISP=(OLD,DELETE)                            
+//          DD DSN=&&OBJ,DISP=(OLD,DELETE)
+//GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
+//          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),
+//          DCB=(DSORG=PS,RECFM=VB,LRECL=255,BLKSIZE=27998)                             
 //                                                                    

@@ -6,7 +6,7 @@
  *      tests/runall.c tests/tstubs.c \
  *      tests/tmvsio.c tests/tmvsio2.c tests/tmvsio3.c tests/tmvsio4.c \
  *      tests/tmvsdol.c tests/tmvsfsz.c \
- *      src/mvsio.c src/mvsdol.c src/mvsfsz.c tests/munit.c \
+ *      src/mvsio.c src/mvsdol.c src/mvsfsz.c src/mvspdir.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
