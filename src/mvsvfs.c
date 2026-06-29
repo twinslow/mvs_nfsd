@@ -173,14 +173,45 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
 }
 
 void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
-    log_debug("vfs_stat: Result for path=%s ending retcode=%d", 
+    char       atime_buf[32];
+    char       mtime_buf[32];
+    char       ctime_buf[32];
+    time_t     t;
+    struct tm *tm_p;
+
+    log_debug("vfs_stat: Result for path=%s ending retcode=%d",
         log_ascii(path), rc);
-    if ( rc == 0 ) {
-        log_debug("vfs_stat:      vs->size      = %lld", vs->size);
-        log_debug("vfs_stat:      vs->used      = %lld", vs->used);
-        log_debug("vfs_stat:      vs->fsid      = %lld", vs->fsid);
-        log_debug("vfs_stat:      vs->fileid    = 0x%016X", vs->fileid);
-        log_debug("vfs_stat:      vs->raw_ino   = 0x%08X", vs->raw_ino);
+    if (rc == 0) {
+        t    = (time_t)vs->atime_sec;
+        tm_p = gmtime(&t);
+        if (tm_p != NULL)
+            strftime(atime_buf, sizeof(atime_buf), "%Y-%m-%d %H:%M:%S", tm_p);
+        else
+            atime_buf[0] = '\0';
+
+        t    = (time_t)vs->mtime_sec;
+        tm_p = gmtime(&t);
+        if (tm_p != NULL)
+            strftime(mtime_buf, sizeof(mtime_buf), "%Y-%m-%d %H:%M:%S", tm_p);
+        else
+            mtime_buf[0] = '\0';
+
+        t    = (time_t)vs->ctime_sec;
+        tm_p = gmtime(&t);
+        if (tm_p != NULL)
+            strftime(ctime_buf, sizeof(ctime_buf), "%Y-%m-%d %H:%M:%S", tm_p);
+        else
+            ctime_buf[0] = '\0';
+
+        log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
+        log_debug("vfs_stat:      vs->size      = %lld",             vs->size);
+        log_debug("vfs_stat:      vs->used      = %lld",             vs->used);
+        log_debug("vfs_stat:      vs->fsid      = %lld",             vs->fsid);
+        log_debug("vfs_stat:      vs->fileid    = 0x%016X",          vs->fileid);
+        log_debug("vfs_stat:      vs->raw_ino   = 0x%08X",           vs->raw_ino);
+        log_debug("vfs_stat:      vs->atime_sec = 0x%08X (%s UTC)",  vs->atime_sec, atime_buf);
+        log_debug("vfs_stat:      vs->mtime_sec = 0x%08X (%s UTC)",  vs->mtime_sec, mtime_buf);
+        log_debug("vfs_stat:      vs->ctime_sec = 0x%08X (%s UTC)",  vs->ctime_sec, ctime_buf);
     }
 }
 

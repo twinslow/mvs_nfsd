@@ -282,6 +282,7 @@ int main(int argc, char *argv[])
 
     dir_openlist_init();
     mvsfsz_init();
+    mvsfsz_load("//DDN:FILESIZE");
     
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {

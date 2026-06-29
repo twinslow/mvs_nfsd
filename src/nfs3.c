@@ -162,12 +162,18 @@ void xdr_read_sattr3(xdr_t *x, sattr3_t *a)
 static void make_child_relpath(const char *parent_rel, const char *name,
                                 char *child_rel, size_t maxlen)
 {
+#ifdef __MVS__
+    char ascii_slash_char = ebcdic_to_ascii_c('/');
+#else
+    char ascii_slash_char = '/';
+#endif
+
     if (parent_rel[0] == '\0') {
         strncpy(child_rel, name, maxlen - 1);
         child_rel[maxlen - 1] = '\0';
     } else {
         snprintf(child_rel, maxlen, "%s%c%s", 
-            parent_rel, ebcdic_to_ascii_c('/'), name);
+            parent_rel, ascii_slash_char, name);
     }
 }
 
@@ -181,10 +187,17 @@ static void make_child_relpath(const char *parent_rel, const char *name,
  */
 static int name_is_valid(const char *name)
 {
-    if (name[0] == '\0') return 0;
-    if (name[0] == '.' && name[1] == '\0') return 0;
-    if (name[0] == '.' && name[1] == '.' && name[2] == '\0') return 0;
-    if (strchr(name, '/') != NULL) return 0;
+#ifdef __MVS__
+    char xname[MAX_PATH];
+    ascii_to_ebcdic(xname, name, sizeof(xname));
+#else
+    char *xname = name;
+#endif
+
+    if (xname[0] == '\0') return 0;
+    if (xname[0] == '.' && xname[1] == '\0') return 0;
+    if (xname[0] == '.' && xname[1] == '.' && xname[2] == '\0') return 0;
+    if (strchr(xname, '/') != NULL) return 0;
     return 1;
 }
 
@@ -221,7 +234,16 @@ static uint32_t check_access(const vfs_stat_t *st, uint32_t uid,
 /* Helper: strip last component from relpath to get parent relpath */
 static void parent_relpath(const char *relpath, char *parent, size_t maxlen)
 {
-    const char *slash = strrchr(relpath, '/');
+    char ascii_slash_char;
+    char *slash;
+
+#ifdef __MVS__
+    ascii_slash_char = ebcdic_to_ascii_c('/');
+#else
+    ascii_slash_char = '/';
+#endif
+
+    slash = strrchr(relpath, ascii_slash_char);
     if (!slash) {
         parent[0] = '\0';   /* parent is export root */
     } else {
@@ -253,9 +275,15 @@ static void proc_getattr(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_read_fhandle3(in, &fh, &ok);
     rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
 
-    if (!ok) { xdr_write_uint32(out, NFS3ERR_BADHANDLE); return; }
+    if (!ok) { 
+        xdr_write_uint32(out, NFS3ERR_BADHANDLE); 
+        log_debug("nfs3.proc_getattr: Returning error NFS3ERR_BADHANDLE");
+        return; 
+    }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
-        xdr_write_uint32(out, NFS3ERR_STALE); return;
+        xdr_write_uint32(out, NFS3ERR_STALE); 
+        log_debug("nfs3.proc_getattr: Returning error NFS3ERR_STALE");
+        return;
     }
 
     log_debug("nfs3.proc_getattr: Starting for path %s",
@@ -349,16 +377,19 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
     if (!ok || in->error) {
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
+        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (!name_is_valid(name)) {
         xdr_write_uint32(out, NFS3ERR_INVAL);
         xdr_write_post_op_attr(out, NULL, 0);
+        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_INVAL");
         return;
     }
     if (fh_resolve(&dir_fh, dir_path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
+        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_STALE");
         return;
     }
 
@@ -413,12 +444,14 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
+        log_debug("nfs3.proc_access: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
+        log_debug("nfs3.proc_access: Returning error NFS3ERR_STATE");
         return;
     }
 
@@ -462,11 +495,13 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
     if (!ok) {
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
+        log_debug("nfs3.proc_read: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
+        log_debug("nfs3.proc_read: Returning error NFS3ERR_STALE");
         return;
     }
 
