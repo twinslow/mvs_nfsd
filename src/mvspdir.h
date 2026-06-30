@@ -5,6 +5,13 @@
 #include <time.h>
 #include "types.h"
 
+/* -------------------------------------------------------------------- */
+/* Member list and management functions                                 */
+/* -------------------------------------------------------------------- */
+
+#define MVSPDIR_MLIST_INITIAL_SIZE      40
+#define MVSPDIR_MLIST_INCREMENT_SIZE    40
+
 typedef struct {
     int32_t          crdate;
     int32_t          chgdate;
@@ -22,21 +29,38 @@ typedef struct {
     uint8_t          info_flags;
 } pds_member_entry_t;
 
-#define MVS_PDSDIR_IFLG_ISPFSTATS        0x80
+typedef struct {
+    int32_t             list_size;
+    int32_t             number_in_list;
+    pds_member_entry_t *list;
+} pds_member_list_t;
 
-#define MVS_PDSDIR_ENDMARK          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
-#define MVS_PDSDIR_USERDATA_COUNT_MASK ((unsigned char) 0x1F)
-#define MVS_PDSDIR_ALIAS_MASK   ((unsigned char) 0x80)
-#define MVS_PDSDIR_ISPF_EXT_STATS ((unsigned char) 0x04)
+/* Initialize a new list structure. */
+int mvspdir_mlist_init(pds_member_list_t *mlist);
 
-time_t convert_ispf_datetime(
-    uint8_t         *dateptr,
-    uint8_t         *hhmmf,
-    uint8_t          seconds);
+/* Get the next free entry in the list -- expands list if required */
+pds_member_entry_t *mvspdir_mlist_getfree(pds_member_list_t *mlist);
+
+/* Add the entry to the list as last entry -- sets list size */
+int mvspdir_mlist_setaslast(pds_member_list_t *mlist, pds_member_entry_t *entry);
+
+/* Expand list */
+int mvspdir_mlist_expand(pds_member_list_t *mlist);
+
+/* Shrink list to its current used size (which may be zero) */
+int mvspdir_mlist_shrink(pds_member_list_t *mlist);
+
+/* Free the list's storage and reset it to an empty/initial state */
+void mvspdir_mlist_free(pds_member_list_t *mlist);
+
 
 /* -------------------------------------------------------------------- */
 /* ISPF statistics                                                      */
 /* -------------------------------------------------------------------- */
+time_t convert_ispf_datetime(
+    uint8_t         *dateptr,
+    uint8_t         *hhmmf,
+    uint8_t          seconds);
 
 void mvs_extract_ispf_stats(
     pds_member_entry_t  *entry,
@@ -48,6 +72,13 @@ void mvs_set_no_ispf_stats(pds_member_entry_t *entry);
 /* -------------------------------------------------------------------- */
 /* Directory entry parsing                                              */
 /* -------------------------------------------------------------------- */
+
+#define MVS_PDSDIR_IFLG_ISPFSTATS        0x80
+#define MVS_PDSDIR_ENDMARK          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
+#define MVS_PDSDIR_USERDATA_COUNT_MASK ((unsigned char) 0x1F)
+#define MVS_PDSDIR_ALIAS_MASK   ((unsigned char) 0x80)
+#define MVS_PDSDIR_ISPF_EXT_STATS ((unsigned char) 0x04)
+
 
 void mvs_pds_member_entry_init(pds_member_entry_t *entry);
 

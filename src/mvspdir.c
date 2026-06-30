@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "nfsd.h"
@@ -59,6 +60,146 @@ int mvs_close_pds_dir(FILE *pds_dir_fh) {
         return -1;
     }
     return 0; // Return 0 on success
+}
+
+/* -------------------------------------------------------------------- */
+/* Member list management                                               */
+/*                                                                      */
+/* A pds_member_list_t is a growable array of pds_member_entry_t:       */
+/*   list_size      = allocated capacity (number of entries)            */
+/*   number_in_list = number of entries currently in use               */
+/*   list           = the allocated array (NULL when empty)             */
+/* -------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------- */
+/* Initialize a new list: allocate the initial array and reset counts.  */
+/* Returns 0 on success, -1 (errno=ENOMEM) on allocation failure.       */
+/* -------------------------------------------------------------------- */
+int mvspdir_mlist_init(pds_member_list_t *mlist)
+{
+    pds_member_entry_t *new_list;
+
+    mlist->list           = NULL;
+    mlist->list_size      = 0;
+    mlist->number_in_list = 0;
+
+    new_list = (pds_member_entry_t *)malloc(
+        (size_t)MVSPDIR_MLIST_INITIAL_SIZE * sizeof(pds_member_entry_t));
+    if (new_list == NULL) {
+        log_error("mvspdir_mlist_init: malloc of %d entries failed",
+                  MVSPDIR_MLIST_INITIAL_SIZE);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    mlist->list      = new_list;
+    mlist->list_size = MVSPDIR_MLIST_INITIAL_SIZE;
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* Expand the list capacity by MVSPDIR_MLIST_INCREMENT_SIZE entries.    */
+/* On failure the original list is left intact.                         */
+/* -------------------------------------------------------------------- */
+int mvspdir_mlist_expand(pds_member_list_t *mlist)
+{
+    int32_t             new_size;
+    pds_member_entry_t *new_list;
+
+    new_size = mlist->list_size + MVSPDIR_MLIST_INCREMENT_SIZE;
+    new_list = (pds_member_entry_t *)realloc(mlist->list,
+        (size_t)new_size * sizeof(pds_member_entry_t));
+    if (new_list == NULL) {
+        log_error("mvspdir_mlist_expand: realloc to %d entries failed",
+                  new_size);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    mlist->list      = new_list;
+    mlist->list_size = new_size;
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* Reserve and return the next free entry, expanding the list if it is  */
+/* full.  The slot is zero-initialised and number_in_list is bumped;    */
+/* the caller fills the returned entry in place.  NULL on failure.      */
+/* -------------------------------------------------------------------- */
+pds_member_entry_t *mvspdir_mlist_getfree(pds_member_list_t *mlist)
+{
+    pds_member_entry_t *entry;
+
+    if (mlist->number_in_list >= mlist->list_size) {
+        if (mvspdir_mlist_expand(mlist) != 0)
+            return NULL;
+    }
+
+    entry = &mlist->list[mlist->number_in_list];
+    mlist->number_in_list++;
+    mvs_pds_member_entry_init(entry);
+    return entry;
+}
+
+/* -------------------------------------------------------------------- */
+/* Append a copy of entry as the last element of the list.              */
+/* Returns 0 on success, -1 on allocation failure.                      */
+/* -------------------------------------------------------------------- */
+int mvspdir_mlist_setaslast(pds_member_list_t *mlist, pds_member_entry_t *entry)
+{
+    pds_member_entry_t *slot;
+
+    slot = mvspdir_mlist_getfree(mlist);
+    if (slot == NULL)
+        return -1;
+
+    *slot = *entry;   /* copy caller's entry into the reserved slot */
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* Shrink the allocated capacity to the number of entries in use.       */
+/* If the list is empty it is freed and reset to NULL/0.  On realloc    */
+/* failure the original (larger) list is left intact.                   */
+/* -------------------------------------------------------------------- */
+int mvspdir_mlist_shrink(pds_member_list_t *mlist)
+{
+    pds_member_entry_t *new_list;
+
+    if (mlist->number_in_list <= 0) {
+        free(mlist->list);
+        mlist->list           = NULL;
+        mlist->list_size      = 0;
+        mlist->number_in_list = 0;
+        return 0;
+    }
+
+    new_list = (pds_member_entry_t *)realloc(mlist->list,
+        (size_t)mlist->number_in_list * sizeof(pds_member_entry_t));
+    if (new_list == NULL) {
+        log_error("mvspdir_mlist_shrink: realloc to %d entries failed",
+                  mlist->number_in_list);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    mlist->list      = new_list;
+    mlist->list_size = mlist->number_in_list;
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* Free the list's storage and reset it to an empty state.  Safe to     */
+/* call on an already-empty list (list == NULL); free(NULL) is a no-op. */
+/* After this call the structure may be reused via mvspdir_mlist_init   */
+/* or mvspdir_mlist_getfree.                                            */
+/* -------------------------------------------------------------------- */
+void mvspdir_mlist_free(pds_member_list_t *mlist)
+{
+    free(mlist->list);
+    mlist->list           = NULL;
+    mlist->list_size      = 0;
+    mlist->number_in_list = 0;
 }
 
 /*
