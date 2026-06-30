@@ -5,25 +5,16 @@ A minimal NFSv3 (RFC 1813) server written in pure C, targeting MVS 3.8J
 MVS Partitioned Datasets (PDS) as NFS-mounted directories, making PDS members
 visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 
-The server also builds and runs on Linux (gcc/glibc), where it serves local
-POSIX directories.  The Linux build is used for development, unit testing, and
-verifying the protocol layer before deploying to MVS.
-
 ## Design goals
 
 - **No external libraries.** Standard C and POSIX sockets only.
 - **Endian-agnostic.** All XDR encoding uses explicit byte manipulation —
   correct on both little-endian (Linux x86_64) and big-endian (MVS/S370)
   without relying on `htonl()`/`ntohl()`.
-- **Portability-first.** Platform-specific code is isolated in the `mvsvfs.c`
-  layer (MVS) and `vfs.c` (Linux/POSIX).  The protocol, RPC, and XDR layers
-  are platform-neutral.
 - **Single-threaded.** One `select()` loop, no threads, no `fork()`.
   Up to 16 concurrent TCP connections.
-- **No malloc.** All buffers and caches use static arrays, making the server
-  suitable for MVS where heap allocation is limited.
 - **C89 compliant.** The server compiles with JCC (MVS C compiler) targeting
-  C89.  No C99 features are used in the MVS-specific code.
+  C89.  No C99 features are used in the MVS-specific code. Mostly!
 
 ## Project status
 
@@ -68,6 +59,7 @@ verifying the protocol layer before deploying to MVS.
 | `mvspdir.c/h` | PDS directory block parsing; ISPF statistics extraction |
 | `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
 | `mvsprw.c/h` | PDS member read with sequential-read position cache |
+| `mvsprf.c/h` | Performance stats tracking |
 | `mvsfsz.c/h` | File-size cache — stores true text-mode sizes of PDS members |
 | `mvsfid.c/h` | Stable 64-bit file ID generation from dataset + member name |
 | `ebcdic.c/h` | EBCDIC ↔ ASCII translation tables |
@@ -101,10 +93,11 @@ verifying the protocol layer before deploying to MVS.
 | `tests/tmvsio4.c` | Tests for ISPF statistics parsing |
 | `tests/tmvsdol.c` | Tests for directory open-list pool |
 | `tests/tmvsfsz.c` | Tests for the file-size cache |
+| `tests/tmvsprf.c` | Tests for the performance stats tracking |
 
 ## Building
 
-### Linux (development)
+### Linux (development) -- THIS IS DEFUNCT FOR NOW!
 
 ```bash
 make              # debug build  → build/nfsd
@@ -189,18 +182,40 @@ sudo ./build/nfsd nfsd.conf
 
 Mount from a client:
 
+Note that from Linux, the readirplus operations perform much better
+than a readdir operation. Also, the server does not implement
+Sun's ACL sideband protocol and this should be disabled to avoid
+many getacl operations from being sent to the server following a 
+directory read.
+
+Use the following options (tested on Ubuntu 26.04)
+
+`rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150`
+
+| Option         | Description |
+|----------------|-------------|
+|rdirplus=force  | Force the client to use readdirplus operations |
+|noacl           | Stop the client from performance get ACL operations |
+|nfsvers=3       | Force NFS v3 protocol -- which is the only version the server supports |
+|nolock          | No file locking |
+|tcp             | Use the tcp protocol -- the server does not support UDP |
+|acregmin=30     | Cache access permissions for 30 seconds |
+|timeo=150       | Timeout operations after 15 seconds (150 deci-seconds) |
+
 ```bash
 # Via portmapper (automatic port discovery):
-sudo mount -t nfs -o nfsvers=3,nolock server:/export/src /mnt/src
+sudo mount -t nfs \
+     -o rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150 \
+     server:/export/src /mnt/src
 
 # With explicit ports:
 sudo mount -t nfs \
-     -o nfsvers=3,port=2049,mountport=20048,nolock \
+     -o port=2049,mountport=20048,rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150 \
      server:/export/src /mnt/src
 
 # Tested on Ubuntu 24.04.4 LTS:
 sudo mount -t nfs \
-     -o nfsvers=3,port=12049,mountport=12048,nolock,tcp,soft,timeo=10 \
+     -o port=12049,mountport=12048,rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150 \
      192.168.1.168:/export/src /mnt/test
 ```
 
@@ -268,6 +283,8 @@ sudo mount -t nfs \
 | MKNOD | NFS3ERR_NOTSUPP |
 
 ## MVS architecture
+
+This is in need of review and updating.
 
 ### VFS mapping
 
