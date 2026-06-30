@@ -195,10 +195,10 @@ Use the following options (tested on Ubuntu 26.04)
 | Option         | Description |
 |----------------|-------------|
 |rdirplus=force  | Force the client to use readdirplus operations |
-|noacl           | Stop the client from performance get ACL operations |
+|noacl           | Stop the client from performing get ACL operations |
 |nfsvers=3       | Force NFS v3 protocol -- which is the only version the server supports |
 |nolock          | No file locking |
-|tcp             | Use the tcp protocol -- the server does not support UDP |
+|tcp             | Use the TCP protocol -- the server does not support UDP |
 |acregmin=30     | Cache access permissions for 30 seconds |
 |timeo=150       | Timeout operations after 15 seconds (150 deci-seconds) |
 
@@ -247,6 +247,26 @@ Mount using explicit ports:
 sudo mount -t nfs \
      -o nfsvers=3,port=12049,mountport=12048,nolock \
      127.0.0.1:/export/src /mnt/src
+```
+
+### Using tcpdump to look at packets
+
+```bash
+sudo tcpdump -i any -n port 2049 2>/dev/null
+```
+
+### Turning on NFS debug and viewing logs
+
+Turn on NFS debug
+
+```bash
+sudo rpcdebug -m nfs -s all
+```
+
+To view logs --
+
+```bash
+sudo journalctl -kf
 ```
 
 ### Port flags
