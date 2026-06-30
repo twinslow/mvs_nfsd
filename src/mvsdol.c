@@ -14,6 +14,7 @@
 
 #include "nfsd.h"     /* MAX_OPEN_DIRS */
 #include "mvsdol.h"
+#include "logger.h"
 
 /* -------------------------------------------------------------------- */
 /* Static pool of directory handles -- no malloc required               */
@@ -39,8 +40,14 @@ vfs_dir_t *dir_openlist_find_free(void)
 {
     int    i;
     time_t now;
+    int    lru_idx;
+    double age;
+    double lru_age;
 
-    now = time(NULL);
+    now     = time(NULL);
+    lru_idx = 0;
+    lru_age = difftime(now, g_dir_pool[0].last_used_time);
+
     for (i = 0; i < MAX_OPEN_DIRS; i++) {
         if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_FREE ||
                 (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_USED &&
@@ -50,10 +57,18 @@ vfs_dir_t *dir_openlist_find_free(void)
             g_dir_pool[i].last_used_time = now;
             return &g_dir_pool[i];
         }
+        age = difftime(now, g_dir_pool[i].last_used_time);
+        if (age > lru_age) {
+            lru_age = age;
+            lru_idx = i;
+        }
     }
-    /* None free or expired */
-    errno = EMFILE;
-    return NULL;
+    /* All slots USED and non-expired: evict the least-recently-used    */
+    log_debug("dir_openlist_find_free: evicting LRU slot %d (idle %ds)",
+              lru_idx, (int)lru_age);
+    memset(&g_dir_pool[lru_idx], 0, sizeof(vfs_dir_t));
+    g_dir_pool[lru_idx].last_used_time = now;
+    return &g_dir_pool[lru_idx];
 }
 
 /* -------------------------------------------------------------------- */

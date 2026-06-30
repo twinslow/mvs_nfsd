@@ -33,6 +33,7 @@
 #include "nfsd.h"
 #include "hexdump.h"
 #include "mvsfsz.h"
+#include "mvsprf.h"
 #include "mvsvfs.h"
 #include "mvsdol.h"
 #include "logger.h"
@@ -139,9 +140,27 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs,
 }
 
 
+/*
+ * Stable timestamp for synthetic directory (PDS) attributes.
+ *
+ * A PDS has no single mtime/ctime of its own, but the value we report
+ * MUST be stable across calls.  The Linux NFS client uses a directory's
+ * mtime/ctime as its readdir cache-change indicator: if they change
+ * between successive READDIRPLUS calls, the client assumes the directory
+ * was modified mid-scan, discards its readdir cache, and restarts from
+ * cookie 0 -- an infinite loop for any directory that spans more than one
+ * reply.  Captured once on first use and reused for the server's lifetime.
+ */
+static time_t g_dir_epoch = 0;
+
 static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
 {
     struct timeval tv;
+
+    if (g_dir_epoch == 0) {
+        gettimeofday(&tv, NULL);
+        g_dir_epoch = tv.tv_sec;
+    }
 
     vs->ftype = NF3DIR;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
@@ -160,14 +179,15 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
     vs->raw_dev = (uint32_t)export_idx + 1; 
 
     // Now the accessed/modified/created date/times.
-    // For simplicity, we'll set these all to the same value based on the current time.
-    gettimeofday(&tv, NULL);
-    vs->atime_sec = (uint32_t)tv.tv_sec;
-    vs->atime_nsec = (uint32_t)(tv.tv_usec * 1000); // convert microseconds to nanoseconds
-    vs->mtime_sec = vs->atime_sec;
-    vs->mtime_nsec = vs->atime_nsec;
-    vs->ctime_sec = vs->atime_sec;      
-    vs->ctime_nsec = vs->atime_nsec;
+    // These MUST be stable across calls (see g_dir_epoch above): a varying
+    // directory mtime/ctime makes the NFS client restart readdir from cookie 0.
+    // nsec is forced to 0 to avoid any sub-second jitter being reported.
+    vs->atime_sec = (uint32_t)g_dir_epoch;
+    vs->atime_nsec = 0;
+    vs->mtime_sec = (uint32_t)g_dir_epoch;
+    vs->mtime_nsec = 0;
+    vs->ctime_sec = (uint32_t)g_dir_epoch;
+    vs->ctime_nsec = 0;
 
     return 0;
 }
@@ -217,12 +237,15 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
 
 int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
 {
-    int export_idx;
-    char ebcdic_path[MAX_PATH_LEN];
-    int path_type;
-    int retcode;
+    int     export_idx;
+    char    ebcdic_path[MAX_PATH_LEN];
+    int     path_type;
+    int     retcode;
+    clock_t t_start;
 
     log_debug("vfs_stat: path=%s", log_ascii(path));
+
+    t_start = clock();
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
     ebcdic_path[MAX_PATH_LEN - 1] = '\0';
@@ -233,10 +256,12 @@ int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
     if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
         retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs, real_file_size);
         dump_stat_result(path, retcode, vs);
+        mvsprf_record(PERF_VFS_STAT, clock() - t_start);
         return retcode;
     } else if (path_type == MVS_PATH_TYPE_DATASET) {
         retcode = vfs_stat_dataset(ebcdic_path, export_idx, vs);
         dump_stat_result(path, retcode, vs);
+        mvsprf_record(PERF_VFS_STAT, clock() - t_start);
         return retcode;
     }
     errno = ENOENT;
@@ -653,6 +678,11 @@ void generate_file_name(
 /* -------------------------------------------------------------------- */
 /* vfs_opendir: open a directory for iteration.                         */
 /* Returns a handle from the static pool, or NULL on error.             */
+/*                                                                      */
+/* Fast path: if a non-expired pool slot already holds a complete       */
+/* member cache (end_of_dir_read=1) for this PDS, return it directly   */
+/* without re-reading the disk.  This prevents pool exhaustion when the */
+/* NFS client issues multiple READDIRPLUS calls for the same directory. */
 /* -------------------------------------------------------------------- */
 vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 {
@@ -660,13 +690,11 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     char        ebcdic_path[MAX_PATH_LEN];
     char        pds_dsname[45];
     char        pds_member_name[9];
-    int         export_idx; 
-    int         end_of_dir;
-    int         num_of_members_returned;
+    int         export_idx;
     int         retcode;
     int         path_type;
 
-    log_debug("vfs_opendir: Starting with path=%s cookie='%-8.8s' (0x%016llX) ", 
+    log_debug("vfs_opendir: Starting with path=%s cookie='%-8.8s' (0x%016llX) ",
         log_ascii(path), (char *)&cookie, cookie);
 
     retcode = path_to_dsn_member(
@@ -680,7 +708,30 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
         goto error;
     }
 
-    /* Get free open directory entry */
+    /* Fast path: reuse an existing non-expired slot for this PDS.      */
+    /* If the full member list is already cached we skip disk I/O.      */
+    /* If the cache is partial, reinitialise it for a fresh read.       */
+    dir_entry = dir_openlist_find_by_dsname(pds_dsname);
+    if ( dir_entry != NULL ) {
+        if ( dir_entry->end_of_dir_read ) {
+            /* Full cache hit -- all members known, no disk read needed */
+            log_debug("vfs_opendir: Full cache hit for PDS %s, %d members cached",
+                pds_dsname, dir_entry->pds_entries_cached);
+            return dir_entry;
+        }
+        /* Partial cache: re-open file handle and reset for fresh read  */
+        dir_entry->pds_entries_cached = 0;
+        dir_entry->end_of_dir_read    = 0;
+        retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
+        if ( retcode == 0 && dir_entry->pds_fh ) {
+            log_debug("vfs_opendir: Partial cache hit for PDS %s, reopened", pds_dsname);
+            return dir_entry;
+        }
+        /* Re-open failed; fall through to allocate a fresh slot        */
+        dir_entry = NULL;
+    }
+
+    /* Slow path: allocate a free (or LRU-evicted) pool slot.           */
     dir_entry = dir_openlist_find_free();
     if ( !dir_entry ) {
         log_error("vfs_opendir: Unable to find free open directory entry for ", pds_dsname);
@@ -689,24 +740,21 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 
     dir_entry->status = MVSVFS_DIR_OPENLIST_USED;
     dir_entry->export_idx = export_idx;
-    strncpy(dir_entry->pds_dsname_ebcdic, pds_dsname, 
+    strncpy(dir_entry->pds_dsname_ebcdic, pds_dsname,
         sizeof(dir_entry->pds_dsname_ebcdic));
-    dir_entry->next_cookie = 0;
+    dir_entry->next_cookie        = 0;
+    dir_entry->pds_entries_cached = 0;
+    dir_entry->end_of_dir_read    = 0;
 
     /* Open the PDS for the directory read */
-    retcode = mvs_open_pds_dir(
-            pds_dsname, export_idx,
-            &dir_entry->pds_fh);
+    retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
     if ( retcode < 0 || !dir_entry->pds_fh ) {
         log_error("vfs_opendir: Unable to open PDS %s for directory read", pds_dsname);
         dir_openlist_free(dir_entry);
         goto error;
     }
 
-    dir_entry->pds_entries_cached = 0;
-    dir_entry->end_of_dir_read = 0;
-
-    log_debug("vfs_opendir: path=%s completed without error, pds_fh = 0x%08X",
+    log_debug("vfs_opendir: Opened PDS %s, pds_fh = 0x%08X",
         pds_dsname, dir_entry->pds_fh);
 
     return dir_entry;
@@ -854,12 +902,17 @@ void vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie)
  
 /* -------------------------------------------------------------------- */
 /* vfs_closedir: release a directory handle back to the pool.           */
+/* The pool slot remains USED so its member cache stays available for   */
+/* mvsvfs_find_cached_member(); only the FILE handle is closed.         */
 /* -------------------------------------------------------------------- */
 void vfs_closedir(vfs_dir_t *dir_entry)
 {
     log_debug("vfs_closedir: path=%s", dir_entry->pds_dsname_ebcdic);
 
-    mvs_close_pds_dir(dir_entry->pds_fh);
+    if ( dir_entry->pds_fh ) {
+        mvs_close_pds_dir(dir_entry->pds_fh);
+        dir_entry->pds_fh = NULL;
+    }
 }
 
 /* -------------------------------------------------------------------- */
@@ -882,18 +935,24 @@ int mvsvfs_find_cached_member(
 {
     vfs_dir_t *dir;
     int        retcode;
+    clock_t    t_start;
+
+    t_start = clock();
     dir = dir_openlist_find_by_dsname(pds_dsname);
     if (dir == NULL) {
         log_debug("mvsvfs_find_cached_member: No valid vfs_dir_t pool entry found for PDS %s", pds_dsname);
+        mvsprf_record(PERF_MVSPOOL_MISS, clock() - t_start);
         return -1;
     }
-    
+
     retcode = dir_openlist_search_members(
         dir, member_name, SEARCH_OP_EQ, member_entry);
     if ( retcode != 0 ) {
         log_debug("mvsvfs_find_cached_member: Member entry not found for PDS %s member %s", pds_dsname, member_name);
+        mvsprf_record(PERF_MVSPOOL_MISS, clock() - t_start);
     } else {
         log_debug("mvsvfs_find_cached_member: Cached member entry found for PDS %s member %s", pds_dsname, member_name);
+        mvsprf_record(PERF_MVSPOOL_HIT, clock() - t_start);
     }
     return retcode;
 }

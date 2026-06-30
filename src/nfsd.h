@@ -470,7 +470,7 @@ void     xdr_set_pos(xdr_t *x, uint32_t pos);
 /* Prototypes: rpc.c                                                    */
 /* -------------------------------------------------------------------- */
 int  rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen);
-int  rpc_send(int fd, const uint8_t *buf, uint32_t len);
+int  rpc_send(int fd, uint8_t *frame, uint32_t len);
 int  rpc_parse_call(xdr_t *x, rpc_call_t *call);
 void rpc_write_accept_hdr(xdr_t *x, uint32_t xid, uint32_t accept_stat);
 void rpc_write_prog_mismatch(xdr_t *x, uint32_t xid,

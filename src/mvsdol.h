@@ -36,7 +36,7 @@
 #define MVSVFS_DIR_OPENLIST_FREE          0
 #define MVSVFS_DIR_OPENLIST_USED          1
 #define MVSVFS_PDS_DIR_CACHE_SIZE         250  /* PDS directory entries cached per open dir */
-#define MVSVFS_DIR_OPENLIST_TIMEOUT_SECS  5    /* seconds before an idle USED entry expires */
+#define MVSVFS_DIR_OPENLIST_TIMEOUT_SECS  30   /* seconds before an idle USED entry expires */
 
 /* -------------------------------------------------------------------- */
 /* Concrete definition of the vfs_dir_t handle (forward-declared in     */

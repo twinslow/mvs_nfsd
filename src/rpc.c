@@ -83,21 +83,27 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
  
 /* ------------------------------------------------------------------ */
 /* rpc_send: send buf as a single-fragment RPC record over fd.          */
-/* Prepends the 4-byte record mark (last-fragment bit set).             */
+/*                                                                      */
+/* frame must point to a buffer whose first 4 bytes are reserved        */
+/* headroom for the record mark, with the XDR response body at          */
+/* frame[4..4+len-1].  rpc_send fills in the mark and then sends the   */
+/* entire (4 + len) byte frame in a single send_all() call, so the     */
+/* mark and body always travel together in one TCP write.               */
+/*                                                                      */
+/* The caller must initialise its XDR writer at frame+4 (not frame),   */
+/* and pass frame (not frame+4) here.  See handle_connection() in       */
+/* nfsd.c.                                                              */
 /* ------------------------------------------------------------------ */
-int rpc_send(int fd, const uint8_t *buf, uint32_t len)
+int rpc_send(int fd, uint8_t *frame, uint32_t len)
 {
-    uint8_t  mark[4];
     uint32_t rm = 0x80000000u | len;
- 
-    mark[0] = (uint8_t)(rm >> 24);
-    mark[1] = (uint8_t)(rm >> 16);
-    mark[2] = (uint8_t)(rm >>  8);
-    mark[3] = (uint8_t)(rm);
- 
-    if (send_all(fd, mark, 4)  < 0) return -1;
-    if (send_all(fd, buf,  len) < 0) return -1;
-    return 0;
+
+    frame[0] = (uint8_t)(rm >> 24);
+    frame[1] = (uint8_t)(rm >> 16);
+    frame[2] = (uint8_t)(rm >>  8);
+    frame[3] = (uint8_t)(rm);
+
+    return send_all(fd, frame, 4u + len);
 }
  
 /* ------------------------------------------------------------------ */

@@ -15,9 +15,11 @@
 #include <string.h>   /* strlen, strncpy, strcmp, strrchr, memcpy */
 #include <stdio.h>    /* snprintf */
 #include <errno.h>
+#include <time.h>     /* clock(), clock_t */
 #include "nfsd.h"
 #include "ebcdic.h"
 #include "logger.h"
+#include "mvsprf.h"
 
 /* Static I/O buffers -- one READ and one WRITE buffer */
 static uint8_t g_read_buf [MAX_READ_SIZE];
@@ -789,7 +791,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
     char          ename[MAX_NAME];
     uint64_t      efileid;
     uint64_t      ecookie;
-    uint32_t      reply_start;
+    uint32_t      nfs3_start;
     uint32_t      before;
     uint32_t      name_len;
     uint32_t      entry_sz;
@@ -826,10 +828,10 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
+    nfs3_start = xdr_get_pos(out);     /* NFS3 payload starts here (status field) */
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &dir_st, has_dir);
     xdr_write_raw(out, zero8, 8);   /* cookieverf */
-    reply_start = xdr_get_pos(out);
 
     /* vfs_seekdir_to(dp, cookie);  -- now called from vfs_opendir if appropriate. */
     eof = 1; wrote_one = 0;
@@ -842,7 +844,9 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
         entry_sz = 4u + 8u + 4u + ((name_len + 3u) & ~3u) + 8u;
 
         before = xdr_get_pos(out);
-        if ((before - reply_start) + entry_sz + 8u > maxcount
+        /* Compare total NFS3 payload (from status to end) against maxcount.
+           +8u accounts for the end-of-list(4) + eof(4) trailer. */
+        if ((before - nfs3_start) + entry_sz + 8u > maxcount
             && wrote_one) {
             eof = 0;
             break;
@@ -883,12 +887,13 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     vfs_dir_t    *dp;
     char          ename[MAX_NAME];
     uint64_t      efileid;
-    uint64_t      ecookie;
-    uint32_t      reply_start;
+    uint64_t      ecookie, lrcookie;
+    uint32_t      nfs3_start;
     uint32_t      before;
     uint32_t      name_len;
     int           eof;
     int           wrote_one;
+    int           entry_count;
     static const uint8_t zero8[8] = { 0 };
 
     xdr_read_fhandle3(in, &dir_fh, &ok);
@@ -921,18 +926,18 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
+    nfs3_start = xdr_get_pos(out);     /* NFS3 payload starts here (status field) */
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &dir_st, has_dir);
     xdr_write_raw(out, zero8, 8);      /* cookieverf */
-    reply_start = xdr_get_pos(out);
 
     /* Retrieve this directory's relpath for building child relpaths */
     dir_rel[0] = '\0';
     fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
 
     /* vfs_seekdir_to(dp, cookie); -- now called as part of vfs_opendir */
-    eof = 1; wrote_one = 0;
-    ecookie = cookie;
+    eof = 1; wrote_one = 0; entry_count = 0;
+    ecookie = cookie; lrcookie = 0;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
         snprintf(entry_path, MAX_PATH, "%s%c%s", 
@@ -945,7 +950,9 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
            post_op_attr(4+84)+post_op_fh(4+4+OUR_FHSIZE+pad) */
         before = xdr_get_pos(out);
 
-        if ((before - reply_start) + READDIRPLUS_ENTRY_OVERHEAD + name_len > maxcount
+        /* Compare total NFS3 payload (from status to end) against maxcount.
+           +8u accounts for the end-of-list(4) + eof(4) trailer. */
+        if ((before - nfs3_start) + READDIRPLUS_ENTRY_OVERHEAD + name_len + 8u > maxcount
             && wrote_one) {
             eof = 0;
             break;
@@ -973,6 +980,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_uint64(out, est.fileid);
         xdr_write_string(out, ename, name_len);
         xdr_write_uint64(out, ecookie);
+        lrcookie = ecookie;
         xdr_write_post_op_attr(out, &est, 1);
         xdr_write_uint32(out, 1u);           /* name_handle: present */
         xdr_write_fhandle(out, &efh);
@@ -983,8 +991,11 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
 
-    log_debug("nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d",
-       log_ascii(dir_path), wrote_one, eof);
+    log_info("nfs3.proc_readdirplus: The last response entry cookie was = '%-8.8s' (0x%016llX)",
+        (char *)&lrcookie, lrcookie);
+    log_info("nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d xdr_bytes=%u",
+       log_ascii(dir_path), wrote_one, eof, xdr_get_pos(out));
+       
 }
 
 /* ------------------------------------------------------------------ */
@@ -1266,6 +1277,10 @@ static const char *proc_name(uint32_t proc)
 
 void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
 {
+    clock_t t_start;
+    clock_t t_elapsed;
+    int     perf_slot;
+
     (void)fd;
 
     if (g_verbose)
@@ -1276,6 +1291,28 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
         rpc_write_prog_mismatch(out, call->xid, VERS_NFS, VERS_NFS);
         return;
     }
+
+    /* Map NFS3 procedure number to performance slot. */
+    switch (call->proc) {
+    case NFS3PROC_GETATTR:     perf_slot = PERF_NFS3_GETATTR;  break;
+    case NFS3PROC_SETATTR:     perf_slot = PERF_NFS3_SETATTR;  break;
+    case NFS3PROC_LOOKUP:      perf_slot = PERF_NFS3_LOOKUP;   break;
+    case NFS3PROC_ACCESS:      perf_slot = PERF_NFS3_ACCESS;   break;
+    case NFS3PROC_READ:        perf_slot = PERF_NFS3_READ;     break;
+    case NFS3PROC_WRITE:       perf_slot = PERF_NFS3_WRITE;    break;
+    case NFS3PROC_CREATE:      perf_slot = PERF_NFS3_CREATE;   break;
+    case NFS3PROC_REMOVE:      perf_slot = PERF_NFS3_REMOVE;   break;
+    case NFS3PROC_RENAME:      perf_slot = PERF_NFS3_RENAME;   break;
+    case NFS3PROC_READDIR:     perf_slot = PERF_NFS3_READDIR;  break;
+    case NFS3PROC_READDIRPLUS: perf_slot = PERF_NFS3_RDIRPLUS; break;
+    case NFS3PROC_FSSTAT:      perf_slot = PERF_NFS3_FSSTAT;   break;
+    case NFS3PROC_FSINFO:      perf_slot = PERF_NFS3_FSINFO;   break;
+    case NFS3PROC_PATHCONF:    perf_slot = PERF_NFS3_PATHCONF; break;
+    case NFS3PROC_COMMIT:      perf_slot = PERF_NFS3_COMMIT;   break;
+    default:                   perf_slot = -1;                  break;
+    }
+
+    t_start = clock();
 
     switch (call->proc) {
     case NFS3PROC_NULL:        proc_null(out, call->xid);            break;
@@ -1298,4 +1335,8 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
     case NFS3PROC_COMMIT:      proc_commit(in, out, call->xid);      break;
     default:                   proc_notsupp(out, call->xid);         break;
     }
+
+    t_elapsed = clock() - t_start;
+    if (perf_slot >= 0)
+        mvsprf_record(perf_slot, t_elapsed);
 }

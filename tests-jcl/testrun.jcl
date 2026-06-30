@@ -62,8 +62,9 @@
 //MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                
 //MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                                
 //MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
-//MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR                                 
-//MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW                                 
+//MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR
+//MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
+//MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //*                                                                   
 //********************************************************************
 //*                                                                   
@@ -76,7 +77,8 @@
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
 //TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
 //TMVSIO3  EXEC JCCCTST,MODNAME=TMVSIO3                               
-//TMVSIO4  EXEC JCCCTST,MODNAME=TMVSIO4                               
+//TMVSIO4  EXEC JCCCTST,MODNAME=TMVSIO4
+//TMVSPRF  EXEC JCCCTST,MODNAME=TMVSPRF
 //*                                                                   
 //********************************************************************
 //*                                                                   
@@ -95,6 +97,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
@@ -104,6 +107,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO3)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO4)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
 //          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),

@@ -38,6 +38,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <signal.h>
@@ -52,6 +53,7 @@
 #include "nfsd.h"
 #include "logger.h"
 #include "mvsfsz.h"
+#include "mvsprf.h"
 
 /* ------------------------------------------------------------------ */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
@@ -212,9 +214,23 @@ static void accept_conn(int lsock, int proto)
     socklen_t          plen = sizeof(peer);
 #endif
     int                cfd;
+#ifndef __MVS__
+    int                flag;
+#endif
 
     cfd = accept(lsock, (struct sockaddr *)&peer, &plen);
     if (cfd < 0) return;
+
+#ifndef __MVS__
+    /* Disable Nagle's algorithm so small RPC replies are sent immediately.
+     * Without this, Nagle + the client's TCP delayed ACK interact to add
+     * ~40 ms of latency per RPC round-trip, which compounds across the
+     * many sequential requests a directory listing generates.
+     * On MVS: TCP_NODELAY is not available in the JCC socket headers;
+     * rpc_send() sends the mark and body in one send_all() call instead. */
+    flag = 1;
+    setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+#endif
 
     if (g_nconns >= MAX_CONNECTIONS) {
         log_error("nfsd: connection table full (%d), dropping",
@@ -241,7 +257,9 @@ static int handle_connection(conn_t *conn)
     if (rpc_recv(conn->fd, g_recv_buf, BUF_SIZE, &msglen) < 0) return -1;
 
     xdr_init_read (&in,  g_recv_buf, msglen);
-    xdr_init_write(&out, g_send_buf, BUF_SIZE);
+    /* g_send_buf[0..3] is headroom for the RPC record mark written by
+     * rpc_send(); the XDR response body starts at g_send_buf[4].      */
+    xdr_init_write(&out, g_send_buf + 4, BUF_SIZE - 4);
 
     if (rpc_parse_call(&in, &call) < 0) return -1;
 
@@ -282,6 +300,7 @@ int main(int argc, char *argv[])
 
     dir_openlist_init();
     mvsfsz_init();
+    mvsprf_init();
     mvsfsz_load("//DDN:FILESIZE");
     
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
@@ -442,6 +461,7 @@ int main(int argc, char *argv[])
     closesocket(mount_sock);
     closesocket(nfs_sock);
 
+    mvsprf_dump();
     log_info("Shutting down");
 
     return 0;

@@ -60,6 +60,7 @@
 //MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                               
 //MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR                               
+//MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF                               
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW                                
 //NFS3     EXEC JCCCMOD,MODNAME=NFS3                                  
 //PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP                               
@@ -96,6 +97,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ) 
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)               
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)         
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)                
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)             

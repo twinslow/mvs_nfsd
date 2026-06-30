@@ -27,6 +27,7 @@
 #include <time.h>
 
 #include "mvsfsz.h"
+#include "mvsprf.h"
 
 /* -------------------------------------------------------------------- */
 /* Internal state                                                        */
@@ -154,6 +155,9 @@ int mvsfsz_get_member_size(
     char     buf[512];
     size_t   n;
     uint64_t computed_size;
+    clock_t  t_start;
+
+    t_start = clock();
 
     /* --- Cache lookup ------------------------------------------------ */
     idx = find_entry(dsname, member_name);
@@ -165,6 +169,7 @@ int mvsfsz_get_member_size(
             /* Valid cache hit. */
             *file_size_out   = g_cache[idx].file_size;
             g_last_used[idx] = time(NULL);
+            mvsprf_record(PERF_MVSFSZ_HIT, clock() - t_start);
             return 0;
         }
         /* Stale entry: evict before re-reading. */
@@ -195,6 +200,7 @@ int mvsfsz_get_member_size(
                (int32_t)member_entry->size,
                member_entry->chgdate);
 
+    mvsprf_record(PERF_MVSFSZ_MISS, clock() - t_start);
     *file_size_out = computed_size;
     return 0;
 }
@@ -282,6 +288,9 @@ int mvsfsz_load(const char *filename)
     unsigned long  size_ul;
     int            loaded;
     int            rc;
+    clock_t        t_start;
+
+    t_start = clock();
 
     fp = fopen(filename, "rt");
     if (fp == NULL)
@@ -304,5 +313,6 @@ int mvsfsz_load(const char *filename)
     }
 
     fclose(fp);
+    mvsprf_record(PERF_MVSFSZ_LOAD, clock() - t_start);
     return loaded;
 }
