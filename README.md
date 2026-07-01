@@ -492,3 +492,15 @@ on every LOOKUP and READDIRPLUS call.
 - No locking (`nolock` mount option recommended).
 - No authentication: all clients have full read/write access.
 - Create/write/rename operations are not yet implemented on the MVS VFS layer.
+
+## Contributing
+
+Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for
+the workflow and the code-style notes. We use the Developer Certificate of
+Origin (DCO): sign off every commit with `git commit -s`.
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+Copyright (c) 2026 Tony Winslow and the dino_nfs contributors.
