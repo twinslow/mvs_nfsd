@@ -267,10 +267,11 @@ int fh_cache_lookup(uint32_t export_id, uint32_t id32,
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_resolve: convert a file handle to an absolute path on this host.  */
+/* fh_resolve: convert a file handle to its canonical NFS path.         */
 /*                                                                      */
 /* Looks up the relpath in the cache by (export_id, id32), then        */
-/* prepends the export's host_path.  Writes the result into abspath.   */
+/* prepends the export's NFS path (export_path).  The result is the    */
+/* export-relative path the VFS layer classifies via mvs_path_type.    */
 /* Returns 0 on success, -1 if the handle is stale or unknown.          */
 /* ------------------------------------------------------------------ */
 int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
@@ -286,11 +287,12 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
         return -1;
 
     if (relpath[0] == '\0') {
-        /* The handle IS the export root */
-        strncpy(abspath, exp->host_path, maxlen - 1);
+        /* The handle IS the export root (a virtual directory). */
+        strncpy(abspath, exp->export_path, maxlen - 1);
         abspath[maxlen - 1] = '\0';
     } else {
-        snprintf(abspath, maxlen, "%s%c%s", exp->host_path, 
+        /* export_path / relpath  (relpath is "<dirname>" or "<dirname>/<member>") */
+        snprintf(abspath, maxlen, "%s%c%s", exp->export_path,
             ebcdic_to_ascii_c('/'), relpath);
     }
     return 0;

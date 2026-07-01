@@ -33,162 +33,176 @@ static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
  
 /* ------------------------------------------------------------------ */
-/* Get the DCB info for the dataset in the export                     */
+/* dataset_init: populate a pds_dataset_t from a dsname token.        */
+/*                                                                    */
+/* dsname_ebcdic is the raw config token (EBCDIC on MVS).  Derives    */
+/* the ASCII form, the lower-case directory name (EBCDIC + ASCII),    */
+/* the file extension (lower-case last qualifier), and the DCB info.  */
 /* ------------------------------------------------------------------ */
-int exports_get_dcb_info(int export_num) {
-    int rc;
+static void dataset_init(pds_dataset_t *ds, const char *dsname_ebcdic)
+{
+    char *dot;
+    int   i;
 
-    rc = mvs_get_dcb_info_dsn(
-        g_exports[export_num].host_path_ebcdic,
-        &g_exports[export_num].dcbinfo);
-    if ( rc < 0 )
-        log_error("export_load: Host path %s - get dcb rc = %d", 
-            g_exports[export_num].host_path_ebcdic, rc);
-    else {
-        log_info("export_load: Host path %s - get dcb rc = %d",
-            g_exports[export_num].host_path_ebcdic, rc);
+    memset(ds, 0, sizeof(*ds));
 
-        log_info("export_load: Host path %s - DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
-            g_exports[export_num].host_path_ebcdic, 
-            g_exports[export_num].dcbinfo.dsorg, 
-            g_exports[export_num].dcbinfo.recfm, 
-            g_exports[export_num].dcbinfo.lrecl, 
-            g_exports[export_num].dcbinfo.blksize);
+    /* Real dsname, EBCDIC and ASCII. */
+    strncpy(ds->dsname_ebcdic, dsname_ebcdic, MAX_DSNAME_LEN - 1);
+    ds->dsname_ebcdic[MAX_DSNAME_LEN - 1] = '\0';
+    ebcdic_to_ascii(ds->dsname_ascii, ds->dsname_ebcdic, MAX_DSNAME_LEN - 1);
+
+    /* Directory name = lower-case dsname, EBCDIC and ASCII. */
+    for (i = 0; ds->dsname_ebcdic[i] != '\0' && i < MAX_DSNAME_LEN - 1; i++)
+        ds->dirname_ebcdic[i] = (char)tolower((unsigned char)ds->dsname_ebcdic[i]);
+    ds->dirname_ebcdic[i] = '\0';
+    ebcdic_to_ascii(ds->dirname_ascii, ds->dirname_ebcdic, MAX_DSNAME_LEN - 1);
+
+    /* File extension = lower-case last qualifier of the dsname. */
+    dot = strrchr(ds->dsname_ebcdic, '.');
+    if (dot) {
+        strncpy(ds->file_ext, dot + 1, MAX_FILE_EXT_LEN - 1);
+        ds->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+        for (i = 0; ds->file_ext[i] != '\0'; i++)
+            ds->file_ext[i] = (char)tolower((unsigned char)ds->file_ext[i]);
+    } else {
+        ds->file_ext[0] = '\0';
     }
 
-    return rc;
+    /* DCB info (record format / lengths) for member size estimation. */
+    if (mvs_get_dcb_info_dsn(ds->dsname_ebcdic, &ds->dcbinfo) < 0)
+        log_error("exports_load: get dcb failed for %s", ds->dsname_ebcdic);
+    else
+        log_info("exports_load: %s DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
+            ds->dsname_ebcdic, ds->dcbinfo.dsorg, ds->dcbinfo.recfm,
+            ds->dcbinfo.lrecl, ds->dcbinfo.blksize);
+}
+
+/* ------------------------------------------------------------------ */
+/* find_or_create_export: return the index of the export with the     */
+/* given (EBCDIC) NFS path, creating a new one if none exists yet.    */
+/* Returns -1 if the export table is full.                            */
+/* ------------------------------------------------------------------ */
+static int find_or_create_export(const char *export_path_ebcdic)
+{
+    int idx;
+
+    for (idx = 0; idx < g_nexports; idx++) {
+        if (strcmp(g_exports[idx].export_path_ebcdic, export_path_ebcdic) == 0)
+            return idx;
+    }
+
+    if (g_nexports >= MAX_EXPORTS)
+        return -1;
+
+    idx = g_nexports++;
+    memset(&g_exports[idx], 0, sizeof(export_t));
+    strncpy(g_exports[idx].export_path_ebcdic, export_path_ebcdic, MAX_PATH - 1);
+    g_exports[idx].export_path_ebcdic[MAX_PATH - 1] = '\0';
+    ebcdic_to_ascii(g_exports[idx].export_path,
+        g_exports[idx].export_path_ebcdic, MAX_PATH - 1);
+    g_exports[idx].ndatasets = 0;
+    return idx;
 }
 
 /* ------------------------------------------------------------------ */
 /* exports_load: parse config_file and populate the exports table.    */
+/*                                                                    */
+/* Format: "<nfs-export-path>  <pds-dataset-name>", one dataset per   */
+/* line.  Multiple lines with the same export path group several PDS  */
+/* datasets under one export; each appears as a directory (lower-case */
+/* dsname) under the export root.                                     */
+/*                                                                    */
 /* Returns number of exports loaded, or -1 on error.                  */
 /* ------------------------------------------------------------------ */
 int exports_load(const char *config_file)
 {
-    FILE *fp;
-    char  line[512];
-    char *p;
-    char *tok;
-    char *rest;
-    int   len;
-    char *dot;
-    int   i;
-    char  buff_ascii[MAX_PATH];
- 
+    FILE          *fp;
+    char           line[512];
+    char          *p;
+    char          *tok;
+    char          *rest;
+    int            len;
+    int            exp_idx;
+    export_t      *exp;
+    pds_dataset_t *ds;
+
     fp = fopen(config_file, "r");
     if (!fp) return -1;
- 
+
     g_nexports = 0;
- 
+
     while (fgets(line, (int)sizeof(line), fp)) {
         /* strip trailing newline / CR */
         len = (int)strlen(line);
         while (len > 0 &&
                (line[len-1] == '\n' || line[len-1] == '\r'))
             line[--len] = '\0';
- 
+
         /* skip leading whitespace */
         p = line;
         while (*p && isspace((unsigned char)*p)) p++;
- 
+
         /* skip blank lines and comments */
         if (*p == '\0' || *p == '#') continue;
- 
-        if (g_nexports >= MAX_EXPORTS) {
-            log_error(
-                "nfsd: warning: max exports (%d) reached, "
-                "ignoring extra lines", MAX_EXPORTS);
-            break;
-        }
- 
+
         /* First token: export (NFS) path */
         tok = p;
         while (*p && !isspace((unsigned char)*p)) p++;
         if (*p) { *p = '\0'; p++; }
- 
-        strncpy(g_exports[g_nexports].export_path_ebcdic, tok, MAX_PATH - 1);
-        strncpy(g_exports[g_nexports].export_path, tok, MAX_PATH - 1);
-        g_exports[g_nexports].export_path_ebcdic[MAX_PATH - 1] = '\0';
-        g_exports[g_nexports].export_path[MAX_PATH - 1] = '\0';
 
-        ebcdic_to_ascii(g_exports[g_nexports].export_path, 
-            g_exports[g_nexports].export_path, MAX_PATH - 1);
- 
         /* Skip whitespace between tokens */
         while (*p && isspace((unsigned char)*p)) p++;
- 
-        /* Second token: local host path */
+
+        /* Second token: PDS dataset name (rest of line) */
         rest = p;
-        /* trim trailing whitespace */
         len = (int)strlen(rest);
         while (len > 0 && isspace((unsigned char)rest[len-1]))
             rest[--len] = '\0';
- 
+
         if (len == 0) {
-            log_error(
-                "nfsd: warning: missing host path for export %s",
-                g_exports[g_nexports].export_path_ebcdic);
+            log_error("nfsd: warning: missing dataset name for export %s", tok);
             continue;
         }
- 
-        /* Copy the local code page version (EBCDIC for MVS) */
-        strncpy(g_exports[g_nexports].host_path_ebcdic, rest, MAX_PATH - 1);
-        g_exports[g_nexports].host_path_ebcdic[MAX_PATH - 1] = '\0';
 
-        /* Copy the translated ascii version */
-        ebcdic_to_ascii(buff_ascii, g_exports[g_nexports].host_path_ebcdic, MAX_PATH - 1);
-        strncpy(g_exports[g_nexports].host_path, buff_ascii, MAX_PATH - 1);
-        g_exports[g_nexports].host_path[MAX_PATH - 1] = '\0';
- 
-        /* Use the last qualifier of the host dsname as a filename extension,
-         * translating the filename extension to lower case.
-         */
-        dot = strrchr(g_exports[g_nexports].host_path_ebcdic, '.');
-        if (dot) {
-            strncpy(g_exports[g_nexports].file_ext, dot + 1, MAX_FILE_EXT_LEN - 1);
-            g_exports[g_nexports].file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
-            /* Convert to lower case */
-            for (i = 0; i < MAX_FILE_EXT_LEN && g_exports[g_nexports].file_ext[i]; i++) {
-                g_exports[g_nexports].file_ext[i] = tolower((unsigned char)g_exports[g_nexports].file_ext[i]);
-            }
-        } else {
-            g_exports[g_nexports].file_ext[0] = '\0';
+        /* Find or create the export this dataset belongs to. */
+        exp_idx = find_or_create_export(tok);
+        if (exp_idx < 0) {
+            log_error("nfsd: warning: max exports (%d) reached, ignoring %s",
+                MAX_EXPORTS, tok);
+            continue;
+        }
+        exp = &g_exports[exp_idx];
+
+        if (exp->ndatasets >= MAX_PDS_PER_EXPORT) {
+            log_error("nfsd: warning: max datasets (%d) reached for export %s, "
+                "ignoring %s", MAX_PDS_PER_EXPORT, tok, rest);
+            continue;
         }
 
-        log_info("nfsd: loaded export: NFS path '%s' -> host path '%s' (file ext '%s')",
-            g_exports[g_nexports].export_path_ebcdic,
-            g_exports[g_nexports].host_path_ebcdic,
-            g_exports[g_nexports].file_ext);
-        
-        exports_get_dcb_info(g_nexports);
+        /* Append the dataset to this export. */
+        ds = &exp->datasets[exp->ndatasets];
+        dataset_init(ds, rest);
+        exp->ndatasets++;
 
-        g_nexports++;
+        /* Keep the legacy single-dataset fields (used by the compile-only
+           mockvfs.c and the non-MVS dev build) in sync with datasets[0]. */
+        if (exp->ndatasets == 1) {
+            strncpy(exp->host_path_ebcdic, ds->dsname_ebcdic, MAX_PATH - 1);
+            exp->host_path_ebcdic[MAX_PATH - 1] = '\0';
+            strncpy(exp->host_path, ds->dsname_ascii, MAX_PATH - 1);
+            exp->host_path[MAX_PATH - 1] = '\0';
+            strncpy(exp->file_ext, ds->file_ext, MAX_FILE_EXT_LEN - 1);
+            exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+            exp->dcbinfo = ds->dcbinfo;
+        }
+
+        log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (file ext '%s')",
+            exp->export_path_ebcdic, ds->dsname_ebcdic,
+            ds->dirname_ebcdic, ds->file_ext);
     }
- 
+
     fclose(fp);
- 
 
-    /* Validate that each host_path exists and is a directory */
-#ifndef __MVS__
-    {
-        int i;
-        struct stat st;
-        for (i = 0; i < g_nexports; i++) {
-            if (stat(g_exports[i].host_path, &st) < 0) {
-                log_error("nfsd: warning: host path for export %s does not "
-                    "exist or is not accessible: %s",
-                    g_exports[i].export_path,
-                    g_exports[i].host_path);
-            } else if (!S_ISDIR(st.st_mode)) {
-                log_error("nfsd: warning: host path for export %s is not "
-                    "a directory: %s",
-                    g_exports[i].export_path,
-                    g_exports[i].host_path);
-            }
-        }
-    }
-#endif
- 
     return g_nexports;
 }
  
@@ -255,5 +269,45 @@ export_t *exports_find_by_host_path(const char *host_path_ebcdic)
             return &g_exports[i];
     }
     return NULL;
+}
+
+/* ================================================================== */
+/* Dataset provider                                                   */
+/*                                                                    */
+/* The root-directory iterator uses only these three calls to walk    */
+/* the PDS datasets of an export.  Backed here by the static config    */
+/* table; a future catalog-discovery implementation can replace them  */
+/* without changing the VFS/NFS layers.                               */
+/* ================================================================== */
+
+/* Number of PDS datasets in an export (0 if the export is invalid). */
+int export_dataset_count(int export_idx)
+{
+    if (export_idx < 0 || export_idx >= g_nexports) return 0;
+    return g_exports[export_idx].ndatasets;
+}
+
+/* Return dataset[dataset_idx] of an export, or NULL if out of range. */
+pds_dataset_t *export_dataset_get(int export_idx, int dataset_idx)
+{
+    export_t *exp;
+    if (export_idx < 0 || export_idx >= g_nexports) return NULL;
+    exp = &g_exports[export_idx];
+    if (dataset_idx < 0 || dataset_idx >= exp->ndatasets) return NULL;
+    return &exp->datasets[dataset_idx];
+}
+
+/* Find the dataset whose (EBCDIC) directory name matches; -1 if none. */
+int export_dataset_find_by_dirname(int export_idx, const char *dirname_ebcdic)
+{
+    export_t *exp;
+    int       i;
+    if (export_idx < 0 || export_idx >= g_nexports) return -1;
+    exp = &g_exports[export_idx];
+    for (i = 0; i < exp->ndatasets; i++) {
+        if (strcmp(exp->datasets[i].dirname_ebcdic, dirname_ebcdic) == 0)
+            return i;
+    }
+    return -1;
 }
 

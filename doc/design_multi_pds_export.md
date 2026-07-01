@@ -1,6 +1,8 @@
 # Design: Multiple PDS Datasets per Export
 
-Status: **Draft for review** — no code written yet.
+Status: **Implemented** — landed on the `multipds` branch; compiles and
+runs on MVS.  This document is retained as the design record; a few
+implementation details differ from the original draft (noted inline).
 Author: design discussion, dino_nfs.
 
 ## 1. Goal
@@ -99,8 +101,19 @@ typedef struct {
 } export_t;
 ```
 
-The per-PDS fields (`host_path`, `file_ext`, `dcbinfo`) move out of
-`export_t` into `pds_dataset_t`. New limit `MAX_PDS_PER_EXPORT`.
+The per-PDS fields (`host_path`, `file_ext`, `dcbinfo`) logically belong in
+`pds_dataset_t`. New limit `MAX_PDS_PER_EXPORT`.
+
+> **Implementation note:** `export_t` *retains* the legacy single
+> `host_path`/`host_path_ebcdic`/`file_ext`/`dcbinfo` fields in addition to
+> `datasets[]`, populated from `datasets[0]`.  This is required because
+> `mockvfs.c` is compiled (though not linked) on MVS and still references
+> `host_path`.  The MVS-linked code uses `datasets[]` exclusively; the
+> legacy fields exist only to keep the mock compiling.  `pds_dataset_t`
+> also stores both EBCDIC and ASCII forms of the dsname and dirname
+> (`dsname_ebcdic`/`dsname_ascii`/`dirname_ebcdic`/`dirname_ascii`) so the
+> path matcher (EBCDIC) and the readdir emitter (ASCII) each have the form
+> they need.
 
 `dirname` is computed once at load time: lower-case of the dsname, dots
 retained. Lower-cased dsnames are collision-free within an export because

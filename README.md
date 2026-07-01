@@ -21,6 +21,7 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 | Feature | Status |
 |---|---|
 | Directory listing of a mounted PDS | Working |
+| Multiple PDS under export | Working |
 | Read a file (PDS member) | Working |
 | File size (true text-mode size cached) | Working |
 | Create / write files | Not implemented |
@@ -152,22 +153,21 @@ Up to 16 exports are supported.
 
 ### MVS format
 
-Each NFS export maps to one or more MVS PDS datasets.  Each dataset entry
-declares a file extension that is appended to member names on the wire.
+Each NFS export maps to one or more MVS PDS datasets. The export line may
+be specified multiple times, with each line representing a single dataset.
 
 ```
-/export/tonyw/library {
-    TONYW.LIBRARY.CNTL      fileext="jcl"
-    TONYW.LIBRARY.C         fileext="c"
-    TONYW.LIBRARY.H         fileext="h"
-}
-/export/sys1/proclib {
-    SYS1.PROCLIB            fileext="jclproc"
-}
+# nfsd.conf
+# <nfs-export-path>  <local-host-path>
+/export/src    TEMP.TESTPROJ.C
+/export/other  TEMP.TESTPROJ.CNTL
+/export/other  TEMP.TESTPROJ.JCLLIB
 ```
 
-NFS clients see `MYMEMBER.c`, `MYMEMBER.jcl`, etc.  The server strips the
-extension, uppercases the stem, and looks up the member in the appropriate PDS.
+For the mountpoint for /export/src, the NFS client and OS will show a single directory
+of "temp.testproj.c" (a lowercase version of the dataset name). For the /export/other
+mountpoint two directories will be shown -- the lower case versions of the dataset
+names. 
 
 ## Running
 

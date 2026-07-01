@@ -17,9 +17,14 @@
 /* Reset the stub exports table to empty (call at the start of each fixture). */
 void stub_clear_exports(void);
 
-/* Append one entry to the stub exports table. */
+/* Append one export with a single PDS dataset (host_path is the dsname;
+ * the lower-case directory name is derived from it). */
 void stub_add_export(const char *export_path,
                      const char *host_path,
                      const char *file_ext);
+
+/* Append another PDS dataset to the most recently added export (models
+ * multiple datasets grouped under one export path). */
+void stub_add_dataset(const char *host_path, const char *file_ext);
 
 #endif /* TSTUBS_H_INCLUDED */

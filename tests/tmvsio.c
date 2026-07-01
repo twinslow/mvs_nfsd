@@ -9,33 +9,29 @@
  *      src/mvsio.c tests/munit.c \
  *      -o tests/runall
  *
- * Run:
- *   tests/tmvsio
+ * NOTE: exports.c is NOT linked.  tests/tstubs.c provides the exports
+ * table and dataset provider.
  *
- * NOTE: exports.c is NOT linked.  This file provides lightweight stubs
- * for exports_count() and exports_get() so the tests are fully self-
- * contained and need no config file or live dataset.
+ * mvs_path_type() classifies an export-relative path into three levels:
+ *   <export_path>                        -> ROOT
+ *   <export_path>/<dirname>              -> DATASET      (a PDS directory)
+ *   <export_path>/<dirname>/<member>     -> PDS_MEMBER
+ * where <dirname> is the lower-case form of the PDS dataset name.
  */
 
 #include <string.h>
 
 #include "munit.h"
 #include "nfsd.h"      /* export_t, MAX_EXPORTS, MAX_PATH */
-#include "mvsvfs.h"    /* MVS_PATH_TYPE_DATASET, MVS_PATH_TYPE_PDS_MEMBER */
-#include "mvsio.h"     /* mvs_path_type */
-#include "tstubs.h"    /* stub_clear_exports, stub_add_export */
+#include "mvsio.h"     /* mvs_path_type, MVS_PATH_TYPE_* */
+#include "tstubs.h"    /* stub_clear_exports, stub_add_export, stub_add_dataset */
 
 /* ======================================================================
- * Fixture: single export
- *   export_path (NFS) : /dinonfs/src
- *   host_path (MVS)   : TEMP.DINONFS.C
- *   extension         : c
- *
- * mvs_path_type() matches on host_path_ebcdic (the host path field).
- * On Linux, host_path_ebcdic is identical to host_path (no EBCDIC
- * conversion), so tests pass the host path directly.
+ * Fixtures
  * ====================================================================== */
 
+/* One export "/dinonfs/src" with a single dataset TEMP.DINONFS.C,
+ * seen by clients as directory "temp.dinonfs.c". */
 static void *setup_single(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
@@ -44,30 +40,33 @@ static void *setup_single(const MunitParameter params[], void *user_data)
     return NULL;
 }
 
-/* ======================================================================
- * Fixture: three exports
- *   [0] /dinonfs/src  -> TEMP.DINONFS.C    (c)
- *   [1] /dinonfs/hdr  -> TEMP.DINONFS.H    (h)
- *   [2] /dinonfs/jcl  -> TEMP.DINONFS.CNTL (jcl)
- *
- * Tests pass the host_path (e.g. "TEMP.DINONFS.C") to mvs_path_type()
- * since that is what host_path_ebcdic is set to on Linux.
- * ====================================================================== */
+/* One export "/export" grouping three datasets (dirnames):
+ *   [0] TEMP.TESTPROJ.JCLLIB  -> temp.testproj.jcllib
+ *   [1] TEMP.TESTPROJ.CNTL    -> temp.testproj.cntl
+ *   [2] TEMP.TESTPROJ.LOADLIB -> temp.testproj.loadlib
+ */
+static void *setup_multi_ds(const MunitParameter params[], void *user_data)
+{
+    (void)params; (void)user_data;
+    stub_clear_exports();
+    stub_add_export("/export", "TEMP.TESTPROJ.JCLLIB", "jcllib");
+    stub_add_dataset("TEMP.TESTPROJ.CNTL",    "cntl");
+    stub_add_dataset("TEMP.TESTPROJ.LOADLIB", "loadlib");
+    return NULL;
+}
 
-static void *setup_multi(const MunitParameter params[], void *user_data)
+/* Three separate exports, one dataset each, for export-selection tests. */
+static void *setup_multi_exports(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
     stub_add_export("/dinonfs/src", "TEMP.DINONFS.C",    "c");
     stub_add_export("/dinonfs/hdr", "TEMP.DINONFS.H",    "h");
-    stub_add_export("/dinonfs/jcl", "TEMP.DINONFS.CNTL", "jcl");
+    stub_add_export("/dinonfs/jcl", "TEMP.DINONFS.CNTL", "cntl");
     return NULL;
 }
 
-/* ======================================================================
- * Fixture: empty exports table (no exports configured)
- * ====================================================================== */
-
+/* Empty exports table. */
 static void *setup_empty(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
@@ -76,340 +75,274 @@ static void *setup_empty(const MunitParameter params[], void *user_data)
 }
 
 /* ======================================================================
- * Tests: exact match returns MVS_PATH_TYPE_DATASET
+ * ROOT: the export path itself is the (virtual) root directory
  * ====================================================================== */
 
-/* Host path exactly matches host_path_ebcdic -> DATASET, idx == 0 */
-static MunitResult test_exact_match_is_dataset(const MunitParameter params[], void *data)
+static MunitResult test_export_path_is_root(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.C", &idx);
+    result = mvs_path_type("/dinonfs/src", &eidx, &didx);
 
-    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
-    munit_assert_int(idx,    ==, 0);
+    munit_assert_int(result, ==, MVS_PATH_TYPE_ROOT);
+    munit_assert_int(eidx,   ==, 0);
+    munit_assert_int(didx,   ==, -1);   /* no dataset for the root */
     return MUNIT_OK;
 }
 
-/* Host path matches first export's host_path_ebcdic -> DATASET, idx == 0 */
-static MunitResult test_exact_match_first_of_multi(const MunitParameter params[], void *data)
+static MunitResult test_second_export_path_is_root(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.C", &idx);
+    result = mvs_path_type("/dinonfs/hdr", &eidx, &didx);
 
-    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
-    munit_assert_int(idx,    ==, 0);
-    return MUNIT_OK;
-}
-
-/* Host path matches second export's host_path_ebcdic -> DATASET, idx == 1 */
-static MunitResult test_exact_match_second_export(const MunitParameter params[], void *data)
-{
-    int idx = -1;
-    int result;
-    (void)params; (void)data;
-
-    result = mvs_path_type("TEMP.DINONFS.H", &idx);
-
-    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
-    munit_assert_int(idx,    ==, 1);
-    return MUNIT_OK;
-}
-
-/* Host path matches third export's host_path_ebcdic -> DATASET, idx == 2 */
-static MunitResult test_exact_match_third_export(const MunitParameter params[], void *data)
-{
-    int idx = -1;
-    int result;
-    (void)params; (void)data;
-
-    result = mvs_path_type("TEMP.DINONFS.CNTL", &idx);
-
-    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
-    munit_assert_int(idx,    ==, 2);
+    munit_assert_int(result, ==, MVS_PATH_TYPE_ROOT);
+    munit_assert_int(eidx,   ==, 1);
     return MUNIT_OK;
 }
 
 /* ======================================================================
- * Tests: path under an export returns MVS_PATH_TYPE_PDS_MEMBER
+ * DATASET: <export>/<dirname> resolves to a PDS directory
  * ====================================================================== */
 
-/* host_path/member -> PDS_MEMBER, idx == 0 */
+static MunitResult test_dirname_is_dataset(const MunitParameter params[], void *data)
+{
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
+    munit_assert_int(eidx,   ==, 0);
+    munit_assert_int(didx,   ==, 0);
+    return MUNIT_OK;
+}
+
+/* Second dataset within one export resolves to dataset_idx 1. */
+static MunitResult test_dataset_idx_selected_by_dirname(const MunitParameter params[], void *data)
+{
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/export/temp.testproj.cntl", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
+    munit_assert_int(eidx,   ==, 0);
+    munit_assert_int(didx,   ==, 1);
+    return MUNIT_OK;
+}
+
+/* Third dataset -> dataset_idx 2. */
+static MunitResult test_dataset_idx_third(const MunitParameter params[], void *data)
+{
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/export/temp.testproj.loadlib", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
+    munit_assert_int(didx,   ==, 2);
+    return MUNIT_OK;
+}
+
+/* An unknown directory name under a valid export is not exported. */
+static MunitResult test_unknown_dirname_not_exported(const MunitParameter params[], void *data)
+{
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/export/temp.nosuch.pds", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
+    return MUNIT_OK;
+}
+
+/* Trailing slash after the dirname still resolves to the directory. */
+static MunitResult test_dirname_trailing_slash_is_dataset(const MunitParameter params[], void *data)
+{
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
+    munit_assert_int(didx,   ==, 0);
+    return MUNIT_OK;
+}
+
+/* ======================================================================
+ * PDS_MEMBER: <export>/<dirname>/<member>
+ * ====================================================================== */
+
 static MunitResult test_member_path_is_pds_member(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.C/nfsd.c", &idx);
+    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/nfsd.c", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
-    munit_assert_int(idx,    ==, 0);
+    munit_assert_int(eidx,   ==, 0);
+    munit_assert_int(didx,   ==, 0);
     return MUNIT_OK;
 }
 
-/* Member path under the second export -> PDS_MEMBER, idx == 1 */
-static MunitResult test_member_path_second_export(const MunitParameter params[], void *data)
+static MunitResult test_member_path_selects_dataset(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.H/types.h", &idx);
+    result = mvs_path_type("/export/temp.testproj.loadlib/thing.loadlib",
+                           &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
-    munit_assert_int(idx,    ==, 1);
+    munit_assert_int(didx,   ==, 2);
     return MUNIT_OK;
 }
 
-/* Member path under the third export -> PDS_MEMBER, idx == 2 */
-static MunitResult test_member_path_third_export(const MunitParameter params[], void *data)
+/* Anything deeper than <dirname>/<member> is not supported. */
+static MunitResult test_too_deep_not_exported(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.CNTL/compile.jcl", &idx);
+    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/sub/nfsd.c",
+                           &eidx, &didx);
 
-    munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
-    munit_assert_int(idx,    ==, 2);
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     return MUNIT_OK;
 }
 
 /* ======================================================================
- * Tests: paths that should not match anything
+ * Non-matching paths
  * ====================================================================== */
 
-/* Completely unrelated path -> 0 */
+/* Unrelated path -> NOT_EXPORTED, indices unchanged. */
 static MunitResult test_unrelated_path_no_match(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/not/exported/at/all", &idx);
+    result = mvs_path_type("/not/exported/at/all", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    /* idx must be unchanged when there is no match */
-    munit_assert_int(idx, ==, -1);
+    munit_assert_int(eidx, ==, -1);
+    munit_assert_int(didx, ==, -1);
     return MUNIT_OK;
 }
 
-/* Path shares a prefix with host_path_ebcdic but has no '/' separator ->
- * e.g. "TEMP.DINONFS.Cextra" should NOT match "TEMP.DINONFS.C" */
+/* Shared prefix without a '/' boundary must not match. */
 static MunitResult test_prefix_without_slash_no_match(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("TEMP.DINONFS.Cextra", &idx);
+    result = mvs_path_type("/dinonfs/srcextra", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    munit_assert_int(idx, ==, -1);
+    munit_assert_int(eidx, ==, -1);
     return MUNIT_OK;
 }
 
-/* Path is a strict prefix (shorter) of host_path_ebcdic -> no match.
- * e.g. "TEMP.DINONFS" does not match "TEMP.DINONFS.C" */
-static MunitResult test_shorter_than_export_no_match(const MunitParameter params[], void *data)
-{
-    int idx = -1;
-    int result;
-    (void)params; (void)data;
-
-    result = mvs_path_type("TEMP.DINONFS", &idx);
-
-    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    munit_assert_int(idx, ==, -1);
-    return MUNIT_OK;
-}
-
-/* Empty path -> no match */
+/* Empty path -> no match. */
 static MunitResult test_empty_path_no_match(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("", &idx);
+    result = mvs_path_type("", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
 
-/* Root "/" path -> no match */
-static MunitResult test_root_path_no_match(const MunitParameter params[], void *data)
+/* Export path with a trailing slash (empty component) -> no match. */
+static MunitResult test_export_trailing_slash_no_match(const MunitParameter params[], void *data)
 {
-    int idx = -1;
-    int result;
+    int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/", &idx);
+    result = mvs_path_type("/dinonfs/src/", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    munit_assert_int(idx, ==, -1);
     return MUNIT_OK;
 }
 
-/* Path that is the host_path with a trailing slash -> no exact match.
- * "TEMP.DINONFS.C/" is not a DATASET match but the length and slash
- * checks pass, so the implementation returns PDS_MEMBER. */
-static MunitResult test_trailing_slash_no_match(const MunitParameter params[], void *data)
-{
-    int idx = -1;
-    int result;
-    (void)params; (void)data;
-
-    result = mvs_path_type("TEMP.DINONFS.C/", &idx);
-
-    /*
-     * The implementation returns PDS_MEMBER for "TEMP.DINONFS.C/" because
-     * path[host_path_len] == '/' and the length check passes.
-     * This test documents current behaviour: callers must strip trailing
-     * slashes before calling mvs_path_type.
-     */
-    munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
-    munit_assert_int(idx, ==, 0);
-    return MUNIT_OK;
-}
-
-/* ======================================================================
- * Tests: empty exports table
- * ====================================================================== */
-
-/* Any path against an empty export table -> 0 */
+/* Any path against an empty exports table -> no match. */
 static MunitResult test_no_exports_configured(const MunitParameter params[], void *data)
 {
-    int idx = -1;
+    int eidx = -1, didx = -1, result;
+    (void)params; (void)data;
+
+    result = mvs_path_type("/dinonfs/src", &eidx, &didx);
+
+    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
+    munit_assert_int(eidx, ==, -1);
+    return MUNIT_OK;
+}
+
+/* NULL output pointers must be tolerated. */
+static MunitResult test_null_out_pointers_ok(const MunitParameter params[], void *data)
+{
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src", &idx);
+    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c", NULL, NULL);
 
-    munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
-    munit_assert_int(idx, ==, -1);
+    munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     return MUNIT_OK;
 }
 
 /* ======================================================================
- * Test suite tables
+ * Suite tables
  * ====================================================================== */
 
-static MunitTest single_export_tests[] = {
-    {
-        "/exact_match_is_dataset",
-        test_exact_match_is_dataset,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/member_path_is_pds_member",
-        test_member_path_is_pds_member,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/unrelated_path_no_match",
-        test_unrelated_path_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/prefix_without_slash_no_match",
-        test_prefix_without_slash_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/shorter_than_export_no_match",
-        test_shorter_than_export_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/empty_path_no_match",
-        test_empty_path_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/root_path_no_match",
-        test_root_path_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/trailing_slash_behaviour",
-        test_trailing_slash_no_match,
-        setup_single, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
+static MunitTest root_tests[] = {
+    { "/export_path_is_root",        test_export_path_is_root,        setup_single,         NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/second_export_path_is_root", test_second_export_path_is_root, setup_multi_exports,  NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 
-static MunitTest multi_export_tests[] = {
-    {
-        "/exact_match_first_of_multi",
-        test_exact_match_first_of_multi,
-        setup_multi, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/exact_match_second_export",
-        test_exact_match_second_export,
-        setup_multi, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/exact_match_third_export",
-        test_exact_match_third_export,
-        setup_multi, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/member_path_second_export",
-        test_member_path_second_export,
-        setup_multi, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
-    {
-        "/member_path_third_export",
-        test_member_path_third_export,
-        setup_multi, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
+static MunitTest dataset_tests[] = {
+    { "/dirname_is_dataset",              test_dirname_is_dataset,              setup_single,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/dataset_idx_selected_by_dirname", test_dataset_idx_selected_by_dirname, setup_multi_ds, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/dataset_idx_third",               test_dataset_idx_third,               setup_multi_ds, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/unknown_dirname_not_exported",    test_unknown_dirname_not_exported,    setup_multi_ds, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/dirname_trailing_slash",          test_dirname_trailing_slash_is_dataset, setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 
-static MunitTest empty_export_tests[] = {
-    {
-        "/no_exports_configured",
-        test_no_exports_configured,
-        setup_empty, NULL,
-        MUNIT_TEST_OPTION_NONE, NULL
-    },
+static MunitTest member_tests[] = {
+    { "/member_path_is_pds_member",   test_member_path_is_pds_member,   setup_single,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_path_selects_dataset", test_member_path_selects_dataset, setup_multi_ds, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/too_deep_not_exported",       test_too_deep_not_exported,       setup_single,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 
-/* Sub-suites */
+static MunitTest nomatch_tests[] = {
+    { "/unrelated_path_no_match",       test_unrelated_path_no_match,       setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/prefix_without_slash_no_match", test_prefix_without_slash_no_match, setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/empty_path_no_match",           test_empty_path_no_match,           setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/export_trailing_slash_no_match",test_export_trailing_slash_no_match,setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/no_exports_configured",         test_no_exports_configured,         setup_empty,  NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/null_out_pointers_ok",          test_null_out_pointers_ok,          setup_single, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
 static MunitSuite sub_suites[] = {
-    { "/single", single_export_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/multi",  multi_export_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/empty",  empty_export_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { NULL,      NULL,                NULL, 0, MUNIT_SUITE_OPTION_NONE }
+    { "/root",    root_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/dataset", dataset_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/member",  member_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/nomatch", nomatch_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { NULL,       NULL,          NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 
 /* Exported -- referenced by tests/runall.c */
 MunitSuite tmvsio_suite = {
     "/mvsio/mvs_path_type",
-    NULL,           /* no top-level tests; all are in sub-suites */
+    NULL,
     sub_suites,
     1,
     MUNIT_SUITE_OPTION_NONE

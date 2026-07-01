@@ -6,14 +6,20 @@
 #include "types.h"
 
 #define MVS_PATH_NOT_EXPORTED       -1
-#define MVS_PATH_TYPE_DATASET       1
-#define MVS_PATH_TYPE_PDS_MEMBER    2
+#define MVS_PATH_TYPE_ROOT          0   /* export root: virtual dir of PDS dirs */
+#define MVS_PATH_TYPE_DATASET       1   /* a PDS directory (one dataset)        */
+#define MVS_PATH_TYPE_PDS_MEMBER    2   /* a member file within a PDS           */
 
 /* -------------------------------------------------------------------- */
 /* Path classification                                                  */
+/*                                                                      */
+/* Classifies an (EBCDIC) NFS path into ROOT / DATASET / PDS_MEMBER and */
+/* returns the owning export index and, for DATASET/PDS_MEMBER, the     */
+/* index of the dataset within that export (dataset_idx = -1 for ROOT). */
+/* Either output pointer may be NULL if the caller does not need it.    */
 /* -------------------------------------------------------------------- */
 
-int mvs_path_type(const char *path, int *export_idx);
+int mvs_path_type(const char *path, int *export_idx, int *dataset_idx);
 
 int mvs_get_pds_dsn_and_member(
     const char      *path,

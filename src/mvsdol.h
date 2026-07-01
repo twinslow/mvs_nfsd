@@ -43,7 +43,9 @@
 /* -------------------------------------------------------------------- */
 struct vfs_dir {
     uint8_t             status;                     /* OPENLIST_FREE / OPENLIST_USED */
+    int                 dir_level;                  /* MVS_PATH_TYPE_ROOT or _DATASET */
     int                 export_idx;
+    int                 dataset_idx;                /* dataset within export (-1 for ROOT) */
     FILE               *pds_fh;                     /* file handle for the open dir  */
     char                pds_dsname_ebcdic[45];      /* EBCDIC dataset name from path */
     uint64_t            next_cookie;                /* This 64bit value is actually the EBCDIC member name  */

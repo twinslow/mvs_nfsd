@@ -47,15 +47,13 @@
 /* Returns 0 on success, -1 on error (errno set).                       */
 /* -------------------------------------------------------------------- */
 static uint64_t vfs_stat_member_size_calc(
-    int export_idx,
-    int member_size)
+    pds_dataset_t *ds,
+    int            member_size)
 {
-    export_t        *exp;
     mvs_dcb_info_t  *dcb;
     uint64_t         calc_estimated_size;
 
-    exp = exports_get(export_idx);
-    dcb = &exp->dcbinfo;
+    dcb = &ds->dcbinfo;
 
     if (dcb->recfm & MVS_DCB_RECFM_F ) {
         calc_estimated_size = member_size * (1 + dcb->lrecl);
@@ -69,15 +67,23 @@ static uint64_t vfs_stat_member_size_calc(
 }
 
 
-static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
+static int vfs_stat_pds_member(const char *path, int export_idx,
+                               int dataset_idx, vfs_stat_t *vs)
 {
     pds_member_entry_t   mem_entry;
     pds_member_entry_t  *member_entry;
+    pds_dataset_t       *ds;
     char                 pds_dsname[45];
     char                 pds_member_name[9];
     uint64_t             set_size;
     int                  retcode, rc2;
     mvsfsz_entry_t       file_size_entry;
+
+    ds = export_dataset_get(export_idx, dataset_idx);
+    if (ds == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
 
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
@@ -102,7 +108,7 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
     /* which will attempt to read a file based on the file size that was given in a getattr or     */
     /* lookup operation.                                                                           */
     if ( rc2 != 0 )
-        set_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
+        set_size = vfs_stat_member_size_calc(ds, member_entry->size);
 
     vs->ftype = NF3REG;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
@@ -142,14 +148,32 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
  */
 static time_t g_dir_epoch = 0;
 
-static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
+/* Lazily capture a stable, server-lifetime timestamp for synthetic
+   directory attributes (see g_dir_epoch above). */
+static uint32_t vfs_dir_epoch(void)
 {
     struct timeval tv;
-
     if (g_dir_epoch == 0) {
         gettimeofday(&tv, NULL);
         g_dir_epoch = tv.tv_sec;
     }
+    return (uint32_t)g_dir_epoch;
+}
+
+static int vfs_stat_dataset(const char *path, int export_idx,
+                            int dataset_idx, vfs_stat_t *vs)
+{
+    pds_dataset_t *ds;
+
+    (void)path;
+
+    ds = export_dataset_get(export_idx, dataset_idx);
+    if (ds == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    (void)vfs_dir_epoch();   /* ensure g_dir_epoch is initialised */
 
     vs->ftype = NF3DIR;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
@@ -161,11 +185,11 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
     vs->rdev_maj = 0;
     vs->rdev_min = 0;
     vs->fsid = (uint64_t)(export_idx + 1); /* unique filesystem ID based on export index */
-    // Here we generate the fileid for the dataset, based on dataset name.
-    // We'll use this as the basis for the raw_dev/raw_ino fields.
-    vs->fileid  = mvs_fid_hash(path, NULL);
-    vs->raw_ino = mvs_fid_ino32(path, NULL);
-    vs->raw_dev = (uint32_t)export_idx + 1; 
+    /* fileid / raw_ino are derived from the REAL dsname (not the lower-case
+       path component) so they are stable and match the member fileids. */
+    vs->fileid  = mvs_fid_hash(ds->dsname_ebcdic, NULL);
+    vs->raw_ino = mvs_fid_ino32(ds->dsname_ebcdic, NULL);
+    vs->raw_dev = (uint32_t)export_idx + 1;
 
     // Now the accessed/modified/created date/times.
     // These MUST be stable across calls (see g_dir_epoch above): a varying
@@ -177,6 +201,47 @@ static int vfs_stat_dataset(const char *path, int export_idx, vfs_stat_t *vs)
     vs->mtime_nsec = 0;
     vs->ctime_sec = (uint32_t)g_dir_epoch;
     vs->ctime_nsec = 0;
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
+/* vfs_stat_root: attributes for the export root (a virtual directory   */
+/* whose entries are the PDS directories of the export).                */
+/* -------------------------------------------------------------------- */
+static int vfs_stat_root(const char *path, int export_idx, vfs_stat_t *vs)
+{
+    export_t *exp;
+    uint32_t  epoch;
+
+    (void)path;
+
+    exp = exports_get(export_idx);
+    if (exp == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    epoch = vfs_dir_epoch();
+
+    vs->ftype = NF3DIR;
+    vs->mode = 0777;
+    vs->nlink = 2;
+    vs->uid = 0;
+    vs->gid = 0;
+    vs->size = 4096;
+    vs->used = 4096;
+    vs->rdev_maj = 0;
+    vs->rdev_min = 0;
+    vs->fsid = (uint64_t)(export_idx + 1);
+    /* Root identity is derived from the export path, distinct from any PDS. */
+    vs->fileid  = mvs_fid_hash(exp->export_path_ebcdic, NULL);
+    vs->raw_ino = mvs_fid_ino32(exp->export_path_ebcdic, NULL);
+    vs->raw_dev = (uint32_t)export_idx + 1;
+
+    vs->atime_sec = epoch; vs->atime_nsec = 0;
+    vs->mtime_sec = epoch; vs->mtime_nsec = 0;
+    vs->ctime_sec = epoch; vs->ctime_nsec = 0;
 
     return 0;
 }
@@ -227,6 +292,7 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
 int vfs_stat(const char *path, vfs_stat_t *vs)
 {
     int     export_idx;
+    int     dataset_idx;
     char    ebcdic_path[MAX_PATH_LEN];
     int     path_type;
     int     retcode;
@@ -239,16 +305,21 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
     ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
-    /* Is this path a directory or a member of a PDS */
-    path_type = mvs_path_type(ebcdic_path, &export_idx);
+    /* Classify: export root, a PDS directory, or a PDS member. */
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
 
     if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
-        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs);
+        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, dataset_idx, vs);
         dump_stat_result(path, retcode, vs);
         mvsprf_record(PERF_VFS_STAT, clock() - t_start);
         return retcode;
     } else if (path_type == MVS_PATH_TYPE_DATASET) {
-        retcode = vfs_stat_dataset(ebcdic_path, export_idx, vs);
+        retcode = vfs_stat_dataset(ebcdic_path, export_idx, dataset_idx, vs);
+        dump_stat_result(path, retcode, vs);
+        mvsprf_record(PERF_VFS_STAT, clock() - t_start);
+        return retcode;
+    } else if (path_type == MVS_PATH_TYPE_ROOT) {
+        retcode = vfs_stat_root(ebcdic_path, export_idx, vs);
         dump_stat_result(path, retcode, vs);
         mvsprf_record(PERF_VFS_STAT, clock() - t_start);
         return retcode;
@@ -287,10 +358,10 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
     /* Is this path to a directory or a member of a PDS */
-    path_type = mvs_path_type(ebcdic_path, &export_idx);
+    path_type = mvs_path_type(ebcdic_path, &export_idx, NULL);
     log_debug("vfs_pread: mvs_path_type returned type = %d, export_idx = %d",
         path_type, export_idx);
-    if (path_type == MVS_PATH_TYPE_DATASET) {
+    if (path_type == MVS_PATH_TYPE_DATASET || path_type == MVS_PATH_TYPE_ROOT) {
         errno = EACCES;
         return -1;
     } else if ( path_type != MVS_PATH_TYPE_PDS_MEMBER ){
@@ -558,35 +629,6 @@ vfs_closedir
 
 
 /* -------------------------------------------------------------------- */
-/* Translate ASCII path name into EBCDIC and extract DSN and mem name   */
-/* -------------------------------------------------------------------- */
-static int path_to_dsn_member(
-    const char *path,
-    int expected_path_type,
-    int *actual_path_type,
-    char *pds_dsname,
-    char *pds_member_name,
-    int  *export_idx )
-{
-    char        ebcdic_path[MAX_PATH_LEN];
-    int         path_type;
-
-    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
-    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
-
-    path_type = mvs_path_type(ebcdic_path, export_idx);
-    *actual_path_type = path_type;
-
-    if ( path_type != expected_path_type ) {
-        return -1;
-    }
-
-    mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname, pds_member_name, *export_idx);
-    return 0;
-
-}
-
-/* -------------------------------------------------------------------- */
 /* Convert the EBCDIC character string (null terminated) to a cookie    */
 /* value, which is the EBCDIC chars padded with spaces if required.     */
 /* -------------------------------------------------------------------- */
@@ -635,22 +677,23 @@ void from_cookie(const uint64_t cookie, char *pds_member_name) {
 /* -------------------------------------------------------------------- */
 void generate_file_name(
     int                  export_idx,
-    pds_member_entry_t  *member_info, 
+    int                  dataset_idx,
+    pds_member_entry_t  *member_info,
     char                *file_name_buffer,
     int                  buflen)
 {
-    int i;
-    export_t *exp;
+    int            i;
+    pds_dataset_t *ds;
 
-    exp = exports_get(export_idx);
+    ds = export_dataset_get(export_idx, dataset_idx);
 
     strncpy(file_name_buffer, member_info->name, buflen);
     for (i = 0; i < strlen(file_name_buffer); i++)
         file_name_buffer[i] = tolower(file_name_buffer[i]);
 
-    if ( strlen(exp->file_ext) > 0 ) {
+    if ( ds != NULL && strlen(ds->file_ext) > 0 ) {
         strncat(file_name_buffer, ".", buflen);
-        strncat(file_name_buffer, exp->file_ext, buflen);
+        strncat(file_name_buffer, ds->file_ext, buflen);
     }
 
     ebcdic_to_ascii(file_name_buffer, file_name_buffer, strlen(file_name_buffer));
@@ -667,24 +710,52 @@ void generate_file_name(
 /* -------------------------------------------------------------------- */
 vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 {
-    vfs_dir_t  *dir_entry;
-    char        ebcdic_path[MAX_PATH_LEN];
-    char        pds_dsname[45];
-    char        pds_member_name[9];
-    int         export_idx;
-    int         retcode;
-    int         path_type;
+    vfs_dir_t     *dir_entry;
+    char           ebcdic_path[MAX_PATH_LEN];
+    pds_dataset_t *ds;
+    int            export_idx;
+    int            dataset_idx;
+    int            retcode;
+    int            path_type;
 
-    log_debug("vfs_opendir: Starting with path=%s cookie='%-8.8s' (0x%016llX) ",
-        log_ascii(path), (char *)&cookie, cookie);
+    log_debug("vfs_opendir: Starting with path=%s cookie=0x%016llX",
+        log_ascii(path), cookie);
 
-    retcode = path_to_dsn_member(
-        path, MVS_PATH_TYPE_DATASET,
-        &path_type, pds_dsname, pds_member_name, &export_idx);
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
     log_debug("vfs_opendir: path %s, type = %d", log_ascii(path), path_type);
 
-    if ( retcode < 0 ) {
+    /* ---- Export root: a virtual directory listing the PDS dirs. ---- */
+    if ( path_type == MVS_PATH_TYPE_ROOT ) {
+        dir_entry = dir_openlist_find_free();
+        if ( !dir_entry ) {
+            log_error("vfs_opendir: no free slot for root of export %d", export_idx);
+            goto error;
+        }
+        dir_entry->status      = MVSVFS_DIR_OPENLIST_USED;
+        dir_entry->dir_level   = MVS_PATH_TYPE_ROOT;
+        dir_entry->export_idx  = export_idx;
+        dir_entry->dataset_idx = -1;
+        strncpy(dir_entry->pds_dsname_ebcdic, ebcdic_path,
+            sizeof(dir_entry->pds_dsname_ebcdic) - 1);
+        dir_entry->pds_dsname_ebcdic[sizeof(dir_entry->pds_dsname_ebcdic) - 1] = '\0';
+        dir_entry->next_cookie                = 0;
+        dir_entry->member_list.number_in_list = 0;
+        dir_entry->end_of_dir_read            = 0;
+        dir_entry->pds_fh                     = NULL;
+        return dir_entry;
+    }
+
+    if ( path_type != MVS_PATH_TYPE_DATASET ) {
+        errno = ENOENT;
+        goto error;
+    }
+
+    /* ---- A PDS directory: resolve the real dsname and open it. ---- */
+    ds = export_dataset_get(export_idx, dataset_idx);
+    if ( ds == NULL ) {
         errno = ENOENT;
         goto error;
     }
@@ -692,20 +763,20 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     /* Fast path: reuse an existing non-expired slot for this PDS.      */
     /* If the full member list is already cached we skip disk I/O.      */
     /* If the cache is partial, reinitialise it for a fresh read.       */
-    dir_entry = dir_openlist_find_by_dsname(pds_dsname);
+    dir_entry = dir_openlist_find_by_dsname(ds->dsname_ebcdic);
     if ( dir_entry != NULL ) {
         if ( dir_entry->end_of_dir_read ) {
             /* Full cache hit -- all members known, no disk read needed */
             log_debug("vfs_opendir: Full cache hit for PDS %s, %d members cached",
-                pds_dsname, dir_entry->member_list.number_in_list);
+                ds->dsname_ebcdic, dir_entry->member_list.number_in_list);
             return dir_entry;
         }
         /* Partial cache: re-open file handle and reset for fresh read  */
         dir_entry->member_list.number_in_list = 0;
         dir_entry->end_of_dir_read            = 0;
-        retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
+        retcode = mvs_open_pds_dir(ds->dsname_ebcdic, export_idx, &dir_entry->pds_fh);
         if ( retcode == 0 && dir_entry->pds_fh ) {
-            log_debug("vfs_opendir: Partial cache hit for PDS %s, reopened", pds_dsname);
+            log_debug("vfs_opendir: Partial cache hit for PDS %s, reopened", ds->dsname_ebcdic);
             return dir_entry;
         }
         /* Re-open failed; fall through to allocate a fresh slot        */
@@ -715,28 +786,30 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     /* Slow path: allocate a free (or LRU-evicted) pool slot.           */
     dir_entry = dir_openlist_find_free();
     if ( !dir_entry ) {
-        log_error("vfs_opendir: Unable to find free open directory entry for ", pds_dsname);
+        log_error("vfs_opendir: no free open dir entry for %s", ds->dsname_ebcdic);
         goto error;
     }
 
-    dir_entry->status = MVSVFS_DIR_OPENLIST_USED;
-    dir_entry->export_idx = export_idx;
-    strncpy(dir_entry->pds_dsname_ebcdic, pds_dsname,
+    dir_entry->status      = MVSVFS_DIR_OPENLIST_USED;
+    dir_entry->dir_level   = MVS_PATH_TYPE_DATASET;
+    dir_entry->export_idx  = export_idx;
+    dir_entry->dataset_idx = dataset_idx;
+    strncpy(dir_entry->pds_dsname_ebcdic, ds->dsname_ebcdic,
         sizeof(dir_entry->pds_dsname_ebcdic));
     dir_entry->next_cookie                = 0;
     dir_entry->member_list.number_in_list = 0;
     dir_entry->end_of_dir_read            = 0;
 
     /* Open the PDS for the directory read */
-    retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
+    retcode = mvs_open_pds_dir(ds->dsname_ebcdic, export_idx, &dir_entry->pds_fh);
     if ( retcode < 0 || !dir_entry->pds_fh ) {
-        log_error("vfs_opendir: Unable to open PDS %s for directory read", pds_dsname);
+        log_error("vfs_opendir: Unable to open PDS %s for directory read", ds->dsname_ebcdic);
         dir_openlist_free(dir_entry);
         goto error;
     }
 
     log_debug("vfs_opendir: Opened PDS %s, pds_fh = 0x%08X",
-        pds_dsname, dir_entry->pds_fh);
+        ds->dsname_ebcdic, dir_entry->pds_fh);
 
     return dir_entry;
 
@@ -747,14 +820,50 @@ error:
 }
 
 /* -------------------------------------------------------------------- */
+/* root_readdir_next: enumerate the PDS directories of an export.       */
+/*                                                                      */
+/* The cookie is the ordinal index of the NEXT dataset to return, so    */
+/* entry i returns cookie (i+1) and a cookie >= the dataset count means */
+/* end of directory.  No disk I/O -- entries come from the dataset      */
+/* provider (export_dataset_*), so a future dynamic list can be used.   */
+/* -------------------------------------------------------------------- */
+static int root_readdir_next(vfs_dir_t *dir_entry,
+                             char *name, uint32_t maxname,
+                             uint64_t *fileid, uint64_t *cookie)
+{
+    int            index;
+    int            count;
+    pds_dataset_t *ds;
+
+    index = (int)(*cookie);        /* next dataset to return */
+    count = export_dataset_count(dir_entry->export_idx);
+
+    if (index < 0 || index >= count)
+        return -1;                 /* end of directory */
+
+    ds = export_dataset_get(dir_entry->export_idx, index);
+    if (ds == NULL)
+        return -1;
+
+    strncpy(name, ds->dirname_ascii, maxname - 1);
+    name[maxname - 1] = '\0';
+
+    *fileid = mvs_fid_hash(ds->dsname_ebcdic, NULL);
+    *cookie = (uint64_t)(index + 1);
+
+    log_debug("root_readdir_next: entry %d = %s", index, ds->dirname_ebcdic);
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
 /* vfs_readdir_next: read the next directory entry.                     */
 /*                                                                      */
 /* Fills name (NUL-terminated), *fileid (inode), and *cookie (1-based   */
 /* position of this entry, for use as the NFS READDIR cookie).          */
 /* Returns 0 on success, -1 at end of directory or error.               */
 /* -------------------------------------------------------------------- */
-int vfs_readdir_next(vfs_dir_t *dir_entry, 
-                     char *name, uint32_t maxname, 
+int vfs_readdir_next(vfs_dir_t *dir_entry,
+                     char *name, uint32_t maxname,
                      uint64_t *fileid,
                      uint64_t *cookie)
 {
@@ -764,7 +873,11 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     int                 retcode;
     pds_member_entry_t *member_info;
 
-    //log_debug("vfs_readdir_next: path=%s cookie='%-8.8s' (0x%016llX)", 
+    /* The export root enumerates PDS directories, not PDS members. */
+    if (dir_entry->dir_level == MVS_PATH_TYPE_ROOT)
+        return root_readdir_next(dir_entry, name, maxname, fileid, cookie);
+
+    //log_debug("vfs_readdir_next: path=%s cookie='%-8.8s' (0x%016llX)",
     //    dir_entry->pds_dsname_ebcdic, (char *)cookie, *cookie);
 
     /* Convert cookie back to EBCDIC string with null terminator */
@@ -828,7 +941,8 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
 
     /* Return the file name, generated from the member name found */
     /* This will translate the file name to ASCII                 */
-    generate_file_name(dir_entry->export_idx, member_info, name, maxname);
+    generate_file_name(dir_entry->export_idx, dir_entry->dataset_idx,
+                       member_info, name, maxname);
 
     /* Return the generated fileId value */
     *fileid = mvs_fid_hash(

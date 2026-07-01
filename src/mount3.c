@@ -72,7 +72,9 @@ void handle_mount(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
             break;
         }
 
-        if (vfs_stat(exp->host_path, &st) < 0) {
+        /* The mount root is the export's virtual directory (which lists
+           the PDS directories), so stat the export path itself. */
+        if (vfs_stat(exp->export_path, &st) < 0) {
             xdr_write_uint32(out, MNT3ERR_IO);
             break;
         }

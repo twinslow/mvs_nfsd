@@ -64,6 +64,9 @@
 #define exports_get_id          expGetId
 #define exports_find_by_nfs_path expFndNp
 #define exports_find_by_id      expFndId
+#define export_dataset_count            expDsCnt
+#define export_dataset_get              expDsGet
+#define export_dataset_find_by_dirname  expDsFnd
 /* fhandle.c */
 #define fh_cache_insert         fhCachIn
 #define fh_cache_lookup         fhCachLk
@@ -292,9 +295,11 @@
 #define OUR_FH_MAGIC      0x4E465333u  /* 'NFS3' */
  
 #define MAX_EXPORTS       16
+#define MAX_PDS_PER_EXPORT 32   /* max PDS datasets grouped under one export */
 #define MAX_PATH          256
 #define MAX_NAME          256
 #define MAX_FILE_EXT_LEN  16
+#define MAX_DSNAME_LEN    45    /* 44-char MVS dsname + NUL */
 #define FH_CACHE_SIZE     512
 #define MAX_CONNECTIONS   16
  
@@ -336,14 +341,38 @@ typedef struct {
     uint32_t ino;        /* stable 32-bit file ID (from path cache) */
 } our_fhandle_t;
  
-/* One exported directory */
+/*
+ * One PDS dataset within an export.  Each dataset appears to NFS clients
+ * as a directory (named 'dirname', the lower-case form of the dsname)
+ * under the export root; its members appear as files inside it.
+ */
+typedef struct {
+    char           dsname_ebcdic[MAX_DSNAME_LEN];  /* real PDS name, EBCDIC (TEMP.TESTPROJ.JCLLIB) */
+    char           dsname_ascii[MAX_DSNAME_LEN];   /* real PDS name, ASCII                         */
+    char           dirname_ebcdic[MAX_DSNAME_LEN]; /* lower-case(dsname), EBCDIC (path matching)   */
+    char           dirname_ascii[MAX_DSNAME_LEN];  /* lower-case(dsname), ASCII  (readdir output)  */
+    char           file_ext[MAX_FILE_EXT_LEN];     /* extension appended to member file names      */
+    mvs_dcb_info_t dcbinfo;
+} pds_dataset_t;
+
+/* One exported directory (may group several PDS datasets) */
 typedef struct {
     char export_path[MAX_PATH]; /* NFS path as seen by clients: /export/foo */
     char export_path_ebcdic[MAX_PATH]; /* NFS path as seen by clients, but in EBCDIC: /export/foo */
+
+    /*
+     * Legacy single-dataset fields.  Retained so the (compile-only, not
+     * linked) mockvfs.c and the non-MVS dev build keep building; the MVS
+     * VFS uses the datasets[] list below.  Populated from datasets[0].
+     */
     char host_path[MAX_PATH];   /* local path on this host, but in ASCII: /home/user/foo or MVS PDS dataset name */
     char host_path_ebcdic[MAX_PATH];   /* local path on this host: /home/user/foo or MVS PDS dataset name */
     char file_ext[MAX_FILE_EXT_LEN]; /* optional extension to add to all files in this export */
     mvs_dcb_info_t      dcbinfo;
+
+    /* Multi-PDS dataset list (source of truth for the MVS 3-level model) */
+    pds_dataset_t datasets[MAX_PDS_PER_EXPORT];
+    int           ndatasets;
 } export_t;
  
 /* XDR encode/decode buffer */
@@ -487,7 +516,18 @@ int       exports_get_id(const export_t *exp);
 export_t *exports_find_by_nfs_path(const char *nfs_path);
 export_t *exports_find_by_id(uint32_t id);
 export_t *exports_find_by_host_path(const char *host_path_ebcdic);
- 
+
+/*
+ * Dataset provider: the set of PDS datasets in an export.  The root
+ * directory iterator uses only these three calls, so a future dynamic
+ * (catalog-discovered) implementation can replace them without touching
+ * the VFS/NFS layers.
+ */
+int            export_dataset_count(int export_idx);
+pds_dataset_t *export_dataset_get(int export_idx, int dataset_idx);
+int            export_dataset_find_by_dirname(int export_idx,
+                                              const char *dirname_ebcdic);
+
 /* -------------------------------------------------------------------- */
 /* Prototypes: fhandle.c                                                */
 /* -------------------------------------------------------------------- */
