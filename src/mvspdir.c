@@ -452,21 +452,20 @@ int mvs_skip_dir_entry(
 }
 
 int mvs_extract_dir_entry(
-    const uint8_t *blockptr, 
-    pds_member_entry_t *member_entries, 
-    int max_members, 
-    int *num_members_returned) 
+    const uint8_t      *blockptr,
+    pds_member_list_t  *mlist)
 {
     pds_member_entry_t *entry;
-    int len_entry;
 
-    // Pointer to specific member entry we are going to populate.
-    entry = &member_entries[*num_members_returned];
-    // Populate the entry
-    len_entry = mvs_pds_member_entry_set(entry, blockptr);
-    (*num_members_returned)++;
+    /* Reserve the next free slot in the list (expands the list if full). */
+    entry = mvspdir_mlist_getfree(mlist);
+    if (entry == NULL) {
+        /* Allocation failure -- errno already set by mvspdir_mlist_getfree. */
+        return -1;
+    }
 
-    return len_entry;
+    /* Populate the reserved entry and return its byte length in the block. */
+    return mvs_pds_member_entry_set(entry, blockptr);
 }
 
 
@@ -488,14 +487,12 @@ static void read_and_skip_block_length(FILE *pds_dir_fh) {
 int mvs_process_dir_block(
     const uint8_t      *block_data,
     const char         *start_member,
-    int                 max_members,
-    pds_member_entry_t *member_entries,
-    int                *num_members_returned,
+    pds_member_list_t  *mlist,
     int                *end_of_dir)
 {
     const uint8_t      *dir_block_end;
-    uint8_t *blockptr = (uint8_t *)block_data; // Pointer to current position in the block
-    pds_member_entry_t entry;
+    uint8_t            *blockptr = (uint8_t *)block_data; // current position in block
+    int                 len_entry;
 
     dir_block_end = blockptr + *(uint16_t *)blockptr;
     blockptr += 2;
@@ -506,17 +503,19 @@ int mvs_process_dir_block(
         if ( memcmp(blockptr, MVS_PDSDIR_ENDMARK, 8) == 0) {
             // We've reached the end of the directory
             //log_debug("mvs_process_dir_block: Found PDS directory end mark - set end_of_dir = 1");
-            *end_of_dir = 1;   
+            *end_of_dir = 1;
             break;
         }
     //  log_debug("mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
         if (memcmp(blockptr, start_member, 8) >= 0) {
-            blockptr += mvs_extract_dir_entry(blockptr, member_entries, max_members, num_members_returned);
-            if (*num_members_returned >= max_members) {
-                break;
+            len_entry = mvs_extract_dir_entry(blockptr, mlist);
+            if (len_entry < 0) {
+                // List expansion failed -- errno set by mvs_extract_dir_entry.
+                return -1;
             }
+            blockptr += len_entry;
         } else {
-            blockptr += mvs_skip_dir_entry(blockptr); 
+            blockptr += mvs_skip_dir_entry(blockptr);
         }
     }
     return 0; // Success
@@ -525,34 +524,30 @@ int mvs_process_dir_block(
 int mvs_read_pds_dir(
     FILE *pds_dir_fh,
     const char *start_member,
-    int max_members,
-    pds_member_entry_t *member_entries,
-    int *num_members_returned,
+    pds_member_list_t *mlist,
     int *end_of_dir)
 {
-    uint16_t block_len;
     uint8_t block[256];
-    size_t bytes_read;
+    int     rc;
 
-    *num_members_returned = 0;
     *end_of_dir = 0;
 
-    log_debug("mvs_read_pds_dir: Start reading at member %s and return max members %d", 
-        start_member, max_members);
+    log_debug("mvs_read_pds_dir: Start reading at member %s", start_member);
 
-    read_and_skip_block_length(pds_dir_fh); 
-    while (bytes_read = fread(block, 1, sizeof(block), pds_dir_fh) == 256) {
+    read_and_skip_block_length(pds_dir_fh);
+    while (fread(block, 1, sizeof(block), pds_dir_fh) == 256) {
         //log_debug("mvs_read_pds_dir: Read directory block ... first mem %-8.8s", &block[2]);
-        // Read the end mark for the directory?
-        // Otherwise, process directory block
-        mvs_process_dir_block(block, start_member, max_members, member_entries, num_members_returned, end_of_dir);        
-        if ( *num_members_returned >= max_members || *end_of_dir) {
-            //log_debug("mvs_read_pds_dir: Ending read directory -- *num_members_returned = %d, *end_of_dir = %d",
-            //    *num_members_returned, *end_of_dir);
+        // Append every member >= start_member from this block into the list.
+        rc = mvs_process_dir_block(block, start_member, mlist, end_of_dir);
+        if (rc < 0) {
+            return -1;  // List expansion failed -- errno already set.
+        }
+        if ( *end_of_dir ) {
+            //log_debug("mvs_read_pds_dir: Reached end of directory");
             break;
         }
 
-        read_and_skip_block_length(pds_dir_fh); 
+        read_and_skip_block_length(pds_dir_fh);
     }
 
     return 0; // Success
@@ -569,12 +564,10 @@ int mvs_read_pds_dir(
 /*    -1 on error (errno set)                                           */
 /* -------------------------------------------------------------------- */
 int mvs_pds_member_list(
-    const char *dsname, 
+    const char *dsname,
     int export_idx,
     const char *start_member,
-    int max_members,
-    pds_member_entry_t *member_entries,
-    int *num_members_returned,
+    pds_member_list_t *mlist,
     int *end_of_dir)
 {
     int retcode = 0;
@@ -586,19 +579,17 @@ int mvs_pds_member_list(
         return -1; // Error opening dataset, errno set by mvs_open_pds_dir
     }
 
-    // Store up to max_members entries after we've read a member GE start_member
-    retcode = mvs_read_pds_dir(
-        pds_dir_fh, start_member, 
-        max_members, member_entries, 
-        /*pointer*/num_members_returned, /*pointer*/end_of_dir);
+    // Append every member >= start_member into the caller's list.
+    retcode = mvs_read_pds_dir(pds_dir_fh, start_member, mlist, end_of_dir);
+
+    // Always close the dataset, whether the read succeeded or not.
+    mvs_close_pds_dir(pds_dir_fh);
 
     if (retcode < 0) {
-        mvs_close_pds_dir(pds_dir_fh);
         return -1; // Error reading directory, errno set by mvs_read_pds_dir
     }
 
-    // Close the dataset
-    return retcode;
+    return 0;
 }
 
 
@@ -606,40 +597,52 @@ int mvs_pds_member_list(
 /* Retrieve a PDS member entry for specified DSN and member             */
 /* -------------------------------------------------------------------- */
 pds_member_entry_t *mvs_pds_get_member_entry(
-    const char *dsname, 
-    const char *member, 
+    const char *dsname,
+    const char *member,
     int export_idx,
     pds_member_entry_t *entry)
 {
-    int rc;
-    int num_members_returned = 0;
-    int end_of_dir;
+    int                rc;
+    int                end_of_dir = 0;
+    pds_member_list_t  mlist;
 
     log_debug("mvs_pds_get_member_entry: Getting member info for '%s(%s)'",
         dsname, member);
 
-    rc = mvs_pds_member_list(
-        dsname, export_idx, member, 1, 
-        entry, &num_members_returned, &end_of_dir);
-    log_debug("mvs_pds_get_member_entry: mvs_pds_member_list completed rc = %d, num_members_returned = %d", 
-        rc, num_members_returned);
+    if (mvspdir_mlist_init(&mlist) != 0) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    /* Read from 'member' to the end of the directory into the list.  The
+       first entry (if any) is the smallest member name >= 'member'. */
+    rc = mvs_pds_member_list(dsname, export_idx, member, &mlist, &end_of_dir);
+    log_debug("mvs_pds_get_member_entry: mvs_pds_member_list rc = %d, members = %d",
+        rc, mlist.number_in_list);
     if (rc < 0) {
+        mvspdir_mlist_free(&mlist);
         errno = EINVAL; // Other error
-        return NULL; // Error occurred
-    }
-
-    if (num_members_returned == 0) {
-        errno = ENOENT; // Member not found
         return NULL;
     }
-    // It is possible that the member we got back is just a greater
-    // than entry and the one we were looking for. 
-    log_debug("mvs_pds_get_member_entry: entry.name = %s", entry->name);
-    if (strcmp(entry->name, member) != 0) {
+
+    if (mlist.number_in_list == 0) {
+        mvspdir_mlist_free(&mlist);
         errno = ENOENT; // Member not found
         return NULL;
     }
 
-    return entry; // Return pointer to the static entry
+    // The list is sorted; the first entry may merely be the next member
+    // greater than the one we asked for, so confirm an exact match.
+    log_debug("mvs_pds_get_member_entry: first entry name = %s", mlist.list[0].name);
+    if (strcmp(mlist.list[0].name, member) != 0) {
+        mvspdir_mlist_free(&mlist);
+        errno = ENOENT; // Member not found
+        return NULL;
+    }
+
+    // Copy the matched entry into the caller's buffer before freeing.
+    *entry = mlist.list[0];
+    mvspdir_mlist_free(&mlist);
+    return entry;
 }
 

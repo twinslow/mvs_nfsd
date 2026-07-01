@@ -72,16 +72,22 @@ static void set_member(pds_member_entry_t *m, const char *name)
     m->name[sizeof(m->name) - 1] = '\0';
 }
 
-/* Build a local vfs_dir_t with five sorted members for search tests. */
+/* Build a local vfs_dir_t with five sorted members for search tests.
+ * The member_list points at a static buffer (the search tests are
+ * read-only, so they never expand or free the list). */
+static pds_member_entry_t five_members[5];
+
 static void make_five_member_dir(vfs_dir_t *d)
 {
     memset(d, 0, sizeof(vfs_dir_t));
-    set_member(&d->members[0], "ALPHA");
-    set_member(&d->members[1], "DELTA");
-    set_member(&d->members[2], "HOTEL");
-    set_member(&d->members[3], "MIKE");
-    set_member(&d->members[4], "ZULU");
-    d->pds_entries_cached = 5;
+    set_member(&five_members[0], "ALPHA");
+    set_member(&five_members[1], "DELTA");
+    set_member(&five_members[2], "HOTEL");
+    set_member(&five_members[3], "MIKE");
+    set_member(&five_members[4], "ZULU");
+    d->member_list.list           = five_members;
+    d->member_list.list_size      = 5;
+    d->member_list.number_in_list = 5;
 }
 
 /* ==================================================================== */
@@ -145,18 +151,19 @@ static MunitResult test_find_free_entry_is_zeroed(
     d = dir_openlist_find_free();
 
     munit_assert_not_null(d);
-    munit_assert_int(d->status,               ==, MVSVFS_DIR_OPENLIST_FREE);
-    munit_assert_int(d->export_idx,           ==, 0);
-    munit_assert_int(d->pds_entries_cached,   ==, 0);
-    munit_assert_int(d->end_of_dir_read,      ==, 0);
-    munit_assert_int(d->pds_dsname_ebcdic[0], ==, '\0');
+    munit_assert_int(d->status,                     ==, MVSVFS_DIR_OPENLIST_FREE);
+    munit_assert_int(d->export_idx,                 ==, 0);
+    munit_assert_int(d->member_list.number_in_list, ==, 0);
+    munit_assert_int(d->end_of_dir_read,            ==, 0);
+    munit_assert_int(d->pds_dsname_ebcdic[0],       ==, '\0');
     return MUNIT_OK;
 }
 
-static MunitResult test_find_free_exhausted(
+static MunitResult test_find_free_evicts_lru_when_full(
     const MunitParameter params[], void *data)
 {
-    vfs_dir_t *d;
+    vfs_dir_t *slots[MAX_OPEN_DIRS];
+    vfs_dir_t *evicted;
     int        i;
     (void)params; (void)data;
 
@@ -164,16 +171,21 @@ static MunitResult test_find_free_exhausted(
 
     /* Fill every slot. */
     for (i = 0; i < MAX_OPEN_DIRS; i++) {
-        d = pool_alloc();
-        munit_assert_not_null(d);
+        slots[i] = pool_alloc();
+        munit_assert_not_null(slots[i]);
     }
 
-    /* Next call must fail and set errno = EMFILE. */
-    errno = 0;
-    d = dir_openlist_find_free();
+    /* Make slot 0 the least-recently-used, but still within the idle
+       timeout so it is chosen by LRU eviction rather than reclaimed as
+       an expired entry. */
+    slots[0]->last_used_time = time(NULL) - 5;
 
-    munit_assert_null(d);
-    munit_assert_int(errno, ==, EMFILE);
+    /* The pool is full of fresh USED slots: find_free does not fail -- it
+       evicts and returns the least-recently-used slot (slot 0). */
+    evicted = dir_openlist_find_free();
+
+    munit_assert_not_null(evicted);
+    munit_assert_ptr_equal(evicted, slots[0]);
     return MUNIT_OK;
 }
 
@@ -216,13 +228,11 @@ static MunitResult test_find_free_reclaims_timed_out(
         munit_assert_not_null(slots[i]);
     }
 
-    /* Pool is fully exhausted: must fail. */
-    munit_assert_null(dir_openlist_find_free());
-
     /* Expire the first slot. */
     expire_entry(slots[0]);
 
-    /* find_free must now reclaim it. */
+    /* find_free must reclaim the expired slot in preference to evicting a
+       live one, so the reclaimed entry is slot 0. */
     reclaimed = dir_openlist_find_free();
     munit_assert_not_null(reclaimed);
     munit_assert_ptr_equal(reclaimed, slots[0]);
@@ -234,7 +244,7 @@ static MunitTest find_free_tests[] = {
       MUNIT_TEST_OPTION_NONE, NULL },
     { "/entry_is_zeroed",      test_find_free_entry_is_zeroed,      NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
-    { "/exhausted",            test_find_free_exhausted,            NULL, NULL,
+    { "/evicts_lru_when_full", test_find_free_evicts_lru_when_full, NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
     { "/distinct_slots",       test_find_free_distinct_slots,       NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
@@ -257,19 +267,19 @@ static MunitResult test_free_clears_entry(
     d = dir_openlist_find_free();
     munit_assert_not_null(d);
 
-    d->status             = MVSVFS_DIR_OPENLIST_USED;
-    d->export_idx         = 3;
-    d->pds_entries_cached = 7;
-    d->end_of_dir_read    = 1;
+    d->status                     = MVSVFS_DIR_OPENLIST_USED;
+    d->export_idx                 = 3;
+    d->member_list.number_in_list = 7;
+    d->end_of_dir_read            = 1;
     strncpy(d->pds_dsname_ebcdic, "MY.TEST.PDS", 44);
 
     dir_openlist_free(d);
 
-    munit_assert_int(d->status,               ==, MVSVFS_DIR_OPENLIST_FREE);
-    munit_assert_int(d->export_idx,           ==, 0);
-    munit_assert_int(d->pds_entries_cached,   ==, 0);
-    munit_assert_int(d->end_of_dir_read,      ==, 0);
-    munit_assert_int(d->pds_dsname_ebcdic[0], ==, '\0');
+    munit_assert_int(d->status,                     ==, MVSVFS_DIR_OPENLIST_FREE);
+    munit_assert_int(d->export_idx,                 ==, 0);
+    munit_assert_int(d->member_list.number_in_list, ==, 0);
+    munit_assert_int(d->end_of_dir_read,            ==, 0);
+    munit_assert_int(d->pds_dsname_ebcdic[0],       ==, '\0');
     return MUNIT_OK;
 }
 
@@ -313,7 +323,7 @@ static MunitResult test_search_empty_list(
     int                 rc;
     (void)params; (void)data;
 
-    memset(&dir, 0, sizeof(dir));  /* pds_entries_cached = 0 */
+    memset(&dir, 0, sizeof(dir));  /* member_list.number_in_list = 0 */
     info = NULL;
 
     rc = dir_openlist_search_members(&dir, "ALPHA", SEARCH_OP_EQ, &info);

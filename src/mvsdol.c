@@ -23,12 +23,44 @@
 static vfs_dir_t g_dir_pool[MAX_OPEN_DIRS];
 
 /* -------------------------------------------------------------------- */
+/* Prepare a pool slot for (re)use: reset every bookkeeping field and   */
+/* give it an empty member list.  Any existing member-list allocation   */
+/* is preserved across the whole-struct reset and simply emptied, so we */
+/* reuse the buffer instead of churning malloc/free on every open.      */
+/* -------------------------------------------------------------------- */
+
+static void dir_openlist_claim(vfs_dir_t *slot, time_t now)
+{
+    pds_member_list_t saved;
+
+    /* Preserve the member-list allocation across the memset reset. */
+    saved = slot->member_list;
+    memset(slot, 0, sizeof(vfs_dir_t));
+    slot->member_list = saved;
+
+    /* Empty the cached members (keep the buffer); allocate if needed. */
+    slot->member_list.number_in_list = 0;
+    if (slot->member_list.list == NULL)
+        mvspdir_mlist_init(&slot->member_list);
+
+    slot->last_used_time = now;
+}
+
+/* -------------------------------------------------------------------- */
 /* Initialize the vfs_dir_t pool                                        */
 /* -------------------------------------------------------------------- */
 
 void dir_openlist_init(void)
 {
+    int i;
+
     memset(g_dir_pool, 0, sizeof(g_dir_pool));
+
+    /* Give every slot an initialised (empty) member list. */
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        if (mvspdir_mlist_init(&g_dir_pool[i].member_list) != 0)
+            log_error("dir_openlist_init: member list init failed for slot %d", i);
+    }
 }
 
 /* -------------------------------------------------------------------- */
@@ -53,8 +85,7 @@ vfs_dir_t *dir_openlist_find_free(void)
                 (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_USED &&
                  difftime(now, g_dir_pool[i].last_used_time) >
                          MVSVFS_DIR_OPENLIST_TIMEOUT_SECS)) {
-            memset(&g_dir_pool[i], 0, sizeof(vfs_dir_t));
-            g_dir_pool[i].last_used_time = now;
+            dir_openlist_claim(&g_dir_pool[i], now);
             return &g_dir_pool[i];
         }
         age = difftime(now, g_dir_pool[i].last_used_time);
@@ -66,8 +97,7 @@ vfs_dir_t *dir_openlist_find_free(void)
     /* All slots USED and non-expired: evict the least-recently-used    */
     log_debug("dir_openlist_find_free: evicting LRU slot %d (idle %ds)",
               lru_idx, (int)lru_age);
-    memset(&g_dir_pool[lru_idx], 0, sizeof(vfs_dir_t));
-    g_dir_pool[lru_idx].last_used_time = now;
+    dir_openlist_claim(&g_dir_pool[lru_idx], now);
     return &g_dir_pool[lru_idx];
 }
 
@@ -77,6 +107,9 @@ vfs_dir_t *dir_openlist_find_free(void)
 
 void dir_openlist_free(vfs_dir_t *entry)
 {
+    /* Release the cached member list (frees and NULLs the buffer) so the
+       subsequent whole-struct memset cannot leak the allocation.        */
+    mvspdir_mlist_free(&entry->member_list);
     memset(entry, 0, sizeof(vfs_dir_t));
     entry->status = MVSVFS_DIR_OPENLIST_FREE;
 }
@@ -115,7 +148,7 @@ int dir_openlist_search_members(
     int                  operator,
     pds_member_entry_t **member_info)
 {
-    int  num_in_list = dir_entry->pds_entries_cached;
+    int  num_in_list = dir_entry->member_list.number_in_list;
     int  slice_low, slice_high, mid_point;
     int  cmp_result;
 
@@ -128,7 +161,7 @@ int dir_openlist_search_members(
 
     while (slice_low <= slice_high) {
         mid_point  = (slice_low + slice_high) / 2;
-        cmp_result = strcmp(dir_entry->members[mid_point].name, member_name);
+        cmp_result = strcmp(dir_entry->member_list.list[mid_point].name, member_name);
 
         if (cmp_result < 0) {
             slice_low = mid_point + 1;
@@ -137,7 +170,7 @@ int dir_openlist_search_members(
         } else {
             /* Exact match at mid_point */
             if (operator & SEARCH_OP_EQ) {
-                *member_info = &(dir_entry->members[mid_point]);
+                *member_info = &(dir_entry->member_list.list[mid_point]);
                 return 0;
             }
             if (operator & SEARCH_OP_GT) {
@@ -147,7 +180,7 @@ int dir_openlist_search_members(
             }
             /* SEARCH_OP_LT: the answer is the entry immediately before */
             if (mid_point > 0) {
-                *member_info = &(dir_entry->members[mid_point - 1]);
+                *member_info = &(dir_entry->member_list.list[mid_point - 1]);
                 return 0;
             }
             return -1;  /* exact match was the first entry */
@@ -162,12 +195,12 @@ int dir_openlist_search_members(
      */
     if (operator & SEARCH_OP_GT) {
         if (slice_low < num_in_list) {
-            *member_info = &(dir_entry->members[slice_low]);
+            *member_info = &(dir_entry->member_list.list[slice_low]);
             return 0;
         }
     } else if (operator & SEARCH_OP_LT) {
         if (slice_low > 0) {
-            *member_info = &(dir_entry->members[slice_low - 1]);
+            *member_info = &(dir_entry->member_list.list[slice_low - 1]);
             return 0;
         }
     }

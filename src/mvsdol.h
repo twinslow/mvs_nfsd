@@ -28,14 +28,13 @@
 #include <stdio.h>
 #include <time.h>
 #include "types.h"
-#include "mvspdir.h"  /* pds_member_entry_t */
+#include "mvspdir.h"  /* pds_member_entry_t, pds_member_list_t */
 
 /* -------------------------------------------------------------------- */
-/* Pool slot status, cache size, and entry timeout                       */
+/* Pool slot status and entry timeout                                    */
 /* -------------------------------------------------------------------- */
 #define MVSVFS_DIR_OPENLIST_FREE          0
 #define MVSVFS_DIR_OPENLIST_USED          1
-#define MVSVFS_PDS_DIR_CACHE_SIZE         250  /* PDS directory entries cached per open dir */
 #define MVSVFS_DIR_OPENLIST_TIMEOUT_SECS  30   /* seconds before an idle USED entry expires */
 
 /* -------------------------------------------------------------------- */
@@ -48,8 +47,7 @@ struct vfs_dir {
     FILE               *pds_fh;                     /* file handle for the open dir  */
     char                pds_dsname_ebcdic[45];      /* EBCDIC dataset name from path */
     uint64_t            next_cookie;                /* This 64bit value is actually the EBCDIC member name  */
-    int                 pds_entries_cached;         /* Num of valid entries in members[]  */
-    pds_member_entry_t  members[MVSVFS_PDS_DIR_CACHE_SIZE];
+    pds_member_list_t   member_list;                /* growable cache of PDS directory members  */
     int                 end_of_dir_read;            /* 1 when end-of-directory seen  */
     time_t              last_used_time;             /* wall-clock time of last access */
 };

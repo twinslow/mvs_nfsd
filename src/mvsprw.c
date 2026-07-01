@@ -7,6 +7,7 @@
 #include "nfsd.h"
 #include "mvsio.h"
 #include "mvsprw.h"
+#include "logger.h"
 
 /* -------------------------------------------------------------------- */
 /* Read cache                                                           */
@@ -107,36 +108,40 @@ int mvs_pds_member_pread(
     uint32_t                count,
     uint64_t                offset,
     uint32_t                *nread,
-    int                     *eof,
-    uint64_t                *file_size) 
+    int                     *eof)
 {
 
     int rc = 0;
     size_t read_bytes;
-    uint64_t real_file_size;
     char     discard[1024];
+
+    log_info("mvsprw.mvs_pds_member_pread: Starting with offset = %llu", offset);
 
     if (offset > 0) {
         if (cache_entry->has_last_getpos &&
             offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
+            log_info("mvsprw.mvs_pds_member_pread: Continuing to read from prior pos");
             /* We have a saved fgetpos value that we can use ...*/
             rc = fsetpos(fh, &cache_entry->last_getpos);
         } else {
             /* We did not have a usable fgetpos value ... so seek */
+            log_info("mvsprw.mvs_pds_member_pread: Seeking to new pos");
             rc = fseek(fh, (long)offset, SEEK_SET);
         }
         if ( rc < 0 ) {
+            log_info("mvsprw.mvs_pds_member_pread: Got error from fsetpos or fseek");
             mvs_rcache_entry_reset(cache_entry);
             return -1;
         }
     }
 
     /* Now read the data from the file of the required size */
+    log_info("mvsprw.mvs_pds_member_pread: Reading data from file");
     read_bytes = fread(buff, 1, (size_t)count, fh);
 
     /* Did we hit an error */
     if ( ferror(fh) ) {
-        fprintf(stderr, "fread - file in error, errno - %d", errno);
+        log_info("mvsprw.mvs_pds_member_pread: fread - file in error, errno - %d", errno);
         mvs_rcache_entry_reset(cache_entry);
         return -1;
     }
@@ -149,34 +154,27 @@ int mvs_pds_member_pread(
     /* If we hit EOF, then we don't need the cache entry */
     if ( *eof ) {
         mvs_rcache_entry_reset(cache_entry);
-        if ( offset == 0 )
-            *file_size = *nread;
         return 0;
     }
 
     /* Update the cache entry */
+    log_info("mvsprw.mvs_pds_member_pread: Updating file position cache entry at 0x%08X", cache_entry);
     cache_entry->last_used_time = time(NULL);
     cache_entry->last_offset = (uint32_t)offset;
     cache_entry->last_nread = (uint32_t)read_bytes;
 
+    log_info("mvsprw.mvs_pds_member_pread: Calling fgetpos");
     rc = fgetpos(fh, &(cache_entry->last_getpos));
+    log_info("mvsprw.mvs_pds_member_pread: fgetpos ended rc = %d", rc);
     if ( rc ) {
         fprintf(stderr, "fgetpos returned error, errno - %d", errno);
         /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
         mvs_rcache_entry_reset(cache_entry);
     } else {
+        log_info("mvsprw.mvs_pds_member_pread: Set indicator in cache that we have fgetpos info");
         cache_entry->has_last_getpos = 1;
     }
 
-    /* If we started reading from the beginning of the file, with offset = 0 then let's find out the real file size */
-    if ( offset == 0 ) {
-        real_file_size = *nread;
-        if ( !*eof ) {
-            while ( !feof(fh) )
-                real_file_size += fread(discard, 1, (size_t)discard, fh);            
-        }
-        *file_size = real_file_size;
-    }
     return 0;
 }
 
@@ -188,8 +186,7 @@ int mvs_pds_member_read(
     uint32_t     count,
     uint8_t     *buf,
     uint32_t    *nread,
-    int         *eof,
-    uint64_t    *real_file_size)
+    int         *eof)
 {
     mvs_rcache_entry_t *cache_entry;
     FILE *fh;
@@ -221,7 +218,7 @@ int mvs_pds_member_read(
         return -1;
 
     // Read the requested data from the file
-    rc = mvs_pds_member_pread(cache_entry, fh, buf, count, offset, nread, eof, real_file_size);
+    rc = mvs_pds_member_pread(cache_entry, fh, buf, count, offset, nread, eof);
     if ( rc  < 0 ) {
         saved_errno = errno;
         (void)mvs_pds_member_close(cache_entry, fh);
@@ -234,6 +231,6 @@ int mvs_pds_member_read(
     if ( rc < 0 ) {
         return -1;
     }
-
+    log_info("mvs_pds_member_read: Read completed (member closed)");
     return 0;
 }

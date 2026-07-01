@@ -88,18 +88,20 @@ int  mvs_pds_member_entry_set(
 
 int  mvs_skip_dir_entry(const uint8_t *start_blockptr);
 
+/* Append one member entry (parsed at blockptr) to mlist, growing it as
+   needed.  Returns the byte length of the parsed entry, or -1 on
+   allocation failure (errno=ENOMEM). */
 int  mvs_extract_dir_entry(
     const uint8_t       *blockptr,
-    pds_member_entry_t  *member_entries,
-    int                  max_members,
-    int                 *num_members_returned);
+    pds_member_list_t   *mlist);
 
+/* Append every member in the block whose name >= start_member to mlist,
+   growing the list as needed.  Sets *end_of_dir when the PDS end mark is
+   reached.  Returns 0 on success, -1 on error (errno set). */
 int  mvs_process_dir_block(
     const uint8_t       *block_data,
     const char          *start_member,
-    int                  max_members,
-    pds_member_entry_t  *member_entries,
-    int                 *num_members_returned,
+    pds_member_list_t   *mlist,
     int                 *end_of_dir);
 
 /* -------------------------------------------------------------------- */
@@ -113,12 +115,15 @@ int mvs_open_pds_dir(
 
 int mvs_close_pds_dir(FILE *pds_dir_fh);
 
+/* Read directory blocks starting at start_member, appending every member
+   with name >= start_member into mlist (which grows as needed) until the
+   end of the directory.  Sets *end_of_dir when the PDS end mark is seen.
+   Members are appended; the caller supplies an (empty) list.
+   Returns 0 on success, -1 on error (errno set). */
 int mvs_read_pds_dir(
     FILE                *pds_dir_fh,
     const char          *start_member,
-    int                  max_members,
-    pds_member_entry_t  *member_entries,
-    int                 *num_members_returned,
+    pds_member_list_t   *mlist,
     int                 *end_of_dir);
 
 /* -------------------------------------------------------------------- */
@@ -129,9 +134,7 @@ int mvs_pds_member_list(
     const char          *dsname,
     int                  export_idx,
     const char          *start_member,
-    int                  max_members,
-    pds_member_entry_t  *member_entries,
-    int                 *num_members_returned,
+    pds_member_list_t   *mlist,
     int                 *end_of_dir);
 
 pds_member_entry_t *mvs_pds_get_member_entry(

@@ -69,7 +69,7 @@ static uint64_t vfs_stat_member_size_calc(
 }
 
 
-static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs, int real_file_size)
+static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs)
 {
     pds_member_entry_t   mem_entry;
     pds_member_entry_t  *member_entry;
@@ -93,27 +93,16 @@ static int vfs_stat_pds_member(const char *path, int export_idx, vfs_stat_t *vs,
         }
     }
 
-    if ( real_file_size >= 0 ) {
-        /* We've been given the real file size, so we'll save that in the file size cache */
-        rc2 = mvsfsz_put(pds_dsname, pds_member_name, real_file_size,
-            member_entry->first_block_tt, member_entry->first_block_rec,
-            member_entry->size, member_entry->chgdate);
-        if ( rc2 == 0 )
-            log_info("vfs_stat_pds_member: Saved file size %d to size cache for %s(%s)",
-                real_file_size, pds_dsname, pds_member_name);
-        else
-            log_error("vfs_stat_pds_member: Failed to save file size %d to cache for %s(%s)",
-                rc2, real_file_size, pds_dsname, pds_member_name);
-        set_size = real_file_size;
-    } else {
-        /* Get the member size from the cache, or if required it will read the member. */
-        rc2 = mvsfsz_get_member_size(
-            pds_dsname, pds_member_name, 
-            member_entry, &set_size);
+    /* Get the member size from the cache, or if required it will read the member and save in cache */
+    rc2 = mvsfsz_get_member_size(
+        pds_dsname, pds_member_name, 
+        member_entry, &set_size);
 
-        if ( rc2 != 0 )
-            set_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
-    }
+    /* If above fails ... then we'll estimate the size, but this is problematic for the NFS client */
+    /* which will attempt to read a file based on the file size that was given in a getattr or     */
+    /* lookup operation.                                                                           */
+    if ( rc2 != 0 )
+        set_size = vfs_stat_member_size_calc(export_idx, member_entry->size);
 
     vs->ftype = NF3REG;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
@@ -235,7 +224,7 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
     }
 }
 
-int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
+int vfs_stat(const char *path, vfs_stat_t *vs)
 {
     int     export_idx;
     char    ebcdic_path[MAX_PATH_LEN];
@@ -254,7 +243,7 @@ int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
     path_type = mvs_path_type(ebcdic_path, &export_idx);
 
     if (path_type == MVS_PATH_TYPE_PDS_MEMBER) {
-        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs, real_file_size);
+        retcode = vfs_stat_pds_member(ebcdic_path, export_idx, vs);
         dump_stat_result(path, retcode, vs);
         mvsprf_record(PERF_VFS_STAT, clock() - t_start);
         return retcode;
@@ -269,12 +258,6 @@ int vfs_stat_set_file_size(const char *path, vfs_stat_t *vs, int real_file_size)
     return -1;
 }
 
-/* This is just a wrapper to allow call with no actual file size specified */
-int vfs_stat(const char *path, vfs_stat_t *vs)
-{
-    return vfs_stat_set_file_size(path, vs, -1);
-}
-
 /* -------------------------------------------------------------------- */
 /* vfs_pread: positional read from path.                                */
 /* Opens, reads count bytes at offset, closes.                          */
@@ -283,8 +266,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 /* -------------------------------------------------------------------- */
 
 int vfs_pread(const char *path, void *buf, uint32_t count,
-              uint64_t offset, uint32_t *nread, int *eof,
-              uint64_t *real_file_size)
+              uint64_t offset, uint32_t *nread, int *eof)
 {
     int         saved_errno;
     int         rc, rc2, saved;
@@ -329,8 +311,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         count,
         buf,
         nread,
-        eof,
-        real_file_size);
+        eof);
 
     // Translate the data read from the host (EBCDIC) to ASCII for the
     // NFS client.
@@ -338,8 +319,8 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
 
-    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d, real_file_size=%ulld", 
-        log_ascii(path), *nread, *eof, *real_file_size);
+    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d", 
+        log_ascii(path), *nread, *eof);
 
     return rc;
 }
@@ -716,12 +697,12 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
         if ( dir_entry->end_of_dir_read ) {
             /* Full cache hit -- all members known, no disk read needed */
             log_debug("vfs_opendir: Full cache hit for PDS %s, %d members cached",
-                pds_dsname, dir_entry->pds_entries_cached);
+                pds_dsname, dir_entry->member_list.number_in_list);
             return dir_entry;
         }
         /* Partial cache: re-open file handle and reset for fresh read  */
-        dir_entry->pds_entries_cached = 0;
-        dir_entry->end_of_dir_read    = 0;
+        dir_entry->member_list.number_in_list = 0;
+        dir_entry->end_of_dir_read            = 0;
         retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
         if ( retcode == 0 && dir_entry->pds_fh ) {
             log_debug("vfs_opendir: Partial cache hit for PDS %s, reopened", pds_dsname);
@@ -742,9 +723,9 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     dir_entry->export_idx = export_idx;
     strncpy(dir_entry->pds_dsname_ebcdic, pds_dsname,
         sizeof(dir_entry->pds_dsname_ebcdic));
-    dir_entry->next_cookie        = 0;
-    dir_entry->pds_entries_cached = 0;
-    dir_entry->end_of_dir_read    = 0;
+    dir_entry->next_cookie                = 0;
+    dir_entry->member_list.number_in_list = 0;
+    dir_entry->end_of_dir_read            = 0;
 
     /* Open the PDS for the directory read */
     retcode = mvs_open_pds_dir(pds_dsname, export_idx, &dir_entry->pds_fh);
@@ -764,15 +745,6 @@ error:
         log_ascii(path), strerror(errno));
     return NULL;
 }
-
-#if 0
-    retcode = mvs_pds_member_list(
-        pds_dsname, export_idx, /* start-member */ NULL,
-        /* max-members */ MVSVFS_PDS_DIR_CACHE_SIZE,
-        /* member-entries */ dir_openlist_entry->members,
-        &num_of_members_returned,
-        &end_of_dir);
-#endif
 
 /* -------------------------------------------------------------------- */
 /* vfs_readdir_next: read the next directory entry.                     */
@@ -800,21 +772,20 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     from_cookie(*cookie, member_name);
 
     /* Decide whether or not we need to load more members from PDS DIR */
-    last_cached = &(dir_entry->members[dir_entry->pds_entries_cached - 1]);
-    //log_debug("vfs_readdir_next:       number of members cached = %d, last entry cached = %s",
-    //    dir_entry->pds_entries_cached, last_cached->name);
-    if ( dir_entry->pds_entries_cached == 0 )
+    if ( dir_entry->member_list.number_in_list == 0 ) {
         load_from_dir = 1;
-    /* We have cached members but do potentially have the next one as requested? */
+    }
+    /* We have cached members -- do we already hold the next one requested? */
     else {
         /* If the "cookie" is >= the last cached member name, then we need to read more */
+        last_cached = &(dir_entry->member_list.list[
+                            dir_entry->member_list.number_in_list - 1]);
         if (strcmp(member_name, last_cached->name) >= 0) {
-            /* No we don't */
             load_from_dir = 1;
         }
     }
 
-    /* Load more member info from the PDS dir if needed */    
+    /* Load more member info from the PDS dir if needed */
     if ( load_from_dir ) {
         if (dir_entry->end_of_dir_read) {
             /* We already reached end of PDS directory ... nothing to load */
@@ -823,12 +794,14 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
             goto error_exit_no_log;
         }
 
+        /* Rebuild the cache from member_name onward.  Empty it first so the
+           append-based read cannot duplicate any earlier-cached entries. */
+        dir_entry->member_list.number_in_list = 0;
+
         retcode = mvs_read_pds_dir(
             dir_entry->pds_fh,
             /* start-member */ member_name,
-            /* max-members */ MVSVFS_PDS_DIR_CACHE_SIZE,
-            /* member-entries */ dir_entry->members,
-            &(dir_entry->pds_entries_cached),
+            /* member-list  */ &dir_entry->member_list,
             &(dir_entry->end_of_dir_read) );
         if ( retcode ) {
             log_debug("vfs_readdir_next: mvs_read_pds_dir returned error %d", retcode);

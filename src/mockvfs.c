@@ -413,8 +413,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 /* -------------------------------------------------------------------- */
 
 int vfs_pread(const char *path, void *buf, uint32_t count,
-              uint64_t offset, uint32_t *nread, int *eof, 
-              uint64_t *real_file_size)
+              uint64_t offset, uint32_t *nread, int *eof) 
 {
     int         exp_idx;
     int         file_idx;
@@ -446,9 +445,6 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         return 0;
     }
 
-    if (offset == 0)
-        *real_file_size = clen;
-        
     off32 = (uint32_t)offset;
     avail = clen - off32;
     if (avail > count) avail = count;

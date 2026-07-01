@@ -487,7 +487,6 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
     int           has_st;
     uint32_t      nread = 0;
     int           eof   = 0;
-    uint64_t      real_file_size;
 
     xdr_read_fhandle3(in, &fh, &ok);
     offset = xdr_read_uint64(in);
@@ -514,20 +513,12 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
 
     has_st = (vfs_stat(path, &st) == 0);
 
-    if (vfs_pread(path, g_read_buf, count, offset, &nread, &eof, &real_file_size) < 0) {
+    if (vfs_pread(path, g_read_buf, count, offset, &nread, &eof) < 0) {
         xdr_write_uint32(out, vfs_errno_to_nfs3(errno));
         xdr_write_post_op_attr(out, &st, has_st);
         return;
     }
 
-    if (offset == 0 && real_file_size != st.size) {
-
-        log_info("nfs3.proc_read: Set %s size to %llu from %llu bytes",
-                        log_ascii(path), real_file_size, st.size);
-
-        has_st = vfs_stat_set_file_size(path, &st, real_file_size);
-    }
-    
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_post_op_attr(out, &st, has_st);
     xdr_write_uint32(out, nread);

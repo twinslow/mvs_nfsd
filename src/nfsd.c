@@ -299,9 +299,11 @@ int main(int argc, char *argv[])
     log_info("nfsd: starting up");
 
     dir_openlist_init();
+    mvs_rcache_init();
     mvsfsz_init();
     mvsprf_init();
-    mvsfsz_load("//DDN:FILESIZE");
+    
+    //mvsfsz_load("//DDN:FILESIZE");
     
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {

@@ -50,10 +50,7 @@ void mvs_set_no_ispf_stats(pds_member_entry_t *entry);
 int  mvs_pds_member_entry_set(pds_member_entry_t *entry,
                                const uint8_t *start_blockptr);
 int  mvs_skip_dir_entry(const uint8_t *start_blockptr);
-int  mvs_process_dir_block(const uint8_t *block_data,
-                            const char *start_member, int max_members,
-                            pds_member_entry_t *member_entries,
-                            int *num_members_returned, int *end_of_dir);
+/* mvs_process_dir_block is declared in mvspdir.h (included above). */
 
 /* -------------------------------------------------------------------- */
 /* Test data buffers                                                     */
@@ -279,7 +276,7 @@ static const uint8_t c_block_before_start[26] = {
 /*
  * 38-byte directory block: two members ("MVSIO   " then "NFSD    ")
  * followed by end marker.  count = 2 + 12 + 12 + 8 + 4 = 38.
- * Used to test the max_members limit.
+ * Used to verify that all members in a block are extracted.
  */
 static const uint8_t c_block_two_members[38] = {
 #ifdef __MVS__
@@ -630,114 +627,106 @@ static MunitTest skip_tests[] = {
 static MunitResult test_dir_block_end_only(
     const MunitParameter params[], void *data)
 {
-    pds_member_entry_t members[4];
-    int num;
+    pds_member_list_t mlist;
     int end;
     int rc;
     (void)params; (void)data;
 
-    num = 0;
+    munit_assert_int(mvspdir_mlist_init(&mlist), ==, 0);
     end = 0;
-    memset(members, 0, sizeof(members));
-    rc = mvs_process_dir_block(c_block_end_only, "        ", 4,
-                               members, &num, &end);
+    rc = mvs_process_dir_block(c_block_end_only, "        ", &mlist, &end);
 
     munit_assert_int(rc,  ==, 0);
-    munit_assert_int(num, ==, 0);
+    munit_assert_int(mlist.number_in_list, ==, 0);
     munit_assert_int(end, ==, 1);
+    mvspdir_mlist_free(&mlist);
     return MUNIT_OK;
 }
 
 static MunitResult test_dir_block_one_member(
     const MunitParameter params[], void *data)
 {
-    pds_member_entry_t members[4];
-    int num;
+    pds_member_list_t mlist;
     int end;
     (void)params; (void)data;
 
-    num = 0;
+    munit_assert_int(mvspdir_mlist_init(&mlist), ==, 0);
     end = 0;
-    memset(members, 0, sizeof(members));
     /*
      * start_member = "NFSD    " (exactly 8 bytes, space-padded).
      * The block contains "NFSD    " which compares >= start, so it is
      * extracted.  The end marker follows immediately.
      *
      */
-    mvs_process_dir_block(c_block_one_member, "NFSD    ", 4,
-                          members, &num, &end);
+    mvs_process_dir_block(c_block_one_member, "NFSD    ", &mlist, &end);
 
-    munit_assert_int(num, ==, 1);
+    munit_assert_int(mlist.number_in_list, ==, 1);
     munit_assert_int(end, ==, 1);
-    munit_assert_string_equal(members[0].name, "NFSD");
+    munit_assert_string_equal(mlist.list[0].name, "NFSD");
+    mvspdir_mlist_free(&mlist);
     return MUNIT_OK;
 }
 
 static MunitResult test_dir_block_skip_before_start(
     const MunitParameter params[], void *data)
 {
-    pds_member_entry_t members[4];
-    int num;
+    pds_member_list_t mlist;
     int end;
     (void)params; (void)data;
 
-    num = 0;
+    munit_assert_int(mvspdir_mlist_init(&mlist), ==, 0);
     end = 0;
-    memset(members, 0, sizeof(members));
     /*
      * Block contains "MVSIO   " which sorts before "NFSD    " ('M' < 'N').
      * The entry is skipped; the end marker then sets end_of_dir=1.
      */
-    mvs_process_dir_block(c_block_before_start, "NFSD    ", 4,
-                          members, &num, &end);
+    mvs_process_dir_block(c_block_before_start, "NFSD    ", &mlist, &end);
 
-    munit_assert_int(num, ==, 0);
+    munit_assert_int(mlist.number_in_list, ==, 0);
     munit_assert_int(end, ==, 1);
+    mvspdir_mlist_free(&mlist);
     return MUNIT_OK;
 }
 
-static MunitResult test_dir_block_max_members(
+static MunitResult test_dir_block_two_members(
     const MunitParameter params[], void *data)
 {
-    pds_member_entry_t members[4];
-    int num;
+    pds_member_list_t mlist;
     int end;
     (void)params; (void)data;
 
-    num = 0;
+    munit_assert_int(mvspdir_mlist_init(&mlist), ==, 0);
     end = 0;
-    memset(members, 0, sizeof(members));
     /*
-     * Block contains "MVSIO   " and "NFSD    " followed by end marker.
-     * With max_members=1: only the first entry is extracted, then the
-     * loop breaks.  The end marker is never reached, so end_of_dir=0.
+     * Block contains "MVSIO   " and "NFSD    " followed by the end marker.
+     * There is no per-call cap any more, so both members are extracted and
+     * the end marker then sets end_of_dir=1.
      * start_member="        " (8 spaces) is less than any member name.
      */
-    mvs_process_dir_block(c_block_two_members, "        ", 1,
-                          members, &num, &end);
+    mvs_process_dir_block(c_block_two_members, "        ", &mlist, &end);
 
-    munit_assert_int(num, ==, 1);
-    munit_assert_int(end, ==, 0);
+    munit_assert_int(mlist.number_in_list, ==, 2);
+    munit_assert_int(end, ==, 1);
+    munit_assert_string_equal(mlist.list[0].name, "MVSIO");
+    munit_assert_string_equal(mlist.list[1].name, "NFSD");
+    mvspdir_mlist_free(&mlist);
     return MUNIT_OK;
 }
 
 static MunitResult test_dir_block_returns_zero(
     const MunitParameter params[], void *data)
 {
-    pds_member_entry_t members[4];
-    int num;
+    pds_member_list_t mlist;
     int end;
     int rc;
     (void)params; (void)data;
 
-    num = 0;
+    munit_assert_int(mvspdir_mlist_init(&mlist), ==, 0);
     end = 0;
-    memset(members, 0, sizeof(members));
-    rc = mvs_process_dir_block(c_block_end_only, "        ", 4,
-                               members, &num, &end);
+    rc = mvs_process_dir_block(c_block_end_only, "        ", &mlist, &end);
 
     munit_assert_int(rc, ==, 0);
+    mvspdir_mlist_free(&mlist);
     return MUNIT_OK;
 }
 
@@ -748,7 +737,7 @@ static MunitTest dir_block_tests[] = {
       MUNIT_TEST_OPTION_NONE, NULL },
     { "/skip_before_start", test_dir_block_skip_before_start, NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
-    { "/max_members",       test_dir_block_max_members,       NULL, NULL,
+    { "/two_members",       test_dir_block_two_members,       NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
     { "/returns_zero",      test_dir_block_returns_zero,      NULL, NULL,
       MUNIT_TEST_OPTION_NONE, NULL },
