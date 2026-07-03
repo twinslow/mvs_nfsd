@@ -13,7 +13,7 @@ GETCIB   CSECT
 *    1  MODIFY command received; CIB has been freed via QEDIT         *
 *    2  STOP command received; CIB has been freed via QEDIT           *
 *                                                                     *
-* Calling convention: standard OS/VS2 (MVS) linkage                   *
+* Calling convention: Modified MVS linage as per JCC                  *
 *   Entry  R13 -> Stack frame from JCC runtime                        *
 *          R14 =  return address                                      *
 *          R15 =  entry point address                                 *

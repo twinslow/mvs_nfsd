@@ -560,8 +560,8 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_write: Starting for path %s",
-        log_ascii(path));
+    log_debug("nfs3.proc_write: Starting for path %s with count %d and offset %llu",
+        log_ascii(path), count, offset);
 
     has_pre  = (vfs_stat(path, &pre) == 0);
     if (data_len < count) count = data_len;
