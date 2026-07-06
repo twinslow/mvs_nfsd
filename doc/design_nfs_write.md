@@ -1,7 +1,6 @@
 # Design: NFS Write / Update Support (PDS member write)
 
-Status: **Draft for review** — no code written yet.
-Author: design discussion, dino_nfs.
+Status: **Phase 1 implemented & verified**.
 
 ## 1. Goal
 
@@ -52,16 +51,39 @@ buffer-then-flush that is **false** until the flush happens; if the server
 stops before flushing, the client believes the data is safe and will never
 resend it → silent data loss.
 
-**Change `proc_write` to reply `UNSTABLE`** (the data is only buffered).
-Under RFC 1813 the client then keeps its copy and issues `COMMIT` before it
-considers the write durable. `COMMIT` is our flush trigger (§7), and the
-write verifier (§6) lets the client detect a server restart and resend.
+**`proc_write` must honour the client's requested stability.**  Replying
+`UNSTABLE` to a `FILE_SYNC` request is a protocol violation: the client asked
+for a durable write and we said "only buffered."  The Windows NFS client
+(which issues `FILE_SYNC` writes for `copy`) treats that as the write failing
+its durability requirement — it then `COMMIT`s, **deletes the destination,
+and fails the copy** (confirmed by packet capture: `WRITE ... FILE_SYNC` →
+reply `UNSTABLE` → `REMOVE`).
 
-- WRITE → buffer the bytes, reply `UNSTABLE` + verifier.
-- COMMIT → flush the member (`STOW`), reply verifier.
-- (Optionally, small writes flagged `FILE_SYNC`/`DATA_SYNC` by the client
-  could be flushed immediately, but treating everything as `UNSTABLE` and
-  relying on `COMMIT` is simplest and correct.)
+But we must **not** react by stowing on every write.  A PDS member rewrite
+writes new blocks at the *end* of the dataset and abandons the old ones (dead
+"gas"); re-stowing per write would fill the PDS and force frequent
+compresses.  The member is therefore STOWed **exactly once** — at COMMIT, the
+idle sweep, eviction, or shutdown — never per write.
+
+To satisfy the client without stowing per write, we **echo the requested
+stability** and make the buffered (not-yet-stowed) member fully visible:
+
+- WRITE → buffer the bytes; reply `committed = <the stability the client
+  requested>` + verifier.  An `UNSTABLE` client then issues `COMMIT` (our
+  stow trigger, §7); a `FILE_SYNC` client (Windows) is satisfied and does not
+  delete the file.
+- Because we may reply `FILE_SYNC` before the STOW, the member must be
+  visible from the buffer until it is stowed: `vfs_stat` reports the buffer's
+  size (§5.1) and `vfs_pread` serves reads from the buffer.  (Directory
+  listings and non-NFS tools like ISPF only see the member once it is
+  stowed — at COMMIT or, failing that, within the idle-timeout window.)
+- COMMIT → STOW the member if still dirty, reply verifier.
+
+This is a write-back model: replying `FILE_SYNC` before the physical STOW is
+a durability trade-off (a crash in the pre-stow window loses the data and the
+client will not resend).  The idle timeout bounds the window; a client
+`COMMIT` closes it immediately.  Acceptable for Phase 1; revisit for stronger
+durability later.
 
 ## 5. Data model — the pending-member write pool
 
@@ -141,14 +163,20 @@ restart.  Fixes, in order of preference:
 So: no persistence for stability; optional tiny persisted counter only to
 strengthen per-restart uniqueness.
 
+Per §11.1, option 1 (job id) is being prototyped in `jcl/t#jobid.jcl`, with a
+callable S/370 ASM routine as a fallback if the JCC-level call doesn't return
+a usable id for a started task.  If the job id changes every start, the
+persisted boot counter (option 2) is not needed.
+
 ## 7. Flush triggers and the select-loop hook
 
 A member's buffer is flushed on any of:
 
 1. **COMMIT** for that member — flush immediately, then reply.  (Also flush
    on a WRITE the client marked `FILE_SYNC`, if we choose to honour that.)
-2. **Idle timeout** — no writes for N seconds (proposed 5–10s).  Covers
-   clients that drop the connection without COMMIT.
+2. **Idle timeout** — no writes for N seconds (proposed 5–10s), tracked
+   **per member** and polled once per select iteration (confirmed approach,
+   §11.1).  Covers clients that drop the connection without COMMIT.
 3. **Pool eviction** — a new pending member needs a slot and the pool is
    full: flush the least-recently-used one (as `mvsdol` evicts).
 4. **Server shutdown** — on the STOP command, flush all dirty buffers
@@ -181,6 +209,26 @@ fclose                                          -- performs the STOW
 mark slot clean; free buffer (or retain slot for reuse)
 ```
 
+### 7.1 Directory-change visibility (after a STOW)
+
+The READDIRPLUS-loop fix (a *stable* directory mtime) has a flip side: clients
+use a directory's mtime as their readdir cache-invalidation signal, so a
+stable mtime means a **newly stowed member never appears** in a cached
+listing.  The fix is a directory mtime that is stable between changes but
+**bumps when the directory changes**.  On every STOW (`pww_flush_slot`) we
+therefore, for that dataset:
+
+- **bump `pds_dataset_t.dir_mtime`** (`export_dataset_touch`) — `vfs_stat` of
+  the PDS directory reports this, so the client sees the directory change and
+  refreshes its cached listing; and
+- **invalidate the server's own readdir cache** for the dataset
+  (`dir_openlist_invalidate`) — the DOL pool caches the member list for ~30s,
+  so without this the refreshed client would still get the stale list.
+
+Between STOWs the mtime is constant, so an in-progress READDIRPLUS does not
+loop.  (mtime has 1-second granularity, so two STOWs to the same directory
+within one second can coalesce — acceptable for Phase 1.)
+
 Concurrency note: BSAM output to a PDS wants **one member open for output at
 a time**.  Since a flush is a self-contained `fopen…fclose` and the server
 is single-threaded, flushing one member at a time is inherent — multiple
@@ -205,26 +253,29 @@ To lift the size limit, back the buffer with a **temporary sequential (PS)
 dataset** instead of (or in addition to) memory:
 
 - Two candidate schemes:
-  - **Random-access scratch:** a PS RECFM=F dataset opened for update, into
-    which incoming chunks are written at their offset by seeking.  **Open
-    question / prerequisite test:** does `fseek`/`fsetpos` work on a *PS*
-    dataset?  We proved it fails on a *PDS member*; a PS dataset opened
-    `"r+b"` may well allow record positioning (the PDS limitation is
-    directory/STOW-specific).  A small test like `t#pdswr3` but on a PS
-    dataset should settle this before committing to this scheme.
-  - **Streaming contiguous prefix:** exploit that a saved file's writes
-    usually arrive **in order** — append the contiguous prefix to a scratch
-    PS dataset via QSAM as it accumulates, keeping only out-of-order gaps in
-    memory.  Bounded memory in the common case, no random PS positioning
-    needed, but more bookkeeping.
+  - **Random-access scratch (now proven — §11.1):** a PS RECFM=F dataset
+    opened for update, into which incoming chunks are written at their offset
+    by `fseek`.  Confirmed working (`jcl/t#seqrw1.jcl`: random seeks before
+    reads *and* writes on a RECFM=F, BLKSIZE=4096 PS dataset).  This is the
+    clean way to lift the size limit — the buffer lives on disk, memory use
+    per pending member is just a small block, and the offset-addressed writes
+    map directly onto `fseek`+`fwrite`.
+  - **Streaming contiguous prefix:** the earlier alternative (append the
+    contiguous prefix to a scratch PS via QSAM, keep only gaps in memory).
+    No longer needed now that random-access PS scratch works, but noted for
+    completeness.
 - On COMMIT/timeout, read the scratch dataset back and write the real member
   in one pass; then delete the scratch dataset.
 - Scratch datasets need dynamic allocation (SVC 99 / `//DSN:&&TEMP`-style)
-  and cleanup on flush and on shutdown.
+  and cleanup on flush and on shutdown — the remaining real work for Phase 2.
 
-Phase 2 is deferred; the design keeps the buffer access behind the `mvspww`
-API so the memory vs. disk backing can change without touching the VFS/NFS
-layers.
+Phase 2 is kept behind the `mvspww` API so the memory vs. disk backing can
+change without touching the VFS/NFS layers.  **Given the 8 MB address-space
+limit and that random-access PS scratch is now proven, consider moving to the
+disk-backed buffer sooner** — arguably even as the primary backing — rather
+than treating it as a distant future phase.  A reasonable middle path: keep
+small members in memory (fast) and spill to a scratch PS only once a member
+exceeds the in-memory cap.
 
 ## 9. Record conversion (inverse of the read path)
 
@@ -232,13 +283,20 @@ The read path turns records into a byte stream (insert `\n` at record
 boundaries, EBCDIC→ASCII).  Write does the inverse, driven by the dataset's
 `dcbinfo` (RECFM/LRECL, now per-dataset in the multi-PDS model):
 
-- **RECFM=F/FB:** split the byte stream on `\n`; each line becomes one
-  fixed-length record, space-padded to LRECL.  **Line-too-long policy** is a
-  decision: truncate to LRECL, or fail the write.  (Truncate with a logged
-  warning is the pragmatic default.)
+- **RECFM=F/FB:** in JCC text mode (`fopen(..., "wt")`) the runtime forms a
+  record at each `\n` and space-pads to LRECL, so we can translate the buffer
+  to EBCDIC and `fwrite` it directly rather than splitting records by hand.
+  Per §11.1, a **line longer than LRECL is not truncated** — the runtime
+  wraps the overflow onto an additional logical record.  Fidelity implication:
+  a line longer than LRECL round-trips as *two* lines (the read path inserts
+  a `\n` at the record boundary).  That is acceptable and matches how MVS
+  editors treat over-length data; just be aware of it.
 - **RECFM=V/VB:** each line becomes one variable-length record.
 - Trailing bytes with no final `\n` become a final record.
-- ASCII→EBCDIC on the record data (mirror of `ebcdic_to_ascii` on read).
+- ASCII→EBCDIC on the data before the write (mirror of `ebcdic_to_ascii` on
+  read); the EBCDIC newline the translation produces must be the one the
+  text-mode runtime treats as the record delimiter (verify during
+  implementation — the read path's record→`\n` mapping is the reference).
 
 ## 10. Files impacted
 
@@ -252,6 +310,9 @@ boundaries, EBCDIC→ASCII).  Write does the inverse, driven by the dataset's
 | `nfsd.conf` / README | Note write support + any new tunables (cap, idle timeout) |
 
 ## 11. Open questions / prerequisite tests
+
+> **All six were investigated — results and decisions are in §11.1 below,
+> and folded into the sections above.**
 
 1. **`fseek` on a PS dataset** — does record positioning work on a plain
    sequential dataset (needed for the Phase 2 random-access scratch)?  Test
@@ -297,13 +358,73 @@ boundaries, EBCDIC→ASCII).  Write does the inverse, driven by the dataset's
    editor save from the Linux client.
 4. Idle-flush sweep in the select loop; flush-all on shutdown.
 5. Strengthen the write verifier uniqueness.
-6. (Later) Phase 2 disk spill once the PS-dataset positioning test is done.
+6. Phase 2 disk-backed scratch buffer — PS positioning is proven (§11.1), so
+   the remaining work is dynamic scratch-dataset allocation and cleanup.
+   Given the 8 MB limit, this may be worth pulling forward (see §8).
+
+## 12.1 Phase 1 — agreed scope (plan of record)
+
+We will build **in-memory buffering only** first, to validate the write
+semantics and end-to-end flow (CREATE → WRITE → COMMIT, pending-member
+visibility, record conversion, STOW) before adding disk-backed buffers.
+
+**In Phase 1:**
+
+- New `mvspww` module: a fixed pool of pending members, each with a
+  `malloc`'d byte buffer, place-at-offset, `high_water`, and an idle
+  timestamp.
+- `vfs_create` → allocate a pending member (size 0).
+- `vfs_pwrite` → copy bytes into the buffer at the given offset, growing the
+  buffer as needed; update `high_water` and `last_write_time`.
+- `vfs_stat` → check the pending pool first so an in-progress (not-yet-stowed)
+  member is `stat`-able (`ftype=REG`, `size = high_water`).
+- `proc_write` → reply **`UNSTABLE`** (not `FILE_SYNC`).
+- `proc_commit` → flush that member (convert → EBCDIC → `fopen("wt")…fclose`
+  = STOW), then reply with the verifier.
+- **SETATTR must succeed** (it is part of the client's open/write/close
+  sequence): `vfs_truncate` routes to the pool (truncate-to-0 starts a fresh
+  member; the common `O_TRUNC` case), and `vfs_set_times` is an accepted
+  no-op (PDS members carry ISPF times we cannot set, like mode/uid/gid).  A
+  SETATTR error aborts the whole copy on the client.
+- Select-loop sweep: flush per-member idle timeouts; flush-all on STOP.
+
+**Deferred to Phase 2 (not in Phase 1):**
+
+- PS scratch-dataset spill.  Consequently Phase 1 has a **hard per-member
+  cap**: a write that would exceed it returns `NFS3ERR_FBIG`.  This is fine
+  for validating the flow with normal-sized members (source, JCL).
+
+**Phase 1 parameters:**
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `PWW_MAX_MEMBER_BYTES` | **256 KB** | per-member in-memory cap; over-cap write → `NFS3ERR_FBIG` |
+| `PWW_MAX_PENDING`      | **4**      | concurrent pending members in the pool |
+| Idle-flush timeout     | 5–10 s (tunable) | per member, polled each select iteration |
+
+**Acceptance check (both clients — we test on both):**
+
+- **Linux** and **Windows 11** NFS mounts:
+  - copy a small file into a mounted PDS directory (`cp` / drag-drop);
+  - edit-and-save a member from an editor (e.g. `vi`/`nano` on Linux, Notepad
+    on Windows) — exercises the write-then-COMMIT path;
+  - `cat` / open it back and confirm the contents;
+  - `ls -l` / directory listing shows the correct size.
+- On MVS, confirm the member is correctly **stowed** with proper records
+  (RECFM/LRECL) and readable in ISPF.
 
 ## 13. Out of scope (for now)
 
 - Random in-place update of existing members (impossible on PDS; a re-write
   of the whole member is the only option).
-- REMOVE / RENAME / MKDIR / SETATTR mode/uid/gid.
+- **REMOVE / RENAME** — per §11.1, the JCC library provides no way to delete
+  or rename a PDS member, so these are not implementable through JCC alone;
+  they would need a callable S/370 ASM routine (STOW with the delete/rename
+  option) and are deferred to a later phase.
+- **SETATTR size=0 (truncate)** — believed implementable (write an empty
+  member), and interacts with the buffer model (truncate-on-open before
+  writes); deferred but noted as feasible.
+- MKDIR / SETATTR mode/uid/gid.
 - Concurrent writers to the same member (last-flush-wins is acceptable
   initially; the pool is keyed per member).
 - PDSE-specific behaviour (MVS 3.8J is PDS only).

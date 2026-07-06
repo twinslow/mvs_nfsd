@@ -84,6 +84,10 @@ void dir_openlist_free(vfs_dir_t *entry);
  * Returns NULL if not found or if the matching entry has timed out. */
 vfs_dir_t *dir_openlist_find_by_dsname(const char *pds_dsname_ebcdic);
 
+/* Drop any cached directory listing for a PDS (call after a member STOW so
+ * the next readdir re-reads the directory and sees the new member). */
+void dir_openlist_invalidate(const char *pds_dsname_ebcdic);
+
 /*
  * Binary search of the cached member list with a full operator set
  * (SEARCH_OP_LT, SEARCH_OP_EQ, SEARCH_OP_GT, SEARCH_OP_LE, SEARCH_OP_GE).  

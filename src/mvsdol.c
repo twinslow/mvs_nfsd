@@ -139,6 +139,25 @@ vfs_dir_t *dir_openlist_find_by_dsname(const char *pds_dsname_ebcdic)
 }
 
 /* -------------------------------------------------------------------- */
+/* Invalidate any cached directory listing for a PDS dataset.           */
+/* Called after a member is stowed so the next readdir re-reads the PDS */
+/* directory and picks up the added/replaced member.                    */
+/* -------------------------------------------------------------------- */
+
+void dir_openlist_invalidate(const char *pds_dsname_ebcdic)
+{
+    int i;
+    for (i = 0; i < MAX_OPEN_DIRS; i++) {
+        if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_USED &&
+            strcmp(g_dir_pool[i].pds_dsname_ebcdic, pds_dsname_ebcdic) == 0) {
+            log_debug("dir_openlist_invalidate: dropping cached listing for %s",
+                      pds_dsname_ebcdic);
+            dir_openlist_free(&g_dir_pool[i]);
+        }
+    }
+}
+
+/* -------------------------------------------------------------------- */
 /* Binary search of member info list (full operator set)                */
 /* -------------------------------------------------------------------- */
 

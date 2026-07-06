@@ -30,6 +30,7 @@
 #include "mvsio.h"
 #include "mvspdir.h"
 #include "mvsprw.h"
+#include "mvspww.h"
 #include "nfsd.h"
 #include "hexdump.h"
 #include "mvsfsz.h"
@@ -87,6 +88,33 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
 
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
+
+    /* A member being written is not yet stowed in the PDS directory, so it
+       must still be visible to stat.  Report its in-progress size from the
+       pending-write pool. */
+    {
+        pending_member_t *pm = pww_find(pds_dsname, pds_member_name);
+        if (pm != NULL) {
+            time_t now_t = time(NULL);
+            vs->ftype = NF3REG;
+            vs->mode = 0777;
+            vs->nlink = 1;
+            vs->uid = 0;
+            vs->gid = 0;
+            vs->size = pm->high_water;
+            vs->used = pm->high_water;
+            vs->rdev_maj = 0;
+            vs->rdev_min = 0;
+            vs->fsid    = (uint64_t)export_idx + 1;
+            vs->fileid  = mvs_fid_hash(pds_dsname, pds_member_name);
+            vs->raw_ino = mvs_fid_ino32(pds_dsname, pds_member_name);
+            vs->raw_dev = (uint32_t)export_idx + 1;
+            vs->atime_sec = (uint32_t)now_t; vs->atime_nsec = 0;
+            vs->mtime_sec = (uint32_t)now_t; vs->mtime_nsec = 0;
+            vs->ctime_sec = (uint32_t)now_t; vs->ctime_nsec = 0;
+            return 0;
+        }
+    }
 
     /* First look to see if we have the info cached */
     retcode = mvsvfs_find_cached_member(pds_dsname, pds_member_name, &member_entry);
@@ -164,6 +192,7 @@ static int vfs_stat_dataset(const char *path, int export_idx,
                             int dataset_idx, vfs_stat_t *vs)
 {
     pds_dataset_t *ds;
+    uint32_t       dmtime;
 
     (void)path;
 
@@ -173,7 +202,11 @@ static int vfs_stat_dataset(const char *path, int export_idx,
         return -1;
     }
 
-    (void)vfs_dir_epoch();   /* ensure g_dir_epoch is initialised */
+    /* Directory mtime: the per-dataset value once a member has been stowed,
+       otherwise the stable server epoch.  It is STABLE between modifications
+       (so the client's readdir does not loop) but BUMPS when a member is
+       added/replaced (so the client invalidates its cached listing). */
+    dmtime = (ds->dir_mtime != 0) ? ds->dir_mtime : vfs_dir_epoch();
 
     vs->ftype = NF3DIR;
     vs->mode = 0777; /* read/write/execute permissions for everyone */
@@ -191,15 +224,14 @@ static int vfs_stat_dataset(const char *path, int export_idx,
     vs->raw_ino = mvs_fid_ino32(ds->dsname_ebcdic, NULL);
     vs->raw_dev = (uint32_t)export_idx + 1;
 
-    // Now the accessed/modified/created date/times.
-    // These MUST be stable across calls (see g_dir_epoch above): a varying
-    // directory mtime/ctime makes the NFS client restart readdir from cookie 0.
-    // nsec is forced to 0 to avoid any sub-second jitter being reported.
-    vs->atime_sec = (uint32_t)g_dir_epoch;
+    // Accessed/modified/created times: the per-dataset dir_mtime (see above).
+    // Stable between member changes (no readdir loop), bumps on STOW (client
+    // refreshes).  nsec forced to 0 to avoid any sub-second jitter.
+    vs->atime_sec = dmtime;
     vs->atime_nsec = 0;
-    vs->mtime_sec = (uint32_t)g_dir_epoch;
+    vs->mtime_sec = dmtime;
     vs->mtime_nsec = 0;
-    vs->ctime_sec = (uint32_t)g_dir_epoch;
+    vs->ctime_sec = dmtime;
     vs->ctime_nsec = 0;
 
     return 0;
@@ -372,6 +404,28 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     /* Split the path into dataset and member name. */
     mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname, pds_member_name, export_idx);
 
+    /* If the member is being written (buffered, not yet stowed), serve the
+       read from the pending buffer so the not-yet-stowed data is visible.
+       The buffer already holds ASCII, so no EBCDIC translation is needed. */
+    {
+        pending_member_t *pm = pww_find(pds_dsname, pds_member_name);
+        if (pm != NULL) {
+            if (offset >= (uint64_t)pm->high_water) {
+                *nread = 0;
+                *eof   = 1;
+            } else {
+                uint32_t avail = pm->high_water - (uint32_t)offset;
+                uint32_t n     = (count < avail) ? count : avail;
+                memcpy(buf, pm->buf + (uint32_t)offset, (size_t)n);
+                *nread = n;
+                *eof   = ((uint32_t)offset + n >= pm->high_water);
+            }
+            log_debug("vfs_pread: served %u bytes from pending buffer %s(%s)",
+                *nread, pds_dsname, pds_member_name);
+            return 0;
+        }
+    }
+
     /* We've confirmed that we have a dataset and member name, so we can read. */
     /* The below read routine handles file open, caching last op info and fclose. */
     rc = mvs_pds_member_read(
@@ -405,45 +459,87 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
 int vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset)
 {
-    errno = EACCES;
-    return -1;
+    char ebcdic_path[MAX_PATH_LEN];
+    char pds_dsname[45];
+    char pds_member_name[9];
+    int  export_idx;
+    int  dataset_idx;
+    int  path_type;
 
-#if 0
-    int     fd;
-    ssize_t n;
-    int     saved_errno;
- 
-    fd = open(path, O_WRONLY);
-    if (fd < 0) return -1;
- 
-    n = pwrite(fd, buf, (size_t)count, (off_t)offset);
-    saved_errno = errno;          /* preserve before fsync/close can overwrite */
-    if (n == (ssize_t)count) fsync(fd);
-    close(fd);
-    errno = saved_errno;
- 
-    return (n == (ssize_t)count) ? 0 : -1;
-#endif
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+    if (path_type != MVS_PATH_TYPE_PDS_MEMBER) {
+        errno = (path_type == MVS_PATH_TYPE_ROOT ||
+                 path_type == MVS_PATH_TYPE_DATASET) ? EISDIR : ENOENT;
+        return -1;
+    }
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return -1;
+
+    return pww_write(export_idx, dataset_idx, pds_dsname, pds_member_name,
+                     (const uint8_t *)buf, count, offset);
 }
- 
+
 /* -------------------------------------------------------------------- */
-/* vfs_create: create a new empty file (or truncate if it exists).      */
-/* mode is the permission bits (e.g. 0644).                             */
+/* vfs_commit: flush a pending member to the PDS (NFS COMMIT).           */
+/* Returns 0 on success (including nothing-to-commit), -1 on error.     */
+/* -------------------------------------------------------------------- */
+int vfs_commit(const char *path)
+{
+    char ebcdic_path[MAX_PATH_LEN];
+    char pds_dsname[45];
+    char pds_member_name[9];
+    int  export_idx;
+    int  dataset_idx;
+    int  path_type;
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+    if (path_type != MVS_PATH_TYPE_PDS_MEMBER)
+        return 0;    /* nothing to commit for a directory / root */
+
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return 0;
+
+    return pww_flush_member(pds_dsname, pds_member_name);
+}
+
+/* -------------------------------------------------------------------- */
+/* vfs_create: create a new empty PDS member (pending, stowed on commit).*/
+/* mode is ignored (PDS members have no POSIX permission bits).          */
 /* Returns 0 on success, -1 on error.                                   */
 /* -------------------------------------------------------------------- */
 int vfs_create(const char *path, uint32_t mode)
 {
-    errno = EACCES;
-    return -1;
+    char ebcdic_path[MAX_PATH_LEN];
+    char pds_dsname[45];
+    char pds_member_name[9];
+    int  export_idx;
+    int  dataset_idx;
+    int  path_type;
 
-#if 0
-    int fd = open(path,
-                  O_CREAT | O_WRONLY | O_TRUNC,
-                  (mode_t)mode);
-    if (fd < 0) return -1;
-    close(fd);
-    return 0;
-#endif
+    (void)mode;
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+    if (path_type != MVS_PATH_TYPE_PDS_MEMBER) {
+        /* Can only create a member (not the root or a PDS directory). */
+        errno = EACCES;
+        return -1;
+    }
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return -1;
+
+    return pww_create(export_idx, dataset_idx, pds_dsname, pds_member_name);
 }
  
 /* -------------------------------------------------------------------- */
@@ -473,16 +569,38 @@ int vfs_rename(const char *from, const char *to)
 }
  
 /* -------------------------------------------------------------------- */
-/* vfs_truncate: change file size to 'size' bytes.                      */
+/* vfs_truncate: set a member's size (NFS SETATTR size / O_TRUNC).       */
+/* Routed to the pending-write pool; the common case is truncate-to-0    */
+/* before a rewrite.  Returns 0 on success, -1 on error.                 */
 /* -------------------------------------------------------------------- */
 int vfs_truncate(const char *path, uint64_t size)
 {
-    errno = EACCES;
-    return -1;
+    char ebcdic_path[MAX_PATH_LEN];
+    char pds_dsname[45];
+    char pds_member_name[9];
+    int  export_idx;
+    int  dataset_idx;
+    int  path_type;
 
-#if 0
-    return truncate(path, (off_t)size);
-#endif
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+    if (path_type != MVS_PATH_TYPE_PDS_MEMBER) {
+        errno = EISDIR;
+        return -1;
+    }
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return -1;
+
+    if (size > (uint64_t)PWW_MAX_MEMBER_BYTES) {
+        errno = ENOSPC;
+        return -1;
+    }
+
+    return pww_truncate(export_idx, dataset_idx, pds_dsname, pds_member_name,
+                        (uint32_t)size);
 }
  
 /* -------------------------------------------------------------------- */
@@ -499,24 +617,14 @@ int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
                   int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
 {
-    errno = EACCES;
-    return -1;
-
-#if 0
-    struct timespec ts[2];
- 
-    ts[0].tv_sec  = (set_atime == SET_TO_CLIENT_TIME) ? (time_t)atime_sec : 0;
-    ts[0].tv_nsec = (set_atime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
-                    (set_atime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
-                                                        (long)atime_nsec;
- 
-    ts[1].tv_sec  = (set_mtime == SET_TO_CLIENT_TIME) ? (time_t)mtime_sec : 0;
-    ts[1].tv_nsec = (set_mtime == SET_DONT_CHANGE)   ? UTIME_OMIT  :
-                    (set_mtime == SET_TO_SERVER_TIME) ? UTIME_NOW   :
-                                                        (long)mtime_nsec;
- 
-    return utimensat(AT_FDCWD, path, ts, 0);
-#endif
+    /* PDS members carry ISPF-derived timestamps that we cannot set, so a
+       time change is accepted and ignored (like mode / uid / gid).  This
+       must NOT fail: clients set times as part of the open/write/close
+       sequence, and an error there aborts the whole copy. */
+    (void)path;
+    (void)set_atime; (void)atime_sec; (void)atime_nsec;
+    (void)set_mtime; (void)mtime_sec; (void)mtime_nsec;
+    return 0;
 }
  
 /* -------------------------------------------------------------------- */
@@ -561,7 +669,7 @@ uint32_t vfs_errno_to_nfs3(int err)
         case ENOTDIR:       return NFS3ERR_NOTDIR;
         case EISDIR:        return NFS3ERR_ISDIR;
         case EINVAL:        return NFS3ERR_INVAL;
-//        case EFBIG:         return NFS3ERR_FBIG;
+/*      case EFBIG:         return NFS3ERR_FBIG;   -- EFBIG not in JCC */
         case ENOSPC:        return NFS3ERR_NOSPC;
 //        case EROFS:         return NFS3ERR_ROFS;
 //        case EMLINK:        return NFS3ERR_MLINK;

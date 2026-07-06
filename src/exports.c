@@ -19,6 +19,7 @@
 #include <stdio.h>    /* fopen, fclose, fgets */
 #include <string.h>   /* strncpy, strlen, strcmp, strchr */
 #include <ctype.h>    /* isspace */
+#include <time.h>     /* time */
  
 #ifndef __MVS__
 #include <sys/stat.h> /* stat */
@@ -309,5 +310,14 @@ int export_dataset_find_by_dirname(int export_idx, const char *dirname_ebcdic)
             return i;
     }
     return -1;
+}
+
+/* Bump a dataset's directory mtime to "now" (called after a member STOW) so
+ * NFS clients see the directory as changed and refresh their cached listing. */
+void export_dataset_touch(int export_idx, int dataset_idx)
+{
+    pds_dataset_t *ds = export_dataset_get(export_idx, dataset_idx);
+    if (ds != NULL)
+        ds->dir_mtime = (uint32_t)time(NULL);
 }
 

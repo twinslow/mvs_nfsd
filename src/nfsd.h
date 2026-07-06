@@ -67,6 +67,7 @@
 #define export_dataset_count            expDsCnt
 #define export_dataset_get              expDsGet
 #define export_dataset_find_by_dirname  expDsFnd
+#define export_dataset_touch            expDsTch
 /* fhandle.c */
 #define fh_cache_insert         fhCachIn
 #define fh_cache_lookup         fhCachLk
@@ -85,6 +86,7 @@
 #define vfs_readdir_next        vfsRdNxt
 #define vfs_seekdir_to          vfsSekTo
 #define vfs_closedir            vfsClDir
+#define vfs_commit              vfsCommt
 /* handlers */
 #define handle_portmap          hndPmap
 #define handle_mount            hndMount
@@ -353,6 +355,7 @@ typedef struct {
     char           dirname_ascii[MAX_DSNAME_LEN];  /* lower-case(dsname), ASCII  (readdir output)  */
     char           file_ext[MAX_FILE_EXT_LEN];     /* extension appended to member file names      */
     mvs_dcb_info_t dcbinfo;
+    uint32_t       dir_mtime;   /* dir last-modified (epoch secs); bumped on STOW; 0 = unset */
 } pds_dataset_t;
 
 /* One exported directory (may group several PDS datasets) */
@@ -527,6 +530,9 @@ int            export_dataset_count(int export_idx);
 pds_dataset_t *export_dataset_get(int export_idx, int dataset_idx);
 int            export_dataset_find_by_dirname(int export_idx,
                                               const char *dirname_ebcdic);
+/* Mark a dataset's directory as modified now (bumps its dir_mtime), so
+ * clients invalidate their cached listing after a member is added/replaced. */
+void           export_dataset_touch(int export_idx, int dataset_idx);
 
 /* -------------------------------------------------------------------- */
 /* Prototypes: fhandle.c                                                */
@@ -553,6 +559,7 @@ int        vfs_pread(const char *path, void *buf, uint32_t count,
                uint64_t offset, uint32_t *nread, int *eof);
 int        vfs_pwrite(const char *path, const void *buf,
                uint32_t count, uint64_t offset);
+int        vfs_commit(const char *path);
 int        vfs_create(const char *path, uint32_t mode);
 int        vfs_remove(const char *path);
 int        vfs_rename(const char *from, const char *to);

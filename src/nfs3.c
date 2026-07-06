@@ -536,6 +536,8 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
     uint64_t      offset;
     uint32_t      count;
     uint32_t      data_len = 0;
+    uint32_t      stable;
+    uint32_t      committed;
     char          path[MAX_PATH];
     vfs_stat_t    pre, post;
     int           has_pre, has_post;
@@ -544,7 +546,7 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_read_fhandle3(in, &fh, &ok);
     offset = xdr_read_uint64(in);
     count  = xdr_read_uint32(in);
-    xdr_skip(in, 4);   /* stable_how -- we always use FILE_SYNC */
+    stable = xdr_read_uint32(in);   /* stable_how requested by the client */
     xdr_read_opaque(in, g_write_buf, &data_len, MAX_WRITE_SIZE);
 
     rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
@@ -566,10 +568,23 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
     has_pre  = (vfs_stat(path, &pre) == 0);
     if (data_len < count) count = data_len;
 
-    if (vfs_pwrite(path, g_write_buf, count, offset) < 0)
-        status = vfs_errno_to_nfs3(errno);
-    else
+    if (vfs_pwrite(path, g_write_buf, count, offset) < 0) {
+        status    = vfs_errno_to_nfs3(errno);
+        committed = UNSTABLE;
+    } else {
         status = NFS3_OK;
+        /* The data is buffered in the pending-write pool and the member is
+           STOWed exactly once -- at COMMIT, or the idle sweep -- NEVER on
+           every write.  A PDS member rewrite writes new blocks at the end of
+           the dataset and abandons the old ones, so re-stowing per write
+           would fill the PDS with dead space and force frequent compresses.
+           We echo the client's requested stability: an UNSTABLE client then
+           issues COMMIT (our stow trigger); a FILE_SYNC client (e.g. Windows)
+           is satisfied and does not delete the file.  Reads and stats of the
+           not-yet-stowed member are served from the buffer (see vfs_pread /
+           vfs_stat), so there is no visibility gap before the stow. */
+        committed = stable;
+    }
 
     has_post = (vfs_stat(path, &post) == 0);
 
@@ -578,7 +593,7 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
 
     if (status == NFS3_OK) {
         xdr_write_uint32(out, count);
-        xdr_write_uint32(out, FILE_SYNC);   /* always fully committed */
+        xdr_write_uint32(out, committed);
         xdr_write_raw(out, g_write_verifier, 8);
     }
 }
@@ -1134,10 +1149,19 @@ static void proc_commit(xdr_t *in, xdr_t *out, uint32_t xid)
     log_debug("nfs3.proc_commit: Starting for path %s",
         log_ascii(path));
 
-    has_pre = has_post = (vfs_stat(path, &pre) == 0);
-    if (has_pre) post = pre;
+    has_pre = (vfs_stat(path, &pre) == 0);
 
-    /* We always write synchronously; nothing to flush */
+    /* Flush the buffered member to the PDS (STOW). */
+    if (vfs_commit(path) < 0) {
+        has_post = (vfs_stat(path, &post) == 0);
+        xdr_write_uint32(out, vfs_errno_to_nfs3(errno));
+        xdr_write_wcc_data(out, &pre, has_pre,
+                           has_post ? &post : NULL, has_post);
+        return;
+    }
+
+    has_post = (vfs_stat(path, &post) == 0);
+
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_wcc_data(out, &pre, has_pre, &post, has_post);
     xdr_write_raw(out, g_write_verifier, 8);

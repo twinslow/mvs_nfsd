@@ -4,12 +4,25 @@
 #include <errno.h>
 #include <stdio.h>
 #include <time.h>
+#include <ctype.h>
 #include <io.h>
 
 #include "nfsd.h"
 #include "mvsio.h"
 #include "ebcdic.h"
 #include "logger.h"
+
+/* -------------------------------------------------------------------- */
+/* Is c a valid character for a PDS member name?  (Operates on the       */
+/* upper-cased, EBCDIC character.)  Valid: A-Z, 0-9, and the national    */
+/* characters @ # $.  isalnum() is EBCDIC-aware under JCC.               */
+/* -------------------------------------------------------------------- */
+static int member_char_ok(unsigned char c)
+{
+    if (c == '@' || c == '#' || c == '$')
+        return 1;
+    return isalnum(c) ? 1 : 0;
+}
 
 
 /* -------------------------------------------------------------------- */
@@ -160,15 +173,43 @@ int mvs_get_pds_dsn_and_member(
         *last_dot = '\0';
     }
 
-    /* PDS member name is the upper-case leaf, truncated to 8 characters. */
+    /* The leaf (extension stripped) must be a valid PDS member name.  We do
+       NOT silently truncate an over-length name: distinct files such as
+       "report01a" and "report01b" would both collapse to the same 8-char
+       member and overwrite each other with no error.  Reject instead, with a
+       specific errno so each NFS op maps it to the right status:
+         > 8 chars      -> ENAMETOOLONG (NFS3ERR_NAMETOOLONG)
+         invalid char   -> EINVAL       (NFS3ERR_INVAL)
+       The member name is the upper-cased leaf. */
     member_name_len = strlen(file_name);
-    if (member_name_len > 8) member_name_len = 8;
-    for (i = 0; i < member_name_len; i++)
-        pds_member_name[i] = toupper(file_name[i]);
+    if (member_name_len == 0) {
+        errno = ENOENT;
+        retcode = -1;
+        goto return_exit;
+    }
+    if (member_name_len > 8) {
+        errno = ENAMETOOLONG;
+        retcode = -1;
+        goto return_exit;
+    }
+    for (i = 0; i < member_name_len; i++) {
+        pds_member_name[i] = (char)toupper((unsigned char)file_name[i]);
+        if (!member_char_ok((unsigned char)pds_member_name[i])) {
+            errno = EINVAL;
+            retcode = -1;
+            goto return_exit;
+        }
+    }
     pds_member_name[member_name_len] = '\0';
 
     /* Validate the extension against this dataset's expected extension.
-       Case of the extension does not matter. */
+       Case of the extension does not matter.
+       This is deliberately strict: the extension is the per-dataset display
+       convention (a ".cntl" dataset shows "name.cntl"), and enforcing it on
+       input keeps the filename<->member mapping 1:1.  Without it, "name.jcl"
+       and "name.txt" would both map to member NAME and silently overwrite
+       each other.  A cross-dataset copy must therefore name the destination
+       with the target dataset's extension (e.g. copy ... to name.cntl). */
     if (ds->file_ext[0] != '\0') {
         if (strcasecmp(file_ext, ds->file_ext) != 0) {
             errno   = ENOENT;

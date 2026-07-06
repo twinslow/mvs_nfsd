@@ -54,6 +54,7 @@
 #include "logger.h"
 #include "mvsfsz.h"
 #include "mvsprf.h"
+#include "mvspww.h"
 
 /* ------------------------------------------------------------------ */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
@@ -300,6 +301,7 @@ int main(int argc, char *argv[])
 
     dir_openlist_init();
     mvs_rcache_init();
+    pww_init();
     mvsfsz_init();
     mvsprf_init();
     
@@ -439,6 +441,12 @@ int main(int argc, char *argv[])
             perror("select");
             break;
         }
+
+        /* Flush any buffered PDS-member writes that have gone idle.  Runs on
+           every wake-up (activity or the 2s timeout), so flush latency is
+           bounded to a couple of seconds. */
+        pww_flush_idle(time(NULL));
+
         if (n == 0) continue;  /* timeout -- go back and check for STOP  */
 
         if (FD_ISSET(pmap_sock,  &rfds)) accept_conn(pmap_sock,  PROTO_PORTMAP);
@@ -456,6 +464,9 @@ int main(int argc, char *argv[])
             i++;
         }
     }
+
+    /* Flush any outstanding buffered member writes before we exit. */
+    pww_flush_all();
 
     log_info("Closing sockets");
 

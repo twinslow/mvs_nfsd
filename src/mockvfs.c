@@ -474,6 +474,16 @@ int vfs_pwrite(const char *path, const void *buf,
 }
 
 /* -------------------------------------------------------------------- */
+/* vfs_commit: log and accept (nothing is buffered in the mock).        */
+/* -------------------------------------------------------------------- */
+
+int vfs_commit(const char *path)
+{
+    printf("[MOCKVFS] vfs_commit path=\"%s\" (no-op)\n", MOCK_PATH(path));
+    return 0;
+}
+
+/* -------------------------------------------------------------------- */
 /* vfs_create: log and accept (no file is actually created).            */
 /* -------------------------------------------------------------------- */
 

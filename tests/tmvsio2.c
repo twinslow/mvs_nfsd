@@ -163,7 +163,9 @@ static MunitResult test_member_uppercased(const MunitParameter params[], void *d
     return MUNIT_OK;
 }
 
-static MunitResult test_member_truncated_at_8(const MunitParameter params[], void *data)
+/* An over-length base name is rejected (NOT silently truncated), so that
+   "report01a" and "report01b" cannot collapse to the same 8-char member. */
+static MunitResult test_member_too_long_rejected(const MunitParameter params[], void *data)
 {
     char dsname[MAX_PATH];
     char member[9];
@@ -171,12 +173,48 @@ static MunitResult test_member_truncated_at_8(const MunitParameter params[], voi
     (void)params; (void)data;
 
     dsname[0] = '\0'; member[0] = '\0';
-    /* "verylongname" -> "VERYLONG" (8 chars) */
+    errno = 0;
+    /* "verylongname" is 12 chars -> too long for a member */
     result = mvs_get_pds_dsn_and_member(
                  "/dinonfs/src/temp.dinonfs.c/verylongname.c", dsname, member, 0);
 
+    munit_assert_int(result, ==, -1);
+    munit_assert_int(errno,  ==, ENAMETOOLONG);
+    return MUNIT_OK;
+}
+
+/* An exactly-8-char base name is accepted (boundary case). */
+static MunitResult test_member_exactly_8_ok(const MunitParameter params[], void *data)
+{
+    char dsname[MAX_PATH];
+    char member[9];
+    int  result;
+    (void)params; (void)data;
+
+    dsname[0] = '\0'; member[0] = '\0';
+    result = mvs_get_pds_dsn_and_member(
+                 "/dinonfs/src/temp.dinonfs.c/rep01234.c", dsname, member, 0);
+
     munit_assert_int(result, ==, 0);
-    munit_assert_string_equal(member, "VERYLONG");
+    munit_assert_string_equal(member, "REP01234");
+    return MUNIT_OK;
+}
+
+/* A base name with an invalid member character (a hyphen) is rejected. */
+static MunitResult test_member_invalid_char_rejected(const MunitParameter params[], void *data)
+{
+    char dsname[MAX_PATH];
+    char member[9];
+    int  result;
+    (void)params; (void)data;
+
+    dsname[0] = '\0'; member[0] = '\0';
+    errno = 0;
+    result = mvs_get_pds_dsn_and_member(
+                 "/dinonfs/src/temp.dinonfs.c/my-file.c", dsname, member, 0);
+
+    munit_assert_int(result, ==, -1);
+    munit_assert_int(errno,  ==, EINVAL);
     return MUNIT_OK;
 }
 
@@ -216,6 +254,9 @@ static MunitResult test_matching_extension_ok(const MunitParameter params[], voi
     return MUNIT_OK;
 }
 
+/* A filename whose extension does not match the dataset's is rejected, so the
+   filename<->member mapping stays 1:1 (prevents silent overwrites of the same
+   member via different extensions). */
 static MunitResult test_wrong_extension_error(const MunitParameter params[], void *data)
 {
     char dsname[MAX_PATH];
@@ -283,9 +324,11 @@ static MunitTest dataset_path_tests[] = {
 };
 
 static MunitTest member_tests[] = {
-    { "/member_uppercased",     test_member_uppercased,     setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
-    { "/member_truncated_at_8", test_member_truncated_at_8, setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
-    { "/member_no_extension",   test_member_no_extension,   setup_no_ext,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_uppercased",        test_member_uppercased,           setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_too_long_rejected", test_member_too_long_rejected,    setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_exactly_8_ok",      test_member_exactly_8_ok,         setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_invalid_char",      test_member_invalid_char_rejected, setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_no_extension",      test_member_no_extension,         setup_no_ext,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 

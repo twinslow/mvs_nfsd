@@ -206,12 +206,12 @@ Use the following options (tested on Ubuntu 26.04)
 # Via portmapper (automatic port discovery):
 sudo mount -t nfs \
      -o rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150 \
-     server:/export/src /mnt/src
+     server:/exports /mnt/src
 
 # With explicit ports:
 sudo mount -t nfs \
      -o port=2049,mountport=20048,rdirplus=force,noacl,nfsvers=3,nolock,tcp,acregmin=30,timeo=150 \
-     server:/export/src /mnt/src
+     server:/exports /mnt/src
 
 # Tested on Ubuntu 24.04.4 LTS:
 sudo mount -t nfs \

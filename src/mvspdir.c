@@ -202,6 +202,10 @@ void mvspdir_mlist_free(pds_member_list_t *mlist)
     mlist->number_in_list = 0;
 }
 
+/* -------------------------------------------------------------------- */
+/* ISPF stats helper routines                                           */
+/* -------------------------------------------------------------------- */
+
 /*
  * ispf_tm_to_timet: convert a broken-down UTC time to a Unix time_t
  * (seconds since 1970-01-01 00:00:00 UTC) without using mktime().
