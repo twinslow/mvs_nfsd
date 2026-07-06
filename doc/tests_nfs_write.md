@@ -101,12 +101,23 @@ X:\temp.testproj.cntl>
 |Target file name|Result                                         |Pass/Fail|
 |----------------|-----------------------------------------------|---------|
 |test12345.cntl  | The filename or extension is too long         | Pass    |
-|1test.cntl      | Copied!                                       | Fail    |
-|test-1.cntl     | The volume for a file has been externally altered so that the opened file is no longer valid.                           | ??        |
-|test_1.cntl     | As above                                       |         |
-|test1.2.cntl    |                                               |         |
+|1test.cntl      | The filename or extension is too long         | Pass    |
+|test-1.cntl     | The filename or extension is too long         | Pass    |
+|test_1.cntl     | The filename or extension is too long         | Pass    |
+|test1.2.cntl    | The filename or extension is too long         | Pass    |
 
-copy c:\Users\tony_\dev\test1.cntl 
+## Test 1W.06 - Copy to a file with a file name that is a valid member name
+
+|Target file name|Result                                         |Pass/Fail|
+|----------------|-----------------------------------------------|---------|
+|test1234.cntl   |  1 file(s) copied.                            | Pass    |
+|@test1.cntl     |  1 file(s) copied.                            | Pass    |
+|#test1.cntl     |  1 file(s) copied.                            | Pass    |
+|$test1.cntl     |  1 file(s) copied.                            | Pass    |
+|$1.cntl         |  1 file(s) copied.                            | Pass    |
+|test#1.cntl     |  1 file(s) copied.                            | Pass    |
+|test$1.cntl     |  1 file(s) copied.                            | Pass    |
+|test@1.cntl     |  1 file(s) copied.                            | Pass    |
 
 
 # Testing Linux

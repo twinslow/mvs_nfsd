@@ -55,6 +55,8 @@
 #include "mvsfsz.h"
 #include "mvsprf.h"
 #include "mvspww.h"
+#include "mvsfid.h"
+#include "mvsutl.h"
 
 /* ------------------------------------------------------------------ */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
@@ -148,7 +150,7 @@ static int parse_port(const char *s, int *out)
 }
 
 /* ------------------------------------------------------------------ */
-/* Global write verifier: set once at startup from time()               */
+/* Global write verifier: set once at startup from time() + pseudo-PID   */
 /* ------------------------------------------------------------------ */
 uint8_t g_write_verifier[8];
 int     g_port_pmap  = PORT_PORTMAP;
@@ -357,13 +359,23 @@ int main(int argc, char *argv[])
     g_port_mount = port_mount;
     g_port_nfs   = port_nfs;
 
-    /* Write verifier: combine startup time + PID to avoid collision on
-     * fast restarts (time() has only 1-second granularity). */
+    /* Write verifier: combine startup time + PID (a hashed JES2 job id on
+     * MVS, getpid() elsewhere) to avoid collision on fast restarts (time()
+     * has only 1-second granularity). */
     {
 #ifdef __MVS__
-        /* MVS has no getpid(), so just use the time. */
-        uint32_t pid = 0xDEADBEEF;
-        /* TODO: Get the JES2 job ID ... started task number etc. */
+
+        /* Get jobid ... e.g. "STC01234".  May be NULL if the PSA->TCB->JSCB
+           ->SSIB chain does not resolve. */
+        char *job_id = get_jes2_jobid();
+
+        /* Convert that to a pseudo-pid via hash.  mvs_fid_ino32() treats a
+           NULL name as zero-length, so this is NULL-safe. */
+        uint32_t pid = mvs_fid_ino32(job_id, NULL);
+
+        log_info("NFSD running as %s ... using pseudo-pid 0x%08X",
+                 (job_id != NULL) ? job_id : "(unknown)", pid);
+
 #else
         pid_t pid = getpid();
 #endif

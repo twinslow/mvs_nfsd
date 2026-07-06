@@ -26,10 +26,9 @@
 /*   EINVAL       -- empty, starts with a digit, or has an invalid char  */
 /*                                                                       */
 /* Callers upper-case the client filename before validating, so a name   */
-/* containing lowercase reaches here as non-upper and is rejected.       */
-/* Implemented with isalnum()/toupper() only -- isupper()/isdigit() do    */
-/* NOT classify EBCDIC correctly under JCC; the national-char literals    */
-/* are EBCDIC on MVS.                                                     */
+/* containing lowercase reaches here as non-upper and is rejected by the  */
+/* isupper() check.  isupper()/isdigit() are EBCDIC-correct under JCC and  */
+/* the national-char literals are EBCDIC on MVS.                          */
 /* -------------------------------------------------------------------- */
 int mvs_member_name_valid(const char *member)
 {
@@ -43,30 +42,16 @@ int mvs_member_name_valid(const char *member)
     if (len > 8)
         return ENAMETOOLONG;
 
-    for (i = 0; i < len; i++) {
+    /* First character: a letter (A-Z) or a national character (@ # $),
+       but not a digit.  isupper() is EBCDIC-correct under JCC. */
+    c = (unsigned char)member[0];
+    if (!(isupper(c) || c == '@' || c == '#' || c == '$'))
+        return EINVAL;
+
+    /* Remaining characters: letters, digits, or national characters. */
+    for (i = 1; i < len; i++) {
         c = (unsigned char)member[i];
-
-        /* National characters (@ # $) are always allowed. */
-        if (c == '@' || c == '#' || c == '$')
-            continue;
-
-        /* Otherwise it must be a letter or digit.  We use only isalnum() and
-           toupper() here -- the ctype routines this codebase already relies
-           on under JCC/EBCDIC -- and avoid isupper()/isdigit(), which do NOT
-           classify EBCDIC correctly under JCC (they let a leading digit slip
-           through so the STOW then failed on MVS). */
-        if (!isalnum(c))
-            return EINVAL;                 /* '-', '.', ' ', '/', ... */
-
-        /* Member names are stored upper-case: reject a lowercase letter.
-           If upper-casing changes the character, it was lowercase. */
-        if ((unsigned char)toupper(c) != c)
-            return EINVAL;
-
-        /* Digits 0-9 are contiguous in both ASCII and EBCDIC, so this range
-           test is portable and does not need isdigit().  The first character
-           must not be a digit. */
-        if (i == 0 && c >= '0' && c <= '9')
+        if (!(isupper(c) || isdigit(c) || c == '@' || c == '#' || c == '$'))
             return EINVAL;
     }
 

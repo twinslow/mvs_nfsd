@@ -55,6 +55,7 @@
 //EXPORTS  EXEC JCCCMOD,MODNAME=EXPORTS                               
 //FHANDLE  EXEC JCCCMOD,MODNAME=FHANDLE                               
 //MOUNT3   EXEC JCCCMOD,MODNAME=MOUNT3                                
+//MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL                                
 //MVSFID   EXEC JCCCMOD,MODNAME=MVSFID                                
 //MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                 
 //MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                               
@@ -93,6 +94,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOUNT3)              
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFID)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL) 
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ) 
