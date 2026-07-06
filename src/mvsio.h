@@ -27,6 +27,15 @@ int mvs_get_pds_dsn_and_member(
     char            *pds_member_name,
     int              export_idx);
 
+/*
+ * Validate a PDS member name (the upper-cased stored form).  Returns 0 if it
+ * is a valid member name, else an errno: ENAMETOOLONG (> 8 chars) or EINVAL
+ * (empty, starts with a digit, or contains an invalid character).  IBM rules:
+ * 1-8 chars; first char a letter (A-Z) or national (@ # $), not a digit;
+ * remaining chars letters, digits, or national.
+ */
+int mvs_member_name_valid(const char *member);
+
 
 /* -------------------------------------------------------------------- */
 /* Bytes and special string handling                                    */

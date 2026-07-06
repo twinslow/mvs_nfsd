@@ -13,15 +13,64 @@
 #include "logger.h"
 
 /* -------------------------------------------------------------------- */
-/* Is c a valid character for a PDS member name?  (Operates on the       */
-/* upper-cased, EBCDIC character.)  Valid: A-Z, 0-9, and the national    */
-/* characters @ # $.  isalnum() is EBCDIC-aware under JCC.               */
+/* mvs_member_name_valid: validate a PDS member name (the upper-cased    */
+/* form, as it would be stored in the directory).  IBM rules:            */
+/*   - 1 to 8 characters;                                                */
+/*   - first character a letter (A-Z) or a national character (@ # $)    */
+/*     -- NOT a digit;                                                   */
+/*   - remaining characters letters, digits (0-9), or national chars;    */
+/*   - no lowercase, no other special characters (e.g. '-', '.', ' ').   */
+/*                                                                       */
+/* Returns 0 if valid, otherwise an errno describing the fault:          */
+/*   ENAMETOOLONG -- more than 8 characters                              */
+/*   EINVAL       -- empty, starts with a digit, or has an invalid char  */
+/*                                                                       */
+/* Callers upper-case the client filename before validating, so a name   */
+/* containing lowercase reaches here as non-upper and is rejected.       */
+/* Implemented with isalnum()/toupper() only -- isupper()/isdigit() do    */
+/* NOT classify EBCDIC correctly under JCC; the national-char literals    */
+/* are EBCDIC on MVS.                                                     */
 /* -------------------------------------------------------------------- */
-static int member_char_ok(unsigned char c)
+int mvs_member_name_valid(const char *member)
 {
-    if (c == '@' || c == '#' || c == '$')
-        return 1;
-    return isalnum(c) ? 1 : 0;
+    size_t        len;
+    size_t        i;
+    unsigned char c;
+
+    len = strlen(member);
+    if (len == 0)
+        return EINVAL;
+    if (len > 8)
+        return ENAMETOOLONG;
+
+    for (i = 0; i < len; i++) {
+        c = (unsigned char)member[i];
+
+        /* National characters (@ # $) are always allowed. */
+        if (c == '@' || c == '#' || c == '$')
+            continue;
+
+        /* Otherwise it must be a letter or digit.  We use only isalnum() and
+           toupper() here -- the ctype routines this codebase already relies
+           on under JCC/EBCDIC -- and avoid isupper()/isdigit(), which do NOT
+           classify EBCDIC correctly under JCC (they let a leading digit slip
+           through so the STOW then failed on MVS). */
+        if (!isalnum(c))
+            return EINVAL;                 /* '-', '.', ' ', '/', ... */
+
+        /* Member names are stored upper-case: reject a lowercase letter.
+           If upper-casing changes the character, it was lowercase. */
+        if ((unsigned char)toupper(c) != c)
+            return EINVAL;
+
+        /* Digits 0-9 are contiguous in both ASCII and EBCDIC, so this range
+           test is portable and does not need isdigit().  The first character
+           must not be a digit. */
+        if (i == 0 && c >= '0' && c <= '9')
+            return EINVAL;
+    }
+
+    return 0;
 }
 
 
@@ -127,7 +176,6 @@ int mvs_get_pds_dsn_and_member(
     char           file_ext[MAX_FILE_EXT_LEN];
     char          *last_slash;
     char          *last_dot;
-    size_t         member_name_len;
     size_t         i;
     int            retcode = 0;
 
@@ -173,34 +221,33 @@ int mvs_get_pds_dsn_and_member(
         *last_dot = '\0';
     }
 
-    /* The leaf (extension stripped) must be a valid PDS member name.  We do
-       NOT silently truncate an over-length name: distinct files such as
-       "report01a" and "report01b" would both collapse to the same 8-char
-       member and overwrite each other with no error.  Reject instead, with a
-       specific errno so each NFS op maps it to the right status:
-         > 8 chars      -> ENAMETOOLONG (NFS3ERR_NAMETOOLONG)
-         invalid char   -> EINVAL       (NFS3ERR_INVAL)
-       The member name is the upper-cased leaf. */
-    member_name_len = strlen(file_name);
-    if (member_name_len == 0) {
-        errno = ENOENT;
+    /* The leaf (extension stripped) becomes the member name.  Upper-case it,
+       then validate it as a PDS member name -- we reject rather than silently
+       truncate/mangle, so distinct files such as "report01a" and "report01b"
+       cannot collapse to the same 8-char member and overwrite each other. */
+    for (i = 0; file_name[i] != '\0'; i++)
+        file_name[i] = (char)toupper((unsigned char)file_name[i]);
+
+    retcode = mvs_member_name_valid(file_name);
+    if (retcode != 0) {
+        /* mvs_member_name_valid() reports the precise fault (ENAMETOOLONG for
+           length, EINVAL for a bad/leading-digit char) -- logged below for
+           diagnostics.  But we surface every "can't be a member name" case to
+           the client as ENAMETOOLONG (-> NFS3ERR_NAMETOOLONG): Windows maps
+           NFS3ERR_INVAL to the confusing "The volume for a file has been
+           externally altered..." message, whereas NAMETOOLONG gives the clear
+           "The filename or extension is too long." which points the user at
+           the target filename -- the thing they actually need to fix. */
+        log_debug("mvs_get_pds_dsn_and_member: invalid member name '%s' (errno %d)"
+                  " -> reporting ENAMETOOLONG", file_name, retcode);
+        errno   = ENAMETOOLONG;
         retcode = -1;
         goto return_exit;
     }
-    if (member_name_len > 8) {
-        errno = ENAMETOOLONG;
-        retcode = -1;
-        goto return_exit;
-    }
-    for (i = 0; i < member_name_len; i++) {
-        pds_member_name[i] = (char)toupper((unsigned char)file_name[i]);
-        if (!member_char_ok((unsigned char)pds_member_name[i])) {
-            errno = EINVAL;
-            retcode = -1;
-            goto return_exit;
-        }
-    }
-    pds_member_name[member_name_len] = '\0';
+
+    /* Valid, so <= 8 characters -- copy to the caller's 9-byte buffer. */
+    strncpy(pds_member_name, file_name, 8);
+    pds_member_name[8] = '\0';
 
     /* Validate the extension against this dataset's expected extension.
        Case of the extension does not matter.

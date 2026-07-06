@@ -96,6 +96,18 @@ This is a small test file for NFS: Line 10
 X:\temp.testproj.cntl>
 ```
 
+## Test 1W.05 - Copy to a file with a file name that is an invalid member name
+
+|Target file name|Result                                         |Pass/Fail|
+|----------------|-----------------------------------------------|---------|
+|test12345.cntl  | The filename or extension is too long         | Pass    |
+|1test.cntl      | Copied!                                       | Fail    |
+|test-1.cntl     | The volume for a file has been externally altered so that the opened file is no longer valid.                           | ??        |
+|test_1.cntl     | As above                                       |         |
+|test1.2.cntl    |                                               |         |
+
+copy c:\Users\tony_\dev\test1.cntl 
+
 
 # Testing Linux
 

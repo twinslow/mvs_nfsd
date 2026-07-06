@@ -200,6 +200,25 @@ static MunitResult test_member_exactly_8_ok(const MunitParameter params[], void 
     return MUNIT_OK;
 }
 
+/* A base name that starts with a digit is rejected (member names cannot
+   begin with a digit).  This is the case that slipped through on MVS. */
+static MunitResult test_member_leading_digit_rejected(const MunitParameter params[], void *data)
+{
+    char dsname[MAX_PATH];
+    char member[9];
+    int  result;
+    (void)params; (void)data;
+
+    dsname[0] = '\0'; member[0] = '\0';
+    errno = 0;
+    result = mvs_get_pds_dsn_and_member(
+                 "/dinonfs/src/temp.dinonfs.c/1test.c", dsname, member, 0);
+
+    munit_assert_int(result, ==, -1);
+    munit_assert_int(errno,  ==, ENAMETOOLONG);   /* coarsened for the client */
+    return MUNIT_OK;
+}
+
 /* A base name with an invalid member character (a hyphen) is rejected. */
 static MunitResult test_member_invalid_char_rejected(const MunitParameter params[], void *data)
 {
@@ -214,7 +233,11 @@ static MunitResult test_member_invalid_char_rejected(const MunitParameter params
                  "/dinonfs/src/temp.dinonfs.c/my-file.c", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
-    munit_assert_int(errno,  ==, EINVAL);
+    /* The validator flags this as EINVAL internally, but the path helper
+       coarsens every "not a valid member name" fault to ENAMETOOLONG so the
+       Windows client shows the clear "filename or extension is too long"
+       message rather than the confusing NFS3ERR_INVAL one. */
+    munit_assert_int(errno,  ==, ENAMETOOLONG);
     return MUNIT_OK;
 }
 
@@ -308,8 +331,61 @@ static MunitResult test_no_ext_restriction_accepts_any(const MunitParameter para
 }
 
 /* ======================================================================
+ * mvs_member_name_valid() -- direct, dependency-free tests of the
+ * PDS member-name rules (1-8 chars; first char A-Z or @ # $, not a
+ * digit; remaining A-Z / 0-9 / @ # $; no lowercase or other specials).
+ * ====================================================================== */
+
+/* Valid member names return 0. */
+static MunitResult test_mnv_valid(const MunitParameter params[], void *data)
+{
+    (void)params; (void)data;
+    munit_assert_int(mvs_member_name_valid("A"),        ==, 0);  /* min length */
+    munit_assert_int(mvs_member_name_valid("ABC"),      ==, 0);
+    munit_assert_int(mvs_member_name_valid("ABCDEFGH"), ==, 0);  /* max length 8 */
+    munit_assert_int(mvs_member_name_valid("A1B2C3D4"), ==, 0);  /* digits after first */
+    munit_assert_int(mvs_member_name_valid("@ABC"),     ==, 0);  /* national first */
+    munit_assert_int(mvs_member_name_valid("#JOB"),     ==, 0);
+    munit_assert_int(mvs_member_name_valid("$SYS1"),    ==, 0);
+    munit_assert_int(mvs_member_name_valid("AB@#$"),    ==, 0);  /* national in rest */
+    return MUNIT_OK;
+}
+
+/* Over-length names return ENAMETOOLONG. */
+static MunitResult test_mnv_too_long(const MunitParameter params[], void *data)
+{
+    (void)params; (void)data;
+    munit_assert_int(mvs_member_name_valid("ABCDEFGHI"),    ==, ENAMETOOLONG); /* 9 */
+    munit_assert_int(mvs_member_name_valid("ABCDEFGHIJKL"), ==, ENAMETOOLONG); /* 12 */
+    return MUNIT_OK;
+}
+
+/* Empty / leading-digit / lowercase / bad-character names return EINVAL. */
+static MunitResult test_mnv_invalid(const MunitParameter params[], void *data)
+{
+    (void)params; (void)data;
+    munit_assert_int(mvs_member_name_valid(""),     ==, EINVAL);  /* empty */
+    munit_assert_int(mvs_member_name_valid("1ABC"), ==, EINVAL);  /* leading digit */
+    munit_assert_int(mvs_member_name_valid("9"),    ==, EINVAL);  /* single digit */
+    munit_assert_int(mvs_member_name_valid("abc"),  ==, EINVAL);  /* lowercase */
+    munit_assert_int(mvs_member_name_valid("Abc"),  ==, EINVAL);  /* mixed case */
+    munit_assert_int(mvs_member_name_valid("A-BC"), ==, EINVAL);  /* hyphen */
+    munit_assert_int(mvs_member_name_valid("A.BC"), ==, EINVAL);  /* dot */
+    munit_assert_int(mvs_member_name_valid("A BC"), ==, EINVAL);  /* space */
+    munit_assert_int(mvs_member_name_valid("A/B"),  ==, EINVAL);  /* slash */
+    return MUNIT_OK;
+}
+
+/* ======================================================================
  * Suite tables
  * ====================================================================== */
+
+static MunitTest member_name_valid_tests[] = {
+    { "/valid",     test_mnv_valid,    NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/too_long",  test_mnv_too_long, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/invalid",   test_mnv_invalid,  NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
 
 static MunitTest dsname_tests[] = {
     { "/dsname_from_dataset", test_dsname_from_dataset, setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
@@ -327,6 +403,7 @@ static MunitTest member_tests[] = {
     { "/member_uppercased",        test_member_uppercased,           setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/member_too_long_rejected", test_member_too_long_rejected,    setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/member_exactly_8_ok",      test_member_exactly_8_ok,         setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/member_leading_digit",     test_member_leading_digit_rejected, setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/member_invalid_char",      test_member_invalid_char_rejected, setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/member_no_extension",      test_member_no_extension,         setup_no_ext,   NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
@@ -341,6 +418,7 @@ static MunitTest extension_tests[] = {
 };
 
 static MunitSuite sub_suites[] = {
+    { "/member_name_valid", member_name_valid_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/dsname",       dsname_tests,       NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/dataset_path", dataset_path_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/member",       member_tests,       NULL, 1, MUNIT_SUITE_OPTION_NONE },
