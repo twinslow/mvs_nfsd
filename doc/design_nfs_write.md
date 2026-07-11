@@ -298,15 +298,117 @@ boundaries, EBCDIC→ASCII).  Write does the inverse, driven by the dataset's
   text-mode runtime treats as the record delimiter (verify during
   implementation — the read path's record→`\n` mapping is the reference).
 
+## 9.1 ISPF statistics (set at STOW)
+
+A member written through NFS should look native in ISPF — with version/mod
+level, creation/changed dates, line counts and a "changed by" id in the member
+list (ISPF 3.4). These live in the PDS **directory user data**, which is
+exactly what the read path already decodes in `mvs_extract_ispf_stats`
+(`src/mvspdir.c`). Write is the inverse: build that user data and hand it to
+`STOW`.
+
+**Mechanism.** JCC's `__setstow(handle, buffer, length, ttrn)` is *meant* to
+record directory user data for the `STOW` that `fclose` performs, but it does
+**not work for an FB PDS member opened through JCC's stdio path** — it returns
+`-1`/`EINVAL`. This was ruled out empirically on MVS 3.8J: with the handle from
+`_fileno()` confirmed (via `__get_ddndsnmemb`) to be the correct member, the
+DCB open (post-`fflush`), and every argument inside its documented range
+(`length` = 30, even, 0–62; `ttrn` = 0, 0–3), it still rejected the call. This
+matches the JCC doc's warning that "not all file types allow user-data"; the
+routine appears intended for load-library members, not FB source members.
+
+So the stats are applied by two small **assembler helpers** (prototypes in
+`src/asmutils.h`), called from `pww_flush_slot` **after** `fclose` has stowed
+the member (the member must already exist in the directory):
+
+1. `mvs_dynalloc(ALLOC, FREE=CLOSE, dsname, member, ddname)` (`src/mvsdalc.asm`)
+   — dynamically allocates the PDS `DISP=SHR` via SVC 99 and returns its
+   system-assigned ddname. `FREE=CLOSE` means the allocation is freed when the
+   dataset is closed, so no explicit unallocate is needed.
+2. `mvs_stow(ddname, member, userdata, len)` (`src/mvsstow.asm`) — opens that
+   ddname (`DSORG=PO`), does `BLDL` to get the member's `TTR`, **`FIND` by that
+   TTR to position the DCB on the existing member**, then `STOW TYPE=REPLACE`
+   with the 30-byte user data, and closes (which also frees the allocation).
+
+The `FIND` step is the crux: `STOW ADD/REPLACE` stamps the directory entry with
+the DCB's *current* position, not the TTR in the list. Positioning to the
+member's own TTR first means the entry is rewritten **in place** — same TTR, no
+member rewrite, no orphaned blocks — while the user data is replaced. (`STOW
+TYPE=C` is a rename, not a user-data edit, so it can't be used here.)
+
+MVS-only (`#ifdef __MVS__`); a failure is logged once and is not fatal — the
+member content is still valid, it just lacks stats. The MVS external names are
+`MVSDALC`/`MVSSTOW` (aliased from the C names in `asmutils.h`).
+
+**Format** — 30-byte non-extended ISPF user data, the strict inverse of
+`mvs_extract_ispf_stats`, produced by `mvs_encode_ispf_stats`:
+
+| Off | Len | Field | Encoding |
+|----|----|----|----|
+| 0  | 1 | version         | 1-byte **binary** |
+| 1  | 1 | mod level       | 1-byte **binary** |
+| 2  | 1 | flags           | `0x00` (non-extended) |
+| 3  | 1 | changed seconds | packed BCD |
+| 4  | 4 | created date    | packed decimal `0CYYDDDF` |
+| 8  | 4 | changed date    | packed decimal `0CYYDDDF` |
+| 12 | 2 | changed time    | BCD `HH MM` |
+| 14 | 2 | current size (lines) | native `uint16` |
+| 16 | 2 | init size       | native `uint16` |
+| 18 | 2 | mod count       | native `uint16` |
+| 20 | 8 | userid          | EBCDIC, blank-padded |
+| 28 | 2 | reserved        | `0x0000` |
+
+Dates are encoded from the stored `time_t` via `gmtime` (the codebase treats
+MVS time as UTC throughout); the size fields are stored native-endian to
+mirror the decoder's `*(unsigned short *)` read, so encode/decode round-trip on
+both the EBCDIC target and the little-endian test host.
+
+**Update rules** (`mvs_build_write_stats`), applied on each flush:
+
+- The member's current directory entry is read via `mvs_pds_get_member_entry`
+  **before** the member is opened for output, so the PDS is never open for
+  input and output at the same time.
+- **New member** (not yet on disk): version/mod `01`, created = now, changed =
+  now, init size = current size = line count, mod count 0, id `NFSD`.
+- **Existing member that has ISPF stats:** keep version, created date, init
+  size, mod count and **id**; set changed = now and current size = line count;
+  **increment the mod level, capped at 99**.
+- **Existing member with no ISPF stats:** left as-is — no stats are fabricated
+  (the member is stowed without user data).
+
+**Line count** (`mvs_ispf_count_lines`) is the number of records the member
+will have: one per LF, plus a final record for a trailing partial line. It is
+counted on the **ASCII** pending buffer, so it tests for `0x0A` — not `'\n'`,
+which is the EBCDIC newline under JCC.
+
+**Decisions (confirmed):**
+
+- Version and mod level are stored as **binary**, not packed BCD (identical for
+  values < 10; verify against a real member with mod ≥ 10).
+- On rewrite of an existing member the **original id is kept** (ISPF's field is
+  conventionally the last modifier, but the requirement is to preserve it).
+
+**Limitations / future:**
+
+- Only **non-extended** (16-bit) stats are written; a line count over 65,535 is
+  clamped. Such members are outside the Phase 1 256 KB cap for realistic line
+  lengths; emitting extended (32-bit) stats is a later option.
+- Each flush does one directory read to fetch prior stats. Flushes are
+  infrequent (COMMIT / idle / evict / shutdown), so this is acceptable.
+
+Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
+`tests/tmvsio3.c` (`/count_lines`, `/encode` round-trip, `/build_stats`).
+
 ## 10. Files impacted
 
 | File | Change |
 |------|--------|
-| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all |
+| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all; after flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1) |
+| `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 dynamic allocation (`mvs_dynalloc`) and BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); C prototypes + `MVSDALC`/`MVSSTOW` name aliases in `asmutils.h` |
 | `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible |
 | `src/nfs3.c` | `proc_write` → reply `UNSTABLE`; `proc_commit` → flush the member then reply; `proc_create` unchanged in shape |
 | `src/nfsd.c` | Call `pww_flush_idle()` after `select()`; flush-all on STOP before shutdown; strengthen the write verifier (JES job id / boot counter) |
-| `src/mvspdir.c` (maybe) | A member-write/`STOW` helper if not already covered by `fopen("wt")…fclose` |
+| `src/mvspdir.c` / `.h` | ISPF-stats encode + update helpers (§9.1): `mvs_ispf_count_lines`, `mvs_encode_ispf_stats`, `mvs_build_write_stats` |
 | `nfsd.conf` / README | Note write support + any new tunables (cap, idle timeout) |
 
 ## 11. Open questions / prerequisite tests

@@ -15,9 +15,11 @@
 
 #include "nfsd.h"
 #include "mvspww.h"
+#include "mvspdir.h"
 #include "mvsdol.h"
 #include "ebcdic.h"
 #include "logger.h"
+#include "asmutils.h"    /* MVS assembler helpers: mvs_dynalloc(), mvs_stow() */
 
 /* -------------------------------------------------------------------- */
 /* Static pool of pending members                                        */
@@ -86,6 +88,24 @@ static int pww_flush_slot(pending_member_t *pm)
     uint32_t n;
     size_t   w;
 
+    pds_member_entry_t  existing_ent;
+    pds_member_entry_t *existing;
+    pds_member_entry_t  new_stats;
+    uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
+    int                 want_stats;
+    int32_t             line_count;
+
+    /* Read the member's current directory entry (if any) BEFORE opening it
+       for output, so we never have the PDS open for input and output at once.
+       NULL => the member does not yet exist (a new member). */
+    existing = mvs_pds_get_member_entry(pm->dsname_ebcdic, pm->member_name,
+                                        pm->export_idx, &existing_ent);
+
+    /* Decide the ISPF stats to STOW (count records from the ASCII buffer). */
+    line_count = mvs_ispf_count_lines(pm->buf, pm->high_water);
+    want_stats = mvs_build_write_stats(&new_stats, existing, line_count,
+                                       time(NULL));
+
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
 
     fh = fopen(path, "wt");        /* text mode: record per '\n', STOW on close */
@@ -117,6 +137,56 @@ static int pww_flush_slot(pending_member_t *pm)
     pm->dirty = 0;
     log_info("pww_flush_slot: stowed %s(%s), %u bytes",
         pm->dsname_ebcdic, pm->member_name, pm->high_water);
+
+#ifdef __MVS__
+    /* Apply ISPF statistics.  This runs AFTER the member has been stowed by
+       fclose, because mvs_stow() does BLDL+FIND+STOW REPLACE and so needs the
+       member to already exist in the directory.  (JCC's __setstow() cannot do
+       this for an FB member opened through stdio -- it returns EINVAL.)
+
+       Two assembler helpers: mvs_dynalloc() dynamically allocates the PDS
+       (DISP=SHR, FREE=CLOSE) and returns its system-assigned ddname; mvs_stow()
+       opens that ddname, patches the directory user-data, and closes it -- and
+       because the allocation is FREE=CLOSE, that close also frees it, so no
+       explicit unallocate is needed.
+
+       The allocation is dataset-level -- member is passed as NULL so the PDS is
+       allocated without a member qualifier (BLDL/FIND/STOW work on the
+       directory; mvs_stow() gets the member name for the BLDL separately). */
+    if (want_stats) {
+        char ddname[9];
+        int  rc;
+
+        mvs_encode_ispf_stats(&new_stats, stats_ud);
+
+        ddname[0] = '\0';
+        rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, MVS_DYNALLOC_OPT_FREECLOSE,
+                          pm->dsname_ebcdic, NULL, ddname);
+        if (rc == 0) {
+            ddname[8] = '\0';   /* dynalloc returns 8 blank-padded chars */
+            rc = mvs_stow(ddname, pm->member_name,
+                          stats_ud, (int)MVS_ISPF_STATS_LEN);
+        } else {
+            log_debug("pww_flush_slot: mvs_dynalloc failed for %s (rc=%d)",
+                pm->dsname_ebcdic, rc);
+        }
+
+        if (rc != 0) {
+            static int stats_warned = 0;
+            if (!stats_warned) {
+                stats_warned = 1;
+                log_warn("pww_flush_slot: ISPF stats update failed for %s(%s)"
+                         " (rc=%d) -- members stowed without ISPF stats"
+                         " (further warnings suppressed)",
+                         pm->dsname_ebcdic, pm->member_name, rc);
+            }
+        }
+    }
+#else
+    (void)want_stats;
+    (void)new_stats;
+    (void)stats_ud;
+#endif
 
     /* The PDS directory just changed: bump its mtime so clients invalidate
        their cached listing, and drop our own cached listing so the next

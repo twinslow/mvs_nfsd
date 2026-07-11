@@ -69,6 +69,36 @@ void mvs_extract_ispf_stats(
 
 void mvs_set_no_ispf_stats(pds_member_entry_t *entry);
 
+/* Length (bytes) of the non-extended ISPF statistics user-data area.
+   15 halfwords -- must be even and <= 62 for __setstow(). */
+#define MVS_ISPF_STATS_LEN   30
+
+/* Count the text records an ASCII buffer will produce when written to a
+   PDS member: one per LF (0x0A), plus a final record if the buffer is
+   non-empty and does not end in LF.  (The buffer is ASCII here -- it is
+   translated to EBCDIC only at fwrite time -- so LF is 0x0A, NOT '\n',
+   which would be the EBCDIC newline under JCC.) */
+int32_t mvs_ispf_count_lines(const uint8_t *buf, uint32_t len);
+
+/* Encode 'entry' into the 30-byte non-extended ISPF user-data area -- the
+   strict inverse of mvs_extract_ispf_stats().  ver/mod are stored as 1-byte
+   binary; size fields as native uint16 (clamped to 0xFFFF); dates as packed
+   decimal via gmtime().  Returns MVS_ISPF_STATS_LEN. */
+int mvs_encode_ispf_stats(const pds_member_entry_t *entry, uint8_t *userdata);
+
+/* Build the ISPF stats to STOW when writing a member.  'existing' is the
+   member's current directory entry, or NULL for a brand-new member.  Fills
+   '*entry' with the stats to write and returns 1 if stats should be set, or
+   0 if not (an existing member that had no ISPF stats is left without any).
+   Rules: new -> ver/mod 01, created=now, init size=lines, id "NFSD";
+   existing-with-stats -> keep ver/created/init/mod-count/id, bump changed to
+   now, size=lines, modification level +1 (capped at 99). */
+int mvs_build_write_stats(
+    pds_member_entry_t        *entry,
+    const pds_member_entry_t  *existing,
+    int32_t                    line_count,
+    time_t                     now);
+
 /* -------------------------------------------------------------------- */
 /* Directory entry parsing                                              */
 /* -------------------------------------------------------------------- */

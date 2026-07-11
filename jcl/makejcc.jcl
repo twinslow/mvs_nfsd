@@ -13,6 +13,9 @@
 //* is upper case -O, then compiler outputs ASM source and not object 
 //* code.
 //********************************************************************
+//*-------------------------------------------------------------------
+//* Proc to compile a C module using JCC into object code
+//*-------------------------------------------------------------------
 //JCCCMOD PROC SOUT='*',JCC='JCC',
 //          INFILE='TONYW.DINONFS.C',
 //          OBJFILE='TONYW.DINONFS.OBJLIB',
@@ -34,16 +37,55 @@
 //*
 //JCCCMOD  PEND
 //*
+//*-------------------------------------------------------------------
+//* Proc to assemble a module using ASMF into the load library
+//*-------------------------------------------------------------------
+//ASMMOD   PROC SOUT='*',
+//          ASMOPTS='OBJ,NODECK',
+//          MAC='SYS1.MACLIB',
+//          MAC1='SYS1.AMODGEN',
+//          MAC2='TONYW.DINONFS.ASM',
+//          MAC3='SYS2.MACLIB',
+//          SRCLIB='TONYW.DINONFS.ASM',
+//          LOADLIB='TONYW.DINONFS.LOAD',
+//          MODULE='XXXXX'
+//*
+//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K                    
+//SYSLIB   DD   DSN=&MAC,DISP=SHR                                  
+//         DD   DSN=&MAC1,DISP=SHR                                 
+//         DD   DSN=&MAC2,DISP=SHR                                 
+//         DD   DSN=&MAC3,DISP=SHR                                 
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),    
+//             SEP=(SYSLIB)                                        
+//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),     
+//             SEP=(SYSLIB,SYSUT1)                                 
+//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))      
+//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089                      
+//SYSPUNCH DD   SYSOUT=&SOUT                                           
+//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),       
+//             DISP=(MOD,PASS)
+//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)             
+//*                                     
+//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,    
+//             COND=(8,LT,ASM)                                     
+//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)                     
+//*         DD   DDNAME=SYSIN                                       
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),    
+//             SPACE=(1024,(50,20))                                
+//SYSPRINT DD   SYSOUT=&SOUT
+//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)          
+//*
+//ASMMOD   PEND
+//*
 //********************************************************************
 //*
 //* ASSEMBLE MODULES
 //*
 //********************************************************************
-//GETCIB EXEC ASMFCL,MAC1='SYS1.AMODGEN',MAC2='SYS2.MACLIB', 
-//        PARM.ASM=(OBJ,NODECK)                              
-//ASM.SYSPUNCH DD SYSOUT=*                                   
-//ASM.SYSIN    DD DISP=SHR,DSN=TONYW.DINONFS.ASM(GETCIB)     
-//LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD(GETCIB)
+//*
+//GETCIB   EXEC ASMMOD,MODULE=GETCIB
+//MVSDALC  EXEC ASMMOD,MODULE=MVSDALC
+//MVSSTOW  EXEC ASMMOD,MODULE=MVSSTOW
 //*
 //********************************************************************
 //*
@@ -116,5 +158,7 @@
 //LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD                    
 //LKED.SYSIN DD *                                                    
     INCLUDE SYSLMOD(GETCIB)                                          
+    INCLUDE SYSLMOD(MVSDALC)                                         
+    INCLUDE SYSLMOD(MVSSTOW)                                         
     NAME NFSD(R)                                                     
 //                                                                    

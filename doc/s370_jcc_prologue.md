@@ -16,6 +16,8 @@ area convention and the JCC compiler's dynamic C stack.
 ## Example Routine Entry
 
 ```asm
+* Copied from FTPSU routine, part of FTPD.
+* By Juergen Winkelmann, ETH Zuerich. 
 FTPSU    CSECT ,                start of program
          STM   R14,R12,12(R13)  save registers
          L     R2,8(,R13)       \
@@ -30,25 +32,33 @@ F1       DS    0H                  /
          DC    F'96'              /
          STM   R12,R14,0(R2)     /
          LR    R13,R2           /
+*
          LR    R12,R15          establish module addressability
          USING FTPSU,R12        tell assembler of base
 ```
 
+This same routine entry code can be seen as the entry code in JCC compiled
+functions. The stack frame size being used for a C function with no local
+variables is 84 bytes. The usage of byte offsets 72 through 83 has not been
+determined.
+
+The above has been implemented in a macro, `JCCPROLG`.
 ---
 
 ## Background: What JCC Keeps in R13
 
-In standard MVS assembler, R13 points to a static 18-fullword (72-byte) save area.
-JCC uses a different model: R13 points to a **dynamic stack frame** with this
-layout:
+In standard MVS assembler, R13 points to a static 18-fullword (84 bytes) save area. 
+JCC uses a different model: R13 points to a **dynamic stack frame** with this layout
+which is 84 bytes or more, allocated in a multiple of full words:
 
 | Offset | Contents |
-|---|---|
-| 0  | Pointer to the **Stack Control Block (SCB)** — same value in every frame |
-| 4  | **Back chain** — pointer to the calling frame |
-| 8  | **Forward chain** — pointer to the next available stack space |
-| 12–68 | Saved registers R14, R15, R0–R12 (standard MVS offsets) |
-| 72–95 | Local C variables for this frame |
+|--------|--------------------------------------------------------------------------|
+| 0      | Pointer to the **Stack Control Block (SCB)** — same value in every frame |
+| 4      | **Back chain** — pointer to the calling frame |
+| 8      | **Forward chain** — pointer to the next available stack space |
+| 12–68  | Saved registers R14, R15, R0–R12 (standard MVS offsets) |
+| 72–83  | Reserved ... usage unknown |
+| 84-    | **Local storage** for C variables, parameter lists etc. |
 
 The SCB itself contains:
 
@@ -92,7 +102,9 @@ LA    R14,96(,R2)
 ```
 
 Calculate the **end address** of our proposed 96-byte frame (`frame_start + 96`).
-This value will be compared against the stack limit to detect overflow.
+This value will be compared against the stack limit to detect overflow. In this
+example an additional 12 bytes of local storage is being requested in the stack
+frame `84 + 12 = 96`.
 
 ---
 
@@ -208,8 +220,9 @@ caller's frame  ◄── R13 on entry to our routine
 │ SCB ptr         │  offset  0
 │ back chain      │  offset  4  (points to caller's caller)
 │ fwd chain ──────┼──────────────────────────────────┐
-│ saved regs      │  offsets 12–68                   │
-│ locals          │  offsets 72–95                   │
+│ saved regs      │  offsets 12–71                   │
+│ reserved        │  offsets 72–83                   │
+│ locals          │  offsets 84–                     │
 └─────────────────┘                                  │
                                                      ▼
                                           our new frame  ◄── R13 on exit
@@ -217,8 +230,9 @@ caller's frame  ◄── R13 on entry to our routine
                                           │ SCB ptr         │  offset  0
                                           │ back chain ─────┼──► caller's frame
                                           │ fwd chain ──────┼──► R2+96 (next free)
-                                          │ saved regs      │  offsets 12–68
-                                          │ locals          │  offsets 72–95
+                                          │ saved regs      │  offsets 12–71
+                                          │ reserved        │  offsets 72–83
+                                          │ locals          │  offsets 84–95
                                           └─────────────────┘
 ```
 
@@ -230,8 +244,9 @@ The frame size in this example is **96 bytes**, broken down as:
 
 | Region | Size |
 |---|---|
-| Standard MVS save area (18 fullwords) | 72 bytes |
-| Local C variables and extra linkage data | 24 bytes |
+| Standard MVS save area (18 fullwords)      | 72 bytes |
+| 3 additional full words - reserved         | 12 bytes |
+| Local C variables and extra linkage data   | 12 bytes |
 | **Total** | **96 bytes** |
 
 The size embedded in the `DC F'96'` instruction parameter must match the actual
@@ -252,6 +267,7 @@ RETURN   L     R13,4(,R13)      reload caller's frame address (back chain)
 The epilogue follows the back chain at offset 4 to restore the caller's R13, then
 reloads the saved registers from the caller's frame at their standard offsets.
 
+The above has been implemented in a macro, `JCCRETRN`.
 ---
 
 ## Register Usage Summary

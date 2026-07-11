@@ -1,6 +1,7 @@
          TITLE 'GETCIB - MVS STOP Command Checker'
          PRINT GEN
-GETCIB   CSECT
+         YREGS
+GETCIB   CSECT 
 ***********************************************************************
 *                                                                     *
 * GETCIB - Inspect the MVS CIB queue for a STOP (P) command           *
@@ -35,26 +36,10 @@ GETCIB   CSECT
 *   your specific MVS level if the STC check behaves unexpectedly.    *
 *                                                                     *
 ***********************************************************************
-         YREGS
 ***********************************************************************
-*  Entry and save-area linkage                                        *
+*  Entry and stack frame linkage                                      *
 ***********************************************************************
-*
-* This code was copied from FTPLOGIN by Juergen Winkelmann, ETH Zuerich
-*
-         STM   R14,R12,12(R13)  save registers                        
-         L     R2,8(,R13)       \                                     
-         LA    R14,96(,R2)       \                                    
-         L     R12,0(,R13)        \                                   
-         CL    R14,4(,R12)         \                                  
-         BL    F1-GETCIB+4(,R15)    \                                 
-         L     R10,0(,R12)           \ save area chaining             
-         BALR  R11,R10               / and JCC prologue               
-         CNOP  0,4                  /                                 
-F1       DS    0H                  /                                  
-         DC    F'96'              /                                   
-         STM   R12,R14,0(R2)     /                                    
-         LR    R13,R2           /                                     
+         JCCPROLG FRAME=96
          LR    R12,R15          establish module addressability       
          USING GETCIB,R12       tell assembler of base                
          ST    R1,PARMLIST      Save the callers parameter list addr 
@@ -214,38 +199,31 @@ MVCINSTR MVC   0(0,R3),CIBDATA       Copy the CIB data (via EX)
 *
 RETTWO   DS    0H
 *        WTO   'CIBGET: STOP command received - RC=1'
-         L     R13,4(,R13)           Restore caller's save area ptr
-         LM    R14,R12,12(R13)       Restore caller's R14 through R12
          LA    R15,2                 Return code = 2
-         BR    R14                   Return to caller
+         B     RETURN                Return to caller
 *
 *  Return 1 - STOP command was received
 *
 RETONE   DS    0H
 *        WTO   'CIBGET: MODIFY command received - RC=2'
-         L     R13,4(,R13)           Restore caller's save area ptr
-         LM    R14,R12,12(R13)       Restore caller's R14 through R12
          LA    R15,1                 Return code = 1
-         BR    R14                   Return to caller
-*
+         B     RETURN                Return to caller
+
 *  Return 0 - no STOP command pending
 *
 RETZ     DS    0H
 *        WTO   'CIBGET: No STOP command pending - RC=0'
-         L     R13,4(,R13)
-         LM    R14,R12,12(R13)
          SLR   R15,R15               Return code = 0
-         BR    R14
-*
+         B     RETURN                Return to caller
+
 *  Return -1 - not a started task
 *    LA can only load non-negative values; negate 1 to obtain -1.
 *
 RETMIN1  DS    0H
 *        WTO   'CIBGET: Not a STC - RC=-1'
-         L     R13,4(,R13)
-         LM    R14,R12,12(R13)
-         L     R15,=F'-1'            Load R15 with -1
-         BR    R14
+         L     R15,=F'-1'            And fall through to return
+*
+RETURN   JCCRETRN                    Restore regs and return
 *
 ***********************************************************************
 *  Static working storage and macros                                  *
@@ -262,6 +240,7 @@ CSCL     DSECT
 CIB      DSECT
          IEZCIB                      Macro for CIB DSECT
 *
+         PRINT NOGEN
          CVT DSECT=YES               Mapping for CVT
          IHAPSA                      Macro for PSA
          IEZJSCB                     Macro for JSCB 

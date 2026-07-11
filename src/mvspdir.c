@@ -385,8 +385,149 @@ void mvs_set_no_ispf_stats(pds_member_entry_t *entry) {
     entry->chgdate = (int32_t)tv.tv_sec;
 }
 
+/* -------------------------------------------------------------------- */
+/* ISPF stats ENCODING (inverse of mvs_extract_ispf_stats)              */
+/* -------------------------------------------------------------------- */
+
+/* One byte of packed decimal from a value 0..99. */
+static uint8_t int_to_bcd(int v)
+{
+    return (uint8_t)((((v / 10) % 10) << 4) | (v % 10));
+}
+
+/* Pack a UTC time_t's DATE into 4 bytes as 0C YY DD DF (see the decoder in
+   convert_ispf_datetime()).  The low nibble of byte 3 is the packed-decimal
+   sign; the decoder ignores it, we write 0x0F. */
+static void ispf_pack_date(time_t t, uint8_t *out)
+{
+    struct tm *tm_p;
+    int        year;
+    int        ddd;
+
+    tm_p = gmtime(&t);
+    year = tm_p->tm_year + 1900;
+    ddd  = tm_p->tm_yday + 1;               /* tm_yday is 0-based */
+
+    out[0] = int_to_bcd((year - 1900) / 100);   /* centuries since 1900 */
+    out[1] = int_to_bcd((year - 1900) % 100);   /* year within century  */
+    out[2] = int_to_bcd(ddd / 10);              /* first digits of ddd  */
+    out[3] = (uint8_t)(((ddd % 10) << 4) | 0x0F);
+}
+
+int32_t mvs_ispf_count_lines(const uint8_t *buf, uint32_t len)
+{
+    uint32_t i;
+    int32_t  lines = 0;
+
+    if (buf == NULL || len == 0)
+        return 0;
+
+    for (i = 0; i < len; i++) {
+        if (buf[i] == 0x0A)       /* ASCII LF -- buffer is ASCII here */
+            lines++;
+    }
+    /* A trailing partial line (no final LF) is still a record. */
+    if (buf[len - 1] != 0x0A)
+        lines++;
+
+    return lines;
+}
+
+int mvs_encode_ispf_stats(const pds_member_entry_t *entry, uint8_t *userdata)
+{
+    struct tm *tm_p;
+    time_t     t;
+    int        chg_hour;
+    int        chg_min;
+    int        chg_sec;
+    uint16_t   v16;
+    int        i;
+    int        ulen;
+
+    memset(userdata, 0, MVS_ISPF_STATS_LEN);
+
+    /* Version and modification level: 1-byte binary each. */
+    userdata[0] = (uint8_t)entry->ver;
+    userdata[1] = (uint8_t)entry->mod;
+
+    /* Flags: non-extended stats (clear the extended-stats bit). */
+    userdata[2] = (uint8_t)(entry->ispf_flags & ~MVS_PDSDIR_ISPF_EXT_STATS);
+
+    /* Decompose the change time once (need seconds [3] and time [12..13]). */
+    t    = (time_t)entry->chgdate;
+    tm_p = gmtime(&t);
+    chg_hour = tm_p->tm_hour;
+    chg_min  = tm_p->tm_min;
+    chg_sec  = tm_p->tm_sec;
+    userdata[3] = int_to_bcd(chg_sec);
+
+    /* Creation date [4..7] (date only) -- calls gmtime() again. */
+    ispf_pack_date((time_t)entry->crdate, &userdata[4]);
+
+    /* Change date [8..11] and time [12..13]. */
+    ispf_pack_date((time_t)entry->chgdate, &userdata[8]);
+    userdata[12] = int_to_bcd(chg_hour);
+    userdata[13] = int_to_bcd(chg_min);
+
+    /* Size fields: non-extended -> native uint16 (mirrors the decoder's
+       *(unsigned short *) read).  Clamp to 0xFFFF. */
+    v16 = (entry->size     > 0xFFFF) ? (uint16_t)0xFFFF : (uint16_t)entry->size;
+    memcpy(&userdata[14], &v16, sizeof(v16));
+    v16 = (entry->initSize > 0xFFFF) ? (uint16_t)0xFFFF : (uint16_t)entry->initSize;
+    memcpy(&userdata[16], &v16, sizeof(v16));
+    v16 = (entry->modCount > 0xFFFF) ? (uint16_t)0xFFFF : (uint16_t)entry->modCount;
+    memcpy(&userdata[18], &v16, sizeof(v16));
+
+    /* Userid [20..27]: left-justified, blank-padded, native charset. */
+    ulen = (int)strlen(entry->user);
+    if (ulen > 8) ulen = 8;
+    for (i = 0; i < 8; i++)
+        userdata[20 + i] = (uint8_t)((i < ulen) ? entry->user[i] : ' ');
+
+    /* [28..29] reserved -- already zero from the memset. */
+    return MVS_ISPF_STATS_LEN;
+}
+
+int mvs_build_write_stats(
+    pds_member_entry_t        *entry,
+    const pds_member_entry_t  *existing,
+    int32_t                    line_count,
+    time_t                     now)
+{
+    if (existing == NULL) {
+        /* Brand-new member: a fresh set of stats. */
+        mvs_pds_member_entry_init(entry);
+        entry->info_flags = MVS_PDSDIR_IFLG_ISPFSTATS;
+        entry->ispf_flags = 0;
+        entry->ver        = 1;
+        entry->mod        = 1;
+        entry->crdate     = (int32_t)now;
+        entry->chgdate    = (int32_t)now;
+        entry->size       = line_count;
+        entry->initSize   = line_count;
+        entry->modCount   = 0;
+        strcpy(entry->user, "NFSD");
+        return 1;
+    }
+
+    if (!(existing->info_flags & MVS_PDSDIR_IFLG_ISPFSTATS)) {
+        /* Existing member that never had ISPF stats: leave it that way. */
+        mvs_pds_member_entry_init(entry);
+        return 0;
+    }
+
+    /* Existing member with stats: keep version, creation date, initial size,
+       modification count and id; refresh the changed date and current size,
+       and bump the modification level (capped at 99). */
+    *entry         = *existing;
+    entry->chgdate = (int32_t)now;
+    entry->size    = line_count;
+    entry->mod     = (uint8_t)((existing->mod < 99) ? (existing->mod + 1) : 99);
+    return 1;
+}
+
 void mvs_pds_member_entry_init(
-    pds_member_entry_t *entry) 
+    pds_member_entry_t *entry)
 {
     memset(entry, 0, sizeof(pds_member_entry_t));
 }

@@ -746,15 +746,260 @@ static MunitTest dir_block_tests[] = {
 
 
 /* ==================================================================== */
+/* Suite 6: mvs_ispf_count_lines                                        */
+/* ==================================================================== */
+
+/* Buffers use an explicit 0x0A (ASCII LF) rather than "\n" string literals,
+   because the pending-write buffer is ASCII (LF = 0x0A) whereas '\n' under
+   JCC is the EBCDIC newline -- the same reason count_lines tests 0x0A. */
+static const uint8_t c_lines_empty[1]   = { 0x00 };
+static const uint8_t c_lines_lf[1]      = { 0x0A };
+static const uint8_t c_lines_a_lf[2]    = { 'a', 0x0A };
+static const uint8_t c_lines_a_lf_b[3]  = { 'a', 0x0A, 'b' };
+static const uint8_t c_lines_two[4]     = { 'a', 0x0A, 'b', 0x0A };
+static const uint8_t c_lines_3lf[3]     = { 0x0A, 0x0A, 0x0A };
+static const uint8_t c_lines_abc[3]     = { 'a', 'b', 'c' };
+
+static MunitResult test_count_lines(
+    const MunitParameter params[], void *data)
+{
+    (void)params; (void)data;
+
+    munit_assert_int(mvs_ispf_count_lines(c_lines_empty,  0), ==, 0);
+    munit_assert_int(mvs_ispf_count_lines(c_lines_lf,     1), ==, 1);
+    munit_assert_int(mvs_ispf_count_lines(c_lines_a_lf,   2), ==, 1);
+    munit_assert_int(mvs_ispf_count_lines(c_lines_a_lf_b, 3), ==, 2); /* no final LF */
+    munit_assert_int(mvs_ispf_count_lines(c_lines_two,    4), ==, 2);
+    munit_assert_int(mvs_ispf_count_lines(c_lines_3lf,    3), ==, 3);
+    munit_assert_int(mvs_ispf_count_lines(c_lines_abc,    3), ==, 1); /* one partial line */
+    munit_assert_int(mvs_ispf_count_lines(NULL,           0), ==, 0);
+    return MUNIT_OK;
+}
+
+static MunitTest count_lines_tests[] = {
+    { "/count", test_count_lines, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+
+/* ==================================================================== */
+/* Suite 7: mvs_encode_ispf_stats                                       */
+/* ==================================================================== */
+
+/* Decode the known-good basic block, re-encode it, decode again, and assert
+   every field survives the round trip (creation date is date-only; the change
+   date carries hh:mm:ss -- both are exact here because the basic block's times
+   are already at those resolutions). */
+static MunitResult test_encode_roundtrip(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t e1;
+    pds_member_entry_t e2;
+    uint8_t            buf[MVS_ISPF_STATS_LEN];
+    int                len;
+    (void)params; (void)data;
+
+    memset(&e1, 0, sizeof(e1));
+    mvs_extract_ispf_stats(&e1, c_ispf_basic, 30);
+
+    len = mvs_encode_ispf_stats(&e1, buf);
+    munit_assert_int(len, ==, MVS_ISPF_STATS_LEN);
+
+    memset(&e2, 0, sizeof(e2));
+    mvs_extract_ispf_stats(&e2, buf, MVS_ISPF_STATS_LEN);
+
+    munit_assert_int(e2.ver,      ==, e1.ver);
+    munit_assert_int(e2.mod,      ==, e1.mod);
+    munit_assert_int(e2.size,     ==, e1.size);
+    munit_assert_int(e2.initSize, ==, e1.initSize);
+    munit_assert_int(e2.modCount, ==, e1.modCount);
+    munit_assert_string_equal(e2.user, e1.user);
+    munit_assert_int(e2.crdate,   ==, e1.crdate);
+    munit_assert_int(e2.chgdate,  ==, e1.chgdate);
+    return MUNIT_OK;
+}
+
+/* Version/mod level are 1-byte BINARY (mod 15 -> 0x0F, not 0x15 BCD), flags
+   are non-extended, and the userid is left-justified and blank-padded. */
+static MunitResult test_encode_binary_and_userid(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t e;
+    uint8_t            buf[MVS_ISPF_STATS_LEN];
+    (void)params; (void)data;
+
+    memset(&e, 0, sizeof(e));
+    e.ver = 2;
+    e.mod = 15;
+    e.ispf_flags = 0;
+    e.size = 100; e.initSize = 80; e.modCount = 10;
+    strcpy(e.user, "NFSD");
+
+    mvs_encode_ispf_stats(&e, buf);
+
+    munit_assert_int(buf[0], ==, 0x02);   /* version binary       */
+    munit_assert_int(buf[1], ==, 0x0F);   /* mod 15 binary        */
+    munit_assert_int(buf[2], ==, 0x00);   /* non-extended flags   */
+
+    munit_assert_int(buf[20], ==, 'N');
+    munit_assert_int(buf[21], ==, 'F');
+    munit_assert_int(buf[22], ==, 'S');
+    munit_assert_int(buf[23], ==, 'D');
+    munit_assert_int(buf[24], ==, ' ');   /* blank padded         */
+    munit_assert_int(buf[27], ==, ' ');
+    return MUNIT_OK;
+}
+
+/* Size fields over 0xFFFF clamp (non-extended stats are 16-bit). */
+static MunitResult test_encode_size_clamp(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t e;
+    pds_member_entry_t d;
+    uint8_t            buf[MVS_ISPF_STATS_LEN];
+    (void)params; (void)data;
+
+    memset(&e, 0, sizeof(e));
+    e.ver = 1; e.mod = 1;
+    e.size = 70000;               /* > 0xFFFF */
+    e.initSize = 80; e.modCount = 0;
+    strcpy(e.user, "NFSD");
+
+    mvs_encode_ispf_stats(&e, buf);
+    memset(&d, 0, sizeof(d));
+    mvs_extract_ispf_stats(&d, buf, MVS_ISPF_STATS_LEN);
+
+    munit_assert_int(d.size, ==, 0xFFFF);
+    return MUNIT_OK;
+}
+
+static MunitTest encode_tests[] = {
+    { "/roundtrip",        test_encode_roundtrip,        NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/binary_and_userid", test_encode_binary_and_userid, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/size_clamp",       test_encode_size_clamp,       NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+
+/* ==================================================================== */
+/* Suite 8: mvs_build_write_stats                                       */
+/* ==================================================================== */
+
+static MunitResult test_build_new(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t e;
+    int                rc;
+    time_t             now = 1000000;
+    (void)params; (void)data;
+
+    memset(&e, 0xFF, sizeof(e));
+    rc = mvs_build_write_stats(&e, NULL, 42, now);
+
+    munit_assert_int(rc,           ==, 1);
+    munit_assert_int(e.ver,        ==, 1);
+    munit_assert_int(e.mod,        ==, 1);
+    munit_assert_int(e.size,       ==, 42);
+    munit_assert_int(e.initSize,   ==, 42);
+    munit_assert_int(e.modCount,   ==, 0);
+    munit_assert_int(e.crdate,     ==, (int32_t)now);
+    munit_assert_int(e.chgdate,    ==, (int32_t)now);
+    munit_assert_string_equal(e.user, "NFSD");
+    munit_assert_int(e.info_flags & MVS_PDSDIR_IFLG_ISPFSTATS, !=, 0);
+    return MUNIT_OK;
+}
+
+static MunitResult test_build_existing_bumps(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t existing;
+    pds_member_entry_t e;
+    int                rc;
+    time_t             now = 2000000;
+    (void)params; (void)data;
+
+    memset(&existing, 0, sizeof(existing));
+    existing.info_flags = MVS_PDSDIR_IFLG_ISPFSTATS;
+    existing.ver = 3; existing.mod = 7;
+    existing.crdate = 111; existing.chgdate = 222;
+    existing.size = 10; existing.initSize = 5; existing.modCount = 2;
+    strcpy(existing.user, "TONYW");
+
+    rc = mvs_build_write_stats(&e, &existing, 99, now);
+
+    munit_assert_int(rc,        ==, 1);
+    munit_assert_int(e.ver,     ==, 3);              /* kept       */
+    munit_assert_int(e.mod,     ==, 8);              /* +1         */
+    munit_assert_int(e.crdate,  ==, 111);            /* kept       */
+    munit_assert_int(e.chgdate, ==, (int32_t)now);   /* refreshed  */
+    munit_assert_int(e.size,    ==, 99);             /* refreshed  */
+    munit_assert_int(e.initSize, ==, 5);             /* kept       */
+    munit_assert_int(e.modCount, ==, 2);             /* kept       */
+    munit_assert_string_equal(e.user, "TONYW");      /* kept (ID)  */
+    return MUNIT_OK;
+}
+
+static MunitResult test_build_mod_caps_at_99(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t existing;
+    pds_member_entry_t e;
+    (void)params; (void)data;
+
+    memset(&existing, 0, sizeof(existing));
+    existing.info_flags = MVS_PDSDIR_IFLG_ISPFSTATS;
+    existing.mod = 99;
+
+    mvs_build_write_stats(&e, &existing, 1, 123);
+    munit_assert_int(e.mod, ==, 99);                 /* stays at 99 */
+    return MUNIT_OK;
+}
+
+static MunitResult test_build_existing_no_stats(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t existing;
+    pds_member_entry_t e;
+    int                rc;
+    (void)params; (void)data;
+
+    memset(&existing, 0, sizeof(existing));
+    existing.info_flags = 0;      /* member had no ISPF stats */
+
+    rc = mvs_build_write_stats(&e, &existing, 10, 123);
+    munit_assert_int(rc, ==, 0);  /* leave it without stats */
+    return MUNIT_OK;
+}
+
+static MunitTest build_stats_tests[] = {
+    { "/new",             test_build_new,             NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/existing_bumps",  test_build_existing_bumps,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/mod_caps_at_99",  test_build_mod_caps_at_99,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/existing_no_stats", test_build_existing_no_stats, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+
+/* ==================================================================== */
 /* Suite registration                                                   */
 /* ==================================================================== */
 
 static MunitSuite sub_suites[] = {
-    { "/ispf_stats", ispf_stats_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/no_stats",   no_stats_tests,   NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/entry_set",  entry_set_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/skip",       skip_tests,       NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/dir_block",  dir_block_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/ispf_stats",  ispf_stats_tests,  NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/no_stats",    no_stats_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/entry_set",   entry_set_tests,   NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/skip",        skip_tests,        NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/dir_block",   dir_block_tests,   NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/count_lines", count_lines_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/encode",      encode_tests,      NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/build_stats", build_stats_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 
