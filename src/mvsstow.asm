@@ -184,8 +184,8 @@ STRCEND  BR    R6              return to caller
 ***********************************************************************
 ***********************************************************************
 *
-PARMLIST DS    0F                Address of callers parm list  
-DDNAME   DS    CL8  
+PARMLIST DS    F           Address of callers parm list (a full word!)
+DDNAME   DS    CL8
 *
 *--- BLDL structure to receive data
 *

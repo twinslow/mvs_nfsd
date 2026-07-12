@@ -60,12 +60,14 @@ DO@ALLOC DS    0H
 *
          L     R2,8(R1)     3rd parm - dataset name
          LA    R3,TUDSN     Destination
-         LA    R4,L'TUDSN   Length of destination field        
-         BAL   R6,STRCOPY   Copy string 
+         LA    R4,L'TUDSN   Length of destination field
+         BAL   R6,STRCOPY   Copy string
+*        STH   R0,DSNLEN    DALDSNAM length = actual name length 
+*                           (not padded)
 *
          L     R2,12(R1)    4th parm - member name
          LTR   R2,R2
-         BZ    NOMEMNAM     If 4parm NULL then no member name 
+         BZ    NOMEMNAM     If 4parm NULL then no member name
          LA    R3,TUMEMBR   Destination
          LA    R4,L'TUMEMBR Length of destination field        
          BAL   R6,STRCOPY   Copy string 
@@ -127,7 +129,7 @@ DUNFCLOS DS   0H
          LA    R2,REQBLK    Load address of the request block
          USING S99RB,R2     
 *
-         WTO   'Dynamic allocation failed'
+         WTO   'Dynamic allocation failed'         
          MVC   WTOMSG,=CL45'Dynamic alloc failed'
          MVC   WTOREG,=CL3'R15'     R15 value is now in R3
          BAL   R7,DEBUGWTO
@@ -139,6 +141,11 @@ DUNFCLOS DS   0H
          MVC   WTOREG,=CL3'IC '
          LH    R3,S99INFO   Get info code
          BAL   R7,DEBUGWTO
+         MVC   WTOMSG,=CL45' ' 
+         MVC   WTOMSG(44),TUDSN
+         MVC   WTOREG,=CL3'LEN'
+         LH    R3,DSNLEN
+         BAL   R7,DEBUGWTO  
          DROP  R2
 *
          B     RETC@M1       Return code -1       
@@ -150,6 +157,8 @@ ALLOCOK  DS    0H
 *---------------------------------------------------------------------*
 *
          MVC   TUIDSN,TUDSN Copy the dataset name from alloc TU
+         MVC   IDSNLEN,DSNLEN Copy the actual dsname length too
+*
          BAL   R6,SETRBINF  Setup the request block for info
 *
          LA    R1,REQBLKA   Load ptr location
@@ -303,25 +312,29 @@ SETRBUNA LA    R2,REQBLK
 *    R4 - Length of destination field                                 *
 *    R6 - Return address                                              *
 *---------------------------------------------------------------------*
-STRCOPY  LR    R5,R4           R5 = remaining destination length
-         LTR   R5,R5           destination length zero?
-         BZ    STRCEND         yes - nothing to do
+STRCOPY  LR    R5,R4          R5 = remaining destination length
+         SR    R8,R8          R0 = count of chars copied (return value)
+         LTR   R5,R5          destination length zero?
+         BZ    STRCEND        yes - nothing to do
 *
-STRCLP   CLI   0(R2),X'00'     end of source string?
-         BE    STRCPAD         yes - go pad remainder
-         MVC   0(1,R3),0(R2)   copy one byte
-         LA    R2,1(R2)        bump source pointer
-         LA    R3,1(R3)        bump destination pointer
-         BCT   R5,STRCLP       decrement remaining, loop if > 0
-         B     STRCEND         dest full - truncated, done
+STRCLP   CLI   0(R2),X'00'    end of source string?
+         BE    STRCPAD        yes - go pad remainder
+         MVC   0(1,R3),0(R2)  copy one byte
+         LA    R2,1(R2)       bump source pointer
+         LA    R3,1(R3)       bump destination pointer
+         LA    R8,1(R8)       bump count of chars copied
+         BCT   R5,STRCLP      decrement remaining, loop if > 0
+         B     STRCEND        dest full - truncated, done
 *
-STRCPAD  LTR   R5,R5           any destination space left?
-         BZ    STRCEND         no - done
-         MVI   0(R3),C' '      blank fill
-         LA    R3,1(R3)        bump destination pointer
-         BCT   R5,STRCPAD      decrement remaining, loop if > 0
+STRCPAD  LTR   R5,R5          any destination space left?
+         BZ    STRCEND        no - done
+         MVI   0(R3),C' '     blank fill
+         LA    R3,1(R3)       bump destination pointer
+         BCT   R5,STRCPAD     decrement remaining, loop if > 0
 *
-STRCEND  BR    R6              return to caller
+STRCEND  DS    0H
+         LR    R0,R8          return copied (real) len in R0  
+         BR    R6             return to caller (R0 = chars copied)
 *
 *---------------------------------------------------------------------*
 * Dump the text unit list, which is at the address in R2              *
@@ -354,6 +367,13 @@ DUMPTUMS DS    0H
          B     DUMPTU              And again
 *
 DUMPTUXX DS    0H
+         MVC   WTOMSG,=CL45' ' 
+         MVC   WTOMSG(44),TUDSN
+         MVC   WTOREG,=CL3'LEN'
+         LH    R3,DSNLEN
+         BAL   R7,DEBUGWTO  
+*
+         MVC   WTOREG,=CL3'R3'
          WTO   'End of text units'
          BR    R6 
 *
@@ -393,7 +413,7 @@ CONVFW2X DS    0H
 ***********************************************************************
 ***********************************************************************
 *
-PARMLIST DS    0F                Address of callers parm list    
+PARMLIST DS    F           Address of callers parm list (a full word!)
 *
 REQBLKA  DC    A(REQBLK+X'80000000')   The request block pointer
 *
@@ -428,22 +448,26 @@ WTOLEN   EQU   *-WTOPLIST
 *
 * This is the TU list for the allocate
 *
-TUAPTRMN DC    A(TUDSMEM)          Dataset member
 *
 TUPTRALC DS    0F               Addr of TU for ...    
          DC    A(TUDSNA1)          DSNAME
+TUAPTRMN DC    A(TUDSMEM)          Dataset member ... we zap to zero
+*                                  if we are not specifying a member 
+*                                  name, or store the addr if we are.
+*                                  (for reuse). 
 TUPOLST  DC    A(TUDSSA1)          Dataset status
          DC    A(TUDCLOSE+X'80000000') Free=close 
 *
 * Now the text units for allocate
 *         
          DS    0F
-TUDSNA1  DC    AL2(DALDSNAM),AL2(1),AL2(44)        DSN=
+TUDSNA1  DC    AL2(DALDSNAM),AL2(1)        DSN=
+DSNLEN   DC    AL2(44)                    length -- patched at runtime
 TUDSN    DC    CL44' '
-TUDSMEM  DC    AL2(DALMEMBR),AL2(1),AL2(8)         MEMBER 
+TUDSMEM  DC    AL2(DALMEMBR),AL2(1),AL2(8)         MEMBER
 TUMEMBR  DC    CL8' '
 TUDSSA1  DC    AL2(DALSTATS),AL2(1),AL2(1),X'08'   DISP=SHR
-TUDCLOSE DC    AL2(DALCLOSE),AL2(1),AL2(0)         FREE=CLOSE 
+TUDCLOSE DC    AL2(DALCLOSE),AL2(0)         FREE=CLOSE (flag, no parm)
 *---------------------------------------------------------------------*
 *
 * This is the TU list for the info retrieval to get DDNAME
@@ -455,7 +479,8 @@ TUPTRINF DS    0F
 *
 * Now the text units for info call
 *
-TUIDSN1  DC    AL2(DINDSNAM),AL2(1),AL2(44)        DSN=
+TUIDSN1  DC    AL2(DINDSNAM),AL2(1)         DSN=
+IDSNLEN  DC    AL2(44)                     length -- patched at runtime
 TUIDSN   DC    CL44' '
 TURDDNI1 DC    AL2(DINRTDDN),AL2(1)
 DDNAMLEN DC    AL2(8)           Length of return buffer for ddname
