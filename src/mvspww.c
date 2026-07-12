@@ -381,6 +381,14 @@ int pww_truncate(int export_idx, int dataset_idx,
         return 0;
     }
 
+    /* A truncate to the size the member already has is a no-op: return WITHOUT
+       re-dirtying the slot.  Otherwise a SETATTR(size) that the client issues
+       after a COMMIT (its sequence is WRITE -> COMMIT -> SETATTR -> COMMIT)
+       would mark the just-flushed member dirty again and trigger a redundant
+       second STOW. */
+    if (size == pm->high_water)
+        return 0;
+
     /* Adjust the existing pending member to exactly 'size' bytes. */
     if (size > pm->buf_cap) {
         if (pww_ensure_cap(pm, size) < 0)
@@ -449,4 +457,56 @@ void pww_flush_all(void)
         }
         pww_release_slot(pm);
     }
+}
+
+/* Refresh an existing member's ISPF "changed" date from a SETATTR time change,
+   via a stats-only STOW (no content rewrite, no mod-level change).  Applies
+   only to a member that already carries ISPF stats, and only when new_time
+   actually differs (ISPF resolves to one second) from the stored changed date
+   -- so a plain copy (whose mtime matches the just-stowed date) does nothing,
+   while a touch or a timestamp-preserving copy updates it.  Always returns 0
+   (a SETATTR must not fail; clients issue it inside the write sequence). */
+int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
+                    const char *member_name, time_t new_time)
+{
+#ifdef __MVS__
+    pending_member_t   *pm;
+    pds_member_entry_t  entry;
+    pds_member_entry_t *ep;
+    uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
+    char                ddname[9];
+    int                 rc;
+
+    /* If content is still pending (dirty), the upcoming flush will set the
+       changed date -- skip, or this STOW would just be overwritten. */
+    pm = pww_find_slot(dsname_ebcdic, member_name);
+    if (pm != NULL && pm->dirty)
+        return 0;
+
+    ep = mvs_pds_get_member_entry(dsname_ebcdic, member_name, export_idx, &entry);
+    if (ep == NULL)
+        return 0;                       /* not found -- nothing to update */
+    if (!(entry.info_flags & MVS_PDSDIR_IFLG_ISPFSTATS))
+        return 0;                       /* no ISPF stats -- do not fabricate */
+    if (entry.chgdate == (int32_t)new_time)
+        return 0;                       /* already that time (1s resolution) */
+
+    entry.chgdate = (int32_t)new_time;  /* update the changed date only */
+    mvs_encode_ispf_stats(&entry, stats_ud);
+
+    ddname[0] = '\0';
+    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, MVS_DYNALLOC_OPT_FREECLOSE,
+                      dsname_ebcdic, NULL, ddname);
+    if (rc == 0) {
+        ddname[8] = '\0';
+        rc = mvs_stow(ddname, member_name, stats_ud, (int)MVS_ISPF_STATS_LEN);
+    }
+    if (rc != 0)
+        log_warn("pww_touch_stats: stats update failed for %s(%s) rc=%d",
+            dsname_ebcdic, member_name, rc);
+    return 0;
+#else
+    (void)export_idx; (void)dsname_ebcdic; (void)member_name; (void)new_time;
+    return 0;
+#endif
 }

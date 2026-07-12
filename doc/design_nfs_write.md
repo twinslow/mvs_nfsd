@@ -485,9 +485,16 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
   = STOW), then reply with the verifier.
 - **SETATTR must succeed** (it is part of the client's open/write/close
   sequence): `vfs_truncate` routes to the pool (truncate-to-0 starts a fresh
-  member; the common `O_TRUNC` case), and `vfs_set_times` is an accepted
-  no-op (PDS members carry ISPF times we cannot set, like mode/uid/gid).  A
-  SETATTR error aborts the whole copy on the client.
+  member; the common `O_TRUNC` case; a truncate to the member's current size is
+  a no-op that does **not** re-dirty the slot, avoiding a redundant second STOW
+  after WRITE→COMMIT→SETATTR).  `vfs_set_times` maps the requested modification
+  time onto the member's ISPF **changed** date via `pww_touch_stats`: a
+  stats-only STOW (no content rewrite, no mod-level change) that fires only when
+  the member already has ISPF stats and the client's time actually differs (to
+  the second) from the stored date — so a plain copy does nothing, a
+  timestamp-preserving copy or a `touch` updates the date.  Mode/uid/gid are
+  still ignored.  A SETATTR error aborts the whole copy on the client, so this
+  path always returns success.
 - Select-loop sweep: flush per-member idle timeouts; flush-all on STOP.
 
 **Deferred to Phase 2 (not in Phase 1):**

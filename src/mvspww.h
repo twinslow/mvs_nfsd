@@ -99,4 +99,11 @@ void pww_flush_idle(time_t now);
 /* Flush and release all pending members (server shutdown). */
 void pww_flush_all(void);
 
+/* SETATTR time change: refresh an existing member's ISPF "changed" date to
+ * new_time via a stats-only STOW (no content rewrite, no mod-level change).
+ * No-op unless the member already has ISPF stats and new_time differs (to the
+ * second) from the stored changed date.  Always returns 0. */
+int  pww_touch_stats(int export_idx, const char *dsname_ebcdic,
+                     const char *member_name, time_t new_time);
+
 #endif /* MVSPWW_H_INCLUDED */

@@ -610,21 +610,54 @@ int vfs_truncate(const char *path, uint64_t size)
 /*   SET_TO_SERVER_TIME   - set to the server's current time            */
 /*   SET_TO_CLIENT_TIME   - set to the supplied sec/nsec values         */
 /*                                                                      */
-/* Uses utimensat(2) with UTIME_OMIT / UTIME_NOW so each timestamp is   */
-/* handled independently without having to stat the file first.         */
+/* A PDS member has one settable timestamp -- the ISPF "changed" date.  */
+/* We map the requested modification time onto it (preferring mtime,     */
+/* falling back to atime) and update the member's ISPF stats in place    */
+/* via pww_touch_stats (which no-ops unless the member already has stats */
+/* and the time actually changed).  The content is NOT rewritten and the */
+/* modification level is NOT bumped -- a time change is not a content     */
+/* change.  Always returns 0: SETATTR must not fail, as clients issue it  */
+/* during the write sequence.                                            */
 /* -------------------------------------------------------------------- */
 int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
                   int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
 {
-    /* PDS members carry ISPF-derived timestamps that we cannot set, so a
-       time change is accepted and ignored (like mode / uid / gid).  This
-       must NOT fail: clients set times as part of the open/write/close
-       sequence, and an error there aborts the whole copy. */
-    (void)path;
-    (void)set_atime; (void)atime_sec; (void)atime_nsec;
-    (void)set_mtime; (void)mtime_sec; (void)mtime_nsec;
-    return 0;
+    char   ebcdic_path[MAX_PATH_LEN];
+    char   pds_dsname[45];
+    char   pds_member_name[9];
+    int    export_idx;
+    int    dataset_idx;
+    time_t new_time;
+
+    (void)atime_nsec; (void)mtime_nsec;   /* ISPF resolution is one second */
+
+    /* Which requested time drives the ISPF changed date?  Prefer mtime. */
+    if (set_mtime == (int)SET_TO_CLIENT_TIME)
+        new_time = (time_t)mtime_sec;
+    else if (set_mtime == (int)SET_TO_SERVER_TIME)
+        new_time = time(NULL);
+    else if (set_atime == (int)SET_TO_CLIENT_TIME)
+        new_time = (time_t)atime_sec;
+    else if (set_atime == (int)SET_TO_SERVER_TIME)
+        new_time = time(NULL);
+    else
+        return 0;                         /* no time being set */
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path,
+                    MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    /* Only a PDS member carries ISPF stats; anything else is a no-op. */
+    if (mvs_path_type(ebcdic_path, &export_idx, &dataset_idx)
+            != MVS_PATH_TYPE_PDS_MEMBER)
+        return 0;
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return 0;                         /* unresolvable -- accept, no change */
+
+    (void)dataset_idx;
+    return pww_touch_stats(export_idx, pds_dsname, pds_member_name, new_time);
 }
  
 /* -------------------------------------------------------------------- */
