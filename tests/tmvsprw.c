@@ -1,7 +1,7 @@
 /*
- * tests/tmvsio4.c
+ * tests/tmvsprw.c
  *
- * Unit tests for the mvsio.c read-cache helpers:
+ * Unit tests for the mvsprw.c read-cache helpers:
  *   mvs_rcache_init
  *   mvs_rcache_find_entry
  *   mvs_rcache_entry_reset
@@ -333,7 +333,7 @@ static MunitSuite sub_suites[] = {
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 
-MunitSuite tmvsio4_suite = {
+MunitSuite tmvsprw_suite = {
     "/mvsio/rcache",
     NULL,
     sub_suites,

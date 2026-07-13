@@ -76,8 +76,8 @@
 //TMVSFSZ  EXEC JCCCTST,MODNAME=TMVSFSZ                               
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
 //TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
-//TMVSIO3  EXEC JCCCTST,MODNAME=TMVSIO3                               
-//TMVSIO4  EXEC JCCCTST,MODNAME=TMVSIO4
+//TMVSPDIR EXEC JCCCTST,MODNAME=TMVSPDIR                               
+//TMVSPRW  EXEC JCCCTST,MODNAME=TMVSPRW
 //TMVSPRF  EXEC JCCCTST,MODNAME=TMVSPRF
 //*                                                                   
 //********************************************************************
@@ -105,8 +105,8 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSFSZ)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO3)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO4)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPDIR)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,

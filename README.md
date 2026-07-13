@@ -18,13 +18,23 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 
 ## Project status
 
+**WARNING:** This is early release code. You shouldn't assume that this code won't trash
+a mounted dataset. I'm sure there are plenty of bugs at this time, even we are fixing
+them as we find them. I wouldn't go exporting/mounting `SYS1.PROCLIB` or `SYS1.PARMLIB`, or
+other important datasets that could prevent an IPL from completing. 
+
+### **Please have a recovery mechanmism in place if things go badly wrong.**
+
+## Feature Status
+
 | Feature | Status |
 |---|---|
 | Directory listing of a mounted PDS | Working |
 | Multiple PDS under export | Working |
 | Read a file (PDS member) | Working |
 | File size (true text-mode size cached) | Working |
-| Create / write files | Not implemented |
+| Create / write files (PDS member) | Working |
+| ISPF statistics set/updated on write and `touch` | Working |
 | Rename files | Not implemented |
 
 ## Source files
@@ -49,20 +59,22 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 | File | Purpose |
 |---|---|
 | `vfs.c` | POSIX VFS implementation (Linux development and testing) |
-| `mockvfs.c` | Stub VFS used by the Linux unit-test build |
+| `mockvfs.c` | Stub VFS used for initial testing |
 | `mvsvfs.c/h` | MVS VFS implementation — replaces `vfs.c` on MVS |
 
-### MVS subsystem
+### MVS IO implementation
 
 | File | Purpose |
 |---|---|
-| `mvsio.c/h` | Path classification (`mvs_path_type`), DCB info retrieval |
-| `mvspdir.c/h` | PDS directory block parsing; ISPF statistics extraction |
+| `mvsio.c/h` | Path classification (`mvs_path_type`), member-name validation, DCB info retrieval |
+| `mvspdir.c/h` | PDS directory block parsing; ISPF statistics decode **and** encode |
+| `mvspww.c/h` | Pending-member write pool — buffers WRITEs, STOWs on COMMIT, applies ISPF stats |
 | `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
 | `mvsprw.c/h` | PDS member read with sequential-read position cache |
 | `mvsprf.c/h` | Performance stats tracking |
 | `mvsfsz.c/h` | File-size cache — stores true text-mode sizes of PDS members |
 | `mvsfid.c/h` | Stable 64-bit file ID generation from dataset + member name |
+| `mvsutl.c/h` | JES2 job-id lookup (PSA→TCB→JSCB→SSIB) — seeds the write verifier |
 | `ebcdic.c/h` | EBCDIC ↔ ASCII translation tables |
 
 ### Utilities
@@ -72,8 +84,11 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 | `logger.c/h` | Levelled logging (`log_debug/info/warn/error/fatal`); MVS WTO support |
 | `hexdump.c/h` | Hex dump helper for debug output |
 | `ressock.c` | Reserved-port socket helper |
-| `asmutils.h` | Assembler utility macros (MVS) |
+| `asmutils.h` | C prototypes + name aliases for the MVS assembler helpers (`getcib`, `mvs_dynalloc`, `mvs_stow`) |
 | `getcib.asm` | CIB (Console Information Block) reader — MVS assembler module |
+| `mvsdalc.asm` | SVC 99 dynamic allocation (`mvs_dynalloc`) — MVS assembler |
+| `mvsstow.asm` | BLDL / FIND / STOW-REPLACE ISPF-stats update (`mvs_stow`) — MVS assembler |
+| `asmutils.h` | Contains prototypes and macro definitions for ASM modules |
 
 ### JCL
 
@@ -88,13 +103,13 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 |---|---|
 | `tests/runall.c` | munit test runner — aggregates all test suites |
 | `tests/tstubs.c/h` | Export-table and path stubs shared by all test modules |
-| `tests/tmvsio.c` | Tests for `mvs_path_type()` (path classification) |
-| `tests/tmvsio2.c` | Tests for `mvs_get_pds_dsn_and_member()` |
-| `tests/tmvsio3.c` | Tests for EBCDIC / DCB helpers |
-| `tests/tmvsio4.c` | Tests for ISPF statistics parsing |
-| `tests/tmvsdol.c` | Tests for directory open-list pool |
-| `tests/tmvsfsz.c` | Tests for the file-size cache |
-| `tests/tmvsprf.c` | Tests for the performance stats tracking |
+| `tests/tmvsio.c` | Tests for `mvsio.c` — `mvs_path_type()` (path classification) |
+| `tests/tmvsio2.c` | Tests for `mvsio.c` — `mvs_get_pds_dsn_and_member()` + member-name validation |
+| `tests/tmvspdir.c` | Tests for `mvspdir.c` — directory-entry parsing and ISPF stats decode/encode |
+| `tests/tmvsprw.c` | Tests for `mvsprw.c` — read-position cache helpers |
+| `tests/tmvsdol.c` | Tests for directory open-list pool (`mvsdol.c`) |
+| `tests/tmvsfsz.c` | Tests for the file-size cache (`mvsfsz.c`) |
+| `tests/tmvsprf.c` | Tests for the performance stats tracking (`mvsprf.c`) |
 
 ## Building
 
@@ -116,7 +131,7 @@ The test suite uses [munit](https://github.com/nemequ/munit).  Place
 ```bash
 cc -std=c99 -Wall -I src -I tests \
    tests/runall.c tests/tstubs.c \
-   tests/tmvsio.c tests/tmvsio2.c tests/tmvsio3.c tests/tmvsio4.c \
+   tests/tmvsio.c tests/tmvsio2.c tests/tmvspdir.c tests/tmvsprw.c \
    tests/tmvsdol.c tests/tmvsfsz.c \
    src/mvsio.c src/mvsdol.c src/mvsfsz.c tests/munit.c \
    -o tests/runall
@@ -136,6 +151,12 @@ produces assembler source — do not confuse the two.
 ```
 PARM='-I//DDN:JCCINCL //DDN:SYSIN -o -LIST=//DDN:SYSPRINT -D__MVS__'
 ```
+
+### MVS unit tests
+
+You can run the unit tests on MVS. They use a ported version of `munit`. 
+Running the job `tests-jcl/testrun.jcl` compiles the modules under test
+along with the main test harness and executes the tests. 
 
 ## Config file
 
@@ -169,9 +190,19 @@ of "temp.testproj.c" (a lowercase version of the dataset name). For the /export/
 mountpoint two directories will be shown -- the lower case versions of the dataset
 names. 
 
-## Running
+## Running on MVS
 
-### Standard (root required for ports 111 and 2049)
+Once the started task JCL procedure is available to JES2, then it can be 
+started with `S NFSD`. Running NFSD as a started task has the benefit of allow
+it to be stopped by the MVS STOP (P) comamdn `P NFSD`.
+
+An example started task JCL procedure is provided in `jcl/nfsd.jcl`.
+
+## Running on Linux (currently broken)
+
+**As the Linux build is currently broken, this is not applicable at this time.**
+
+Standard (root required for ports 111 and 2049).
 
 Stop the system portmapper first:
 
@@ -179,6 +210,12 @@ Stop the system portmapper first:
 sudo systemctl stop rpcbind   # or portmap, depending on distro
 sudo ./build/nfsd nfsd.conf
 ```
+
+## NFS Mounts
+
+Standard (root required for ports 111 and 2049)
+
+### Mounting an export from Linux
 
 Mount from a client:
 
@@ -283,11 +320,11 @@ sudo journalctl -kf
 |---|---|
 | NULL | ✓ |
 | GETATTR | ✓ |
-| SETATTR (size, times) | ✓ |
+| SETATTR (size truncate; atime/mtime → ISPF changed date) | ✓ |
 | LOOKUP | ✓ |
 | ACCESS | ✓ (grants all) |
 | READ | ✓ |
-| WRITE (FILE_SYNC) | ✓ |
+| WRITE (echoes the client's requested stability) | ✓ |
 | CREATE (UNCHECKED / GUARDED) | ✓ |
 | REMOVE | ✓ |
 | READDIR | ✓ |
@@ -295,7 +332,7 @@ sudo journalctl -kf
 | FSSTAT | ✓ |
 | FSINFO | ✓ |
 | PATHCONF | ✓ |
-| COMMIT | ✓ (no-op, always FILE_SYNC) |
+| COMMIT | ✓ (flushes the pending member — STOW) |
 | MKDIR | NFS3ERR_NOTSUPP |
 | RENAME | NFS3ERR_NOTSUPP |
 | SYMLINK / READLINK | NFS3ERR_NOTSUPP |
@@ -367,18 +404,36 @@ records from a recent directory read.
 
 ### ISPF statistics (`mvspdir.c`)
 
-ISPF writes an 18-byte statistics block into the PDS directory user-data
-field for each member it has touched.  `mvs_extract_ispf_stats()` decodes
-this block and populates `pds_member_entry_t` with:
+ISPF stores a statistics block in the PDS directory user-data field of each
+member it has touched — 30 bytes for standard stats, 40 for the extended
+(32-bit) form.  `mvs_extract_ispf_stats()` decodes it and populates
+`pds_member_entry_t` with:
 
-- Member name, version/modification counters
-- Creation and last-change dates
-- Line count (ISPF member size)
-- Modification timestamp (converted to `time_t`)
+- Version / modification level
+- Creation and last-change dates (last-change to the second)
+- Current, initial, and modified line counts
+- User id of the last modifier
 - `info_flags |= MVS_PDSDIR_IFLG_ISPFSTATS` to record that ISPF stats
   were present
 
 Members without ISPF stats get synthetic values from `mvs_set_no_ispf_stats()`.
+
+The reverse — `mvs_encode_ispf_stats()` — produces the 30-byte block from a
+`pds_member_entry_t`, and is used by the write path (below) so members created
+or edited over NFS show correct VV.MM, dates, size, and id in ISPF.
+
+### Write support (`mvspww.c`, `mvsdalc.asm`, `mvsstow.asm`)
+
+Because a PDS member can only be written sequentially in one open→write→close
+pass, `mvspww.c` reassembles each member's WRITEs in an in-memory buffer and
+STOWs the whole member once — at COMMIT, an idle sweep, eviction, or shutdown.
+After the member is stowed, its ISPF statistics are applied **in place**
+(without rewriting the member) by two assembler helpers: `mvs_dynalloc`
+(SVC 99, allocates the PDS) and `mvs_stow` (BLDL to find the member, FIND to
+position on it, then STOW REPLACE with the encoded stats).  A `touch` (SETATTR
+time change) refreshes just the ISPF changed date the same way.  The full
+design, including the record-conversion and durability model, is in
+[`doc/design_nfs_write.md`](doc/design_nfs_write.md).
 
 ### File-size cache (`mvsfsz.c`)
 
@@ -488,10 +543,17 @@ on every LOOKUP and READDIRPLUS call.
   An LRU eviction policy is planned.
 - Read cache (`mvsprw`) holds 20 entries; entries time out after 5 seconds of
   inactivity.
-- SETATTR does not implement `mode`, `uid`, or `gid` changes (silently ignored).
+- SETATTR handles `size` (truncate) and `atime`/`mtime` (mapped onto the ISPF
+  changed date); `mode`, `uid`, and `gid` changes are silently ignored.
+- Write buffering is in-memory with a per-member cap (`PWW_MAX_MEMBER_BYTES`,
+  256 KB) and a small pool (`PWW_MAX_PENDING`, 4); a write beyond the cap
+  returns `NFS3ERR_NOSPC`.  Disk-backed spill for larger members is a future
+  phase (see the design doc).
 - No locking (`nolock` mount option recommended).
 - No authentication: all clients have full read/write access.
-- Create/write/rename operations are not yet implemented on the MVS VFS layer.
+- RENAME is not implemented — JCC provides no way to rename or delete a PDS
+  member; it would need a dedicated assembler STOW routine.  (Create and write
+  are implemented.)
 
 ## Contributing
 

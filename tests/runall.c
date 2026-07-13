@@ -4,7 +4,7 @@
  * Build (from project root):
  *   cc -std=c99 -Wall -I src -I tests \
  *      tests/runall.c tests/tstubs.c \
- *      tests/tmvsio.c tests/tmvsio2.c tests/tmvsio3.c tests/tmvsio4.c \
+ *      tests/tmvsio.c tests/tmvsio2.c tests/tmvspdir.c tests/tmvsprw.c \
  *      tests/tmvsdol.c tests/tmvsfsz.c tests/tmvsprf.c \
  *      src/mvsio.c src/mvsdol.c src/mvsfsz.c src/mvspdir.c \
  *      src/mvsprf.c src/logger.c tests/munit.c \
@@ -29,8 +29,8 @@
  * ----------------------------------------------------------------------- */
 extern MunitSuite tmvsio_suite;
 extern MunitSuite tmvsio2_suite;
-extern MunitSuite tmvsio3_suite;
-extern MunitSuite tmvsio4_suite;
+extern MunitSuite tmvspdir_suite;
+extern MunitSuite tmvsprw_suite;
 extern MunitSuite tmvsdol_suite;
 extern MunitSuite tmvsfsz_suite;
 extern MunitSuite tmvsprf_suite;
@@ -57,8 +57,8 @@ int main(int argc, char *argv[])
     /* Populate module suites -- add one line per suite */
     all_suites[0] = tmvsio_suite;
     all_suites[1] = tmvsio2_suite;
-    all_suites[2] = tmvsio3_suite;
-    all_suites[3] = tmvsio4_suite;
+    all_suites[2] = tmvspdir_suite;
+    all_suites[3] = tmvsprw_suite;
     all_suites[4] = tmvsdol_suite;
     all_suites[5] = tmvsfsz_suite;
     all_suites[6] = tmvsprf_suite;

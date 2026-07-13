@@ -1,6 +1,15 @@
 # Design: NFS Write / Update Support (PDS member write)
 
-Status: **Phase 1 implemented & verified**.
+Status: **Implemented & verified on MVS 3.8J** (Linux + Windows 11 clients).
+
+Shipped: CREATE / WRITE / COMMIT with buffer-then-STOW (§5, §7); stability
+echoed to the client (§4); pending members visible to `stat`/`read` before the
+STOW (§5.1); ISPF statistics set on write and refreshed on `touch`/SETATTR
+(§9.1); SETATTR size (truncate) and time handling; and a restart-unique write
+verifier seeded from the hashed JES2 job id (§6). Phase 1 keeps write buffers
+**in memory** with a per-member cap; disk-backed spill (§8) remains a future
+phase. The sections below record the design and rationale; §3 is the original
+pre-implementation baseline and is retained for context only.
 
 ## 1. Goal
 
@@ -30,17 +39,24 @@ flush convert it to records (inverse of the read path: split on `\n` into
 LRECL records + ASCII→EBCDIC) and write the member in one `fopen("wt")` …
 `fwrite` … `fclose` sequence.
 
-## 3. Current state (baseline)
+## 3. Starting baseline (before this work — historical)
 
-- `proc_write` (`src/nfs3.c`) parses the WRITE, calls `vfs_pwrite()`, and
-  **always replies `FILE_SYNC`** with the write verifier.
-- `vfs_pwrite` / `vfs_create` (`src/mvsvfs.c`) are stubs returning `EACCES`.
-- `proc_commit` resolves the path and returns the verifier; it does no work.
-- The write verifier `g_write_verifier` is built at startup from
-  `time() + pid` (pid is a placeholder `0xDEADBEEF` on MVS — see §6).
-- The main `select()` loop (`src/nfsd.c`) already wakes on a **2-second
-  timeout** to poll for the MVS STOP command — the natural hook for a flush
-  sweep (§7).
+> This section describes the pre-implementation state and is kept for context;
+> every item below has since been built out. See the status note above.
+
+- `proc_write` (`src/nfs3.c`) parsed the WRITE, called `vfs_pwrite()`, and
+  **always replied `FILE_SYNC`** with the write verifier. *(Now echoes the
+  client's requested stability — §4.)*
+- `vfs_pwrite` / `vfs_create` (`src/mvsvfs.c`) were stubs returning `EACCES`.
+  *(Now route into the pending-member write pool — §5.)*
+- `proc_commit` resolved the path and returned the verifier; it did no work.
+  *(Now flushes the member — STOW.)*
+- The write verifier `g_write_verifier` was built at startup from
+  `time() + pid`, with `pid` a placeholder on MVS. *(Now `pid` is the hashed
+  JES2 job id — §6, §11.1.)*
+- The main `select()` loop (`src/nfsd.c`) already woke on a **2-second
+  timeout** to poll for the MVS STOP command — the natural hook for the flush
+  sweep (§7), which is now wired in.
 - The server is **single-threaded and select-driven**, so the write buffers
   need no locking.
 
@@ -137,8 +153,14 @@ offset.
 
 ## 6. Write verifier — do NOT persist it
 
+> **Implemented:** the verifier is `time()` (high 4 bytes) + a 32-bit hash of
+> the **JES2 job id** (low 4 bytes), built once at startup in `src/nfsd.c`; the
+> job id comes from `get_jes2_jobid()` in `src/mvsutl.c`. It is not persisted —
+> the job id changes on every start, so option 1 below was taken and the boot
+> counter (option 2) was not needed.
+
 **Recommendation: do not save the verifier to disk. It should CHANGE on
-every restart, which the current `time()+pid` scheme already does.**
+every restart, which the `time()+pid` scheme already does.**
 
 Reasoning: the verifier exists precisely so a client can tell that the
 server **restarted and lost uncommitted (buffered) writes** between its
@@ -237,7 +259,8 @@ buffers may sit in memory but are flushed serially.
 ## 8. Memory strategy (the 8 MB address-space constraint)
 
 The MVS 3.8J application address space is ~8 MB for code + data, so we cannot
-assume a whole file fits in memory — a large NFS file could exceed it.
+assume a whole file fits in memory — a large NFS file could easily exceed it.
+**Think JES2 source**.
 
 ### Phase 1 — in-memory buffers, capped
 
@@ -302,10 +325,10 @@ boundaries, EBCDIC→ASCII).  Write does the inverse, driven by the dataset's
 
 A member written through NFS should look native in ISPF — with version/mod
 level, creation/changed dates, line counts and a "changed by" id in the member
-list (ISPF 3.4). These live in the PDS **directory user data**, which is
-exactly what the read path already decodes in `mvs_extract_ispf_stats`
-(`src/mvspdir.c`). Write is the inverse: build that user data and hand it to
-`STOW`.
+list (ISPF edit, browse, REVIEW, RPF etc.) These live in the PDS **directory 
+user data**, which is exactly what the read path already decodes in 
+`mvs_extract_ispf_stats` (`src/mvspdir.c`). Write is the inverse: build that 
+user data and hand it to `STOW`.
 
 **Mechanism.** JCC's `__setstow(handle, buffer, length, ttrn)` is *meant* to
 record directory user data for the `STOW` that `fclose` performs, but it does
@@ -397,7 +420,7 @@ which is the EBCDIC newline under JCC.
   infrequent (COMMIT / idle / evict / shutdown), so this is acceptable.
 
 Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
-`tests/tmvsio3.c` (`/count_lines`, `/encode` round-trip, `/build_stats`).
+`tests/tmvspdir.c` (`/count_lines`, `/encode` round-trip, `/build_stats`).
 
 ## 10. Files impacted
 

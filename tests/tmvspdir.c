@@ -1,12 +1,15 @@
 /*
- * tests/tmvsio3.c
+ * tests/tmvspdir.c
  *
- * Unit tests for mvsio.c:
+ * Unit tests for mvspdir.c:
  *   mvs_extract_ispf_stats
  *   mvs_set_no_ispf_stats
  *   mvs_pds_member_entry_set
  *   mvs_skip_dir_entry
  *   mvs_process_dir_block
+ *   mvs_ispf_count_lines
+ *   mvs_encode_ispf_stats
+ *   mvs_build_write_stats
  *
  * None of these functions call exports_count() or exports_get(), so no
  * stub export table setup is required.
@@ -1003,7 +1006,7 @@ static MunitSuite sub_suites[] = {
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 
-MunitSuite tmvsio3_suite = {
+MunitSuite tmvspdir_suite = {
     "/mvsio",
     NULL,
     sub_suites,
