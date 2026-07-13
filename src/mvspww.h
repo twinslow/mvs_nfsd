@@ -87,6 +87,11 @@ int  pww_truncate(int export_idx, int dataset_idx,
  * (not-yet-stowed) member is visible with its current size. */
 pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name);
 
+/* Discard any pending (buffered) write for a member WITHOUT flushing it.
+ * Used by REMOVE so a delete cannot be undone by a later flush re-STOWing the
+ * member.  Returns 1 if a pending member was dropped, 0 if none was pending. */
+int  pww_discard(const char *dsname_ebcdic, const char *member_name);
+
 /* Flush one member to the PDS (STOW) now (NFS COMMIT).  The slot is kept
  * (marked clean) so further writes can continue.  Returns 0 on success
  * (including "nothing pending"), -1 on write failure (errno set). */

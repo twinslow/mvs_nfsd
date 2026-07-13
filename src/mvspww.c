@@ -409,6 +409,17 @@ pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name)
     return pww_find_slot(dsname_ebcdic, member_name);
 }
 
+int pww_discard(const char *dsname_ebcdic, const char *member_name)
+{
+    pending_member_t *pm = pww_find_slot(dsname_ebcdic, member_name);
+    if (pm == NULL)
+        return 0;                  /* nothing buffered for this member */
+    /* Drop the buffer WITHOUT flushing -- the caller (REMOVE) is deleting the
+       member, so it must not be re-STOWed by a later flush. */
+    pww_release_slot(pm);
+    return 1;
+}
+
 int pww_flush_member(const char *dsname_ebcdic, const char *member_name)
 {
     pending_member_t *pm;

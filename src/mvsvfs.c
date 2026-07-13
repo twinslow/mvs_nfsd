@@ -24,6 +24,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#ifdef __MVS__
+#include <io.h>          /* JCC: _unlink() removes a PDS member */
+#endif
 
 #include "ebcdic.h"
 #include "mvsfid.h"
@@ -543,16 +546,76 @@ int vfs_create(const char *path, uint32_t mode)
 }
  
 /* -------------------------------------------------------------------- */
-/* vfs_remove: delete a regular file.                                   */
+/* vfs_remove: delete a PDS member (NFS REMOVE).                        */
+/*                                                                      */
+/* Resolves the path to a member, drops any buffered (pending) write so */
+/* a later flush can't recreate it, then removes the member with JCC's  */
+/* _unlink().  A member that only ever existed in the write buffer is    */
+/* not on disk, so _unlink's ENOENT is treated as success in that case. */
+/* Finally bumps the directory mtime and drops the cached listing so the */
+/* member disappears from the next readdir (same as the STOW path).      */
 /* -------------------------------------------------------------------- */
 int vfs_remove(const char *path)
 {
-    errno = EACCES;
-    return -1;
-
-#if 0
-    return unlink(path);
+    char ebcdic_path[MAX_PATH_LEN];
+    char pds_dsname[45];
+    char pds_member_name[9];
+    int  export_idx;
+    int  dataset_idx;
+    int  had_pending;
+    int  rc;
+#ifdef __MVS__
+    char dsn_path[6 + 44 + 1 + 8 + 1 + 1];   /* //DSN:dsname(member)\0 */
 #endif
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path,
+                    MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
+
+    /* Only a PDS member is a REMOVE target; a PDS directory / export root
+       is not (that would be RMDIR). */
+    if (mvs_path_type(ebcdic_path, &export_idx, &dataset_idx)
+            != MVS_PATH_TYPE_PDS_MEMBER) {
+        errno = EISDIR;
+        return -1;
+    }
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return -1;    /* errno set (ENOENT for wrong extension / bad name) */
+
+    /* Drop any buffered write first, so a later flush cannot recreate the
+       member we are about to delete. */
+    had_pending = pww_discard(pds_dsname, pds_member_name);
+
+#ifdef __MVS__
+    strcpy(dsn_path, "//DSN:");
+    strcat(dsn_path, pds_dsname);
+    strcat(dsn_path, "(");
+    strcat(dsn_path, pds_member_name);
+    strcat(dsn_path, ")");
+    errno = 0;
+    rc = _unlink(dsn_path);
+#else
+    errno = ENOENT;   /* the POSIX test build has no on-disk PDS member */
+    rc = -1;
+#endif
+
+    if (rc != 0) {
+        /* If it only lived in the write buffer, discarding it WAS the
+           removal; otherwise report the real failure. */
+        if (had_pending && errno == ENOENT)
+            rc = 0;
+        else
+            return -1;
+    }
+
+    /* Directory changed: bump its mtime so clients refresh, and drop our
+       cached scan so the next readdir omits the removed member. */
+    export_dataset_touch(export_idx, dataset_idx);
+    dir_openlist_invalidate(pds_dsname);
+
+    log_debug("vfs_remove: removed %s(%s)", pds_dsname, pds_member_name);
+    return 0;
 }
  
 /* -------------------------------------------------------------------- */

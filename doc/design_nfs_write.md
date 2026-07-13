@@ -468,10 +468,12 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 5. **Idle-flush timeout value** - Yes, I think this should be per member.
    We can poll the pool for timeouts every select loop to look for
    timed out buffered writes. 
-6. **REMOVE / RENAME / SETATTTR(size=0 truncate)** - This can be in a future
-   phase. I don't believe it is possible to delete a member from a PDS using
-   the JCC library functions. Same is true for a rename. I think the 
-   truncate could be implemented.  
+6. **REMOVE / RENAME / SETATTR(size=0 truncate)** — SETATTR(size) and REMOVE
+   are now implemented (SETATTR routes to the pool; REMOVE uses JCC's
+   `_unlink()` on `//DSN:dsname(member)` — the earlier belief that JCC could
+   not delete a member was wrong).  RENAME remains unimplemented: JCC provides
+   no in-place member rename, so it would need a dedicated assembler STOW
+   routine.
 
 ## 12. Suggested implementation order
 
@@ -549,13 +551,13 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
 
 - Random in-place update of existing members (impossible on PDS; a re-write
   of the whole member is the only option).
-- **REMOVE / RENAME** — per §11.1, the JCC library provides no way to delete
-  or rename a PDS member, so these are not implementable through JCC alone;
-  they would need a callable S/370 ASM routine (STOW with the delete/rename
-  option) and are deferred to a later phase.
-- **SETATTR size=0 (truncate)** — believed implementable (write an empty
-  member), and interacts with the buffer model (truncate-on-open before
-  writes); deferred but noted as feasible.
+- **RENAME** — JCC has no in-place member rename, so it is not implementable
+  through JCC alone; it would need a callable S/370 ASM routine (STOW with the
+  change/rename option) and is deferred.
+  (**REMOVE is now implemented** via JCC's `_unlink()` — `vfs_remove` in
+  `src/mvsvfs.c`.  It discards any pending write for the member first so a
+  later flush can't recreate it, then bumps the directory mtime / invalidates
+  the readdir cache like the STOW path.)
 - MKDIR / SETATTR mode/uid/gid.
 - Concurrent writers to the same member (last-flush-wins is acceptable
   initially; the pool is keyed per member).

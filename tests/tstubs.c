@@ -26,6 +26,7 @@
 
 #include "nfsd.h"    /* export_t, pds_dataset_t, MAX_* */
 #include "tstubs.h"
+#include "asmutils.h" /* mvs_dynalloc / mvs_stow name aliases (for the stubs) */
 
 static export_t s_exports[MAX_EXPORTS];
 static int      s_nexports = 0;
@@ -153,3 +154,31 @@ int export_dataset_find_by_dirname(int export_idx, const char *dirname_ebcdic)
     }
     return -1;
 }
+
+/* -----------------------------------------------------------------------
+ * Stubs for the flush/STOW dependencies of mvspww.c.  The pending-write
+ * pool references these, but the unit tests never trigger a flush, so
+ * empty stubs satisfy the linker without pulling in exports.c or the
+ * assembler helpers.
+ * ----------------------------------------------------------------------- */
+void export_dataset_touch(int export_idx, int dataset_idx)
+{
+    (void)export_idx; (void)dataset_idx;
+}
+
+#ifdef __MVS__
+/* mvspww.c references these only under __MVS__ (its real STOW path). */
+int mvs_dynalloc(uint8_t request_type, uint8_t options,
+                 const char *dsname, const char *member, char *ddname)
+{
+    (void)request_type; (void)options; (void)dsname; (void)member; (void)ddname;
+    return -1;
+}
+
+int mvs_stow(const char *ddname, const char *member,
+             void *userdata, int user_data_length_bytes)
+{
+    (void)ddname; (void)member; (void)userdata; (void)user_data_length_bytes;
+    return -1;
+}
+#endif

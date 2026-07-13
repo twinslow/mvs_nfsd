@@ -65,6 +65,7 @@
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
+//MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
 //*                                                                   
 //********************************************************************
 //*                                                                   
@@ -79,6 +80,7 @@
 //TMVSPDIR EXEC JCCCTST,MODNAME=TMVSPDIR                               
 //TMVSPRW  EXEC JCCCTST,MODNAME=TMVSPRW
 //TMVSPRF  EXEC JCCCTST,MODNAME=TMVSPRF
+//TMVSPWW  EXEC JCCCTST,MODNAME=TMVSPWW
 //*                                                                   
 //********************************************************************
 //*                                                                   
@@ -99,6 +101,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             
@@ -108,6 +111,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPDIR)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPWW)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
 //          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),

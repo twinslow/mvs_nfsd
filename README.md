@@ -35,6 +35,7 @@ other important datasets that could prevent an IPL from completing.
 | File size (true text-mode size cached) | Working |
 | Create / write files (PDS member) | Working |
 | ISPF statistics set/updated on write and `touch` | Working |
+| Remove a file (PDS member) | Working |
 | Rename files | Not implemented |
 
 ## Source files
@@ -551,9 +552,9 @@ on every LOOKUP and READDIRPLUS call.
   phase (see the design doc).
 - No locking (`nolock` mount option recommended).
 - No authentication: all clients have full read/write access.
-- RENAME is not implemented — JCC provides no way to rename or delete a PDS
-  member; it would need a dedicated assembler STOW routine.  (Create and write
-  are implemented.)
+- RENAME is not implemented — JCC provides no way to rename a PDS member in
+  place; it would need a dedicated assembler STOW routine.  (Create, write, and
+  REMOVE are implemented — REMOVE uses JCC's `_unlink()` on the member.)
 
 ## Contributing
 
