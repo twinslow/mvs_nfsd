@@ -298,6 +298,7 @@ int main(int argc, char *argv[])
 
     log_set_level(LOG_DEBUG);
     log_set_timestamps(1);
+    log_proc_init();       /* per-procedure log levels -> inherit global */
 
     log_info("nfsd: starting up");
 
@@ -416,11 +417,14 @@ int main(int argc, char *argv[])
             break;
         }
         if (cib_rc == 1) {
-            /* MODIFY (F) command received -- log and continue.
-             * Future: parse modify_buf for supported sub-commands. */
+            /* MODIFY (F) command received.  Hand the operand text to the
+             * logger, which claims "SET LOGLVL ..." commands; anything it
+             * does not recognise (return 1) is reported as unhandled. */
             if (modify_len > 0) {
                 modify_buf[modify_len] = '\0';
-                log_warn("MVS MODIFY ignored: %s", modify_buf);
+                if (log_handle_modify(modify_buf) == 1)
+                    log_warn("MVS MODIFY ignored (unrecognised): %s",
+                             modify_buf);
             } else {
                 log_error("MVS MODIFY received (no data)");
             }

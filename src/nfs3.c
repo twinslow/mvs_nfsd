@@ -1292,9 +1292,11 @@ static const char *proc_name(uint32_t proc)
 
 void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
 {
-    clock_t t_start;
-    clock_t t_elapsed;
-    int     perf_slot;
+    clock_t     t_start;
+    clock_t     t_elapsed;
+    int         perf_slot;
+    int         log_slot;
+    log_level_t saved_level;
 
     (void)fd;
 
@@ -1307,25 +1309,33 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
         return;
     }
 
-    /* Map NFS3 procedure number to performance slot. */
+    /* Map NFS3 procedure number to performance slot and log slot. */
     switch (call->proc) {
-    case NFS3PROC_GETATTR:     perf_slot = PERF_NFS3_GETATTR;  break;
-    case NFS3PROC_SETATTR:     perf_slot = PERF_NFS3_SETATTR;  break;
-    case NFS3PROC_LOOKUP:      perf_slot = PERF_NFS3_LOOKUP;   break;
-    case NFS3PROC_ACCESS:      perf_slot = PERF_NFS3_ACCESS;   break;
-    case NFS3PROC_READ:        perf_slot = PERF_NFS3_READ;     break;
-    case NFS3PROC_WRITE:       perf_slot = PERF_NFS3_WRITE;    break;
-    case NFS3PROC_CREATE:      perf_slot = PERF_NFS3_CREATE;   break;
-    case NFS3PROC_REMOVE:      perf_slot = PERF_NFS3_REMOVE;   break;
-    case NFS3PROC_RENAME:      perf_slot = PERF_NFS3_RENAME;   break;
-    case NFS3PROC_READDIR:     perf_slot = PERF_NFS3_READDIR;  break;
-    case NFS3PROC_READDIRPLUS: perf_slot = PERF_NFS3_RDIRPLUS; break;
-    case NFS3PROC_FSSTAT:      perf_slot = PERF_NFS3_FSSTAT;   break;
-    case NFS3PROC_FSINFO:      perf_slot = PERF_NFS3_FSINFO;   break;
-    case NFS3PROC_PATHCONF:    perf_slot = PERF_NFS3_PATHCONF; break;
-    case NFS3PROC_COMMIT:      perf_slot = PERF_NFS3_COMMIT;   break;
-    default:                   perf_slot = -1;                  break;
+    case NFS3PROC_GETATTR:     perf_slot = PERF_NFS3_GETATTR;  log_slot = LOG_PROC_GETATTR;     break;
+    case NFS3PROC_SETATTR:     perf_slot = PERF_NFS3_SETATTR;  log_slot = LOG_PROC_SETATTR;     break;
+    case NFS3PROC_LOOKUP:      perf_slot = PERF_NFS3_LOOKUP;   log_slot = LOG_PROC_LOOKUP;      break;
+    case NFS3PROC_ACCESS:      perf_slot = PERF_NFS3_ACCESS;   log_slot = LOG_PROC_ACCESS;      break;
+    case NFS3PROC_READ:        perf_slot = PERF_NFS3_READ;     log_slot = LOG_PROC_READ;        break;
+    case NFS3PROC_WRITE:       perf_slot = PERF_NFS3_WRITE;    log_slot = LOG_PROC_WRITE;       break;
+    case NFS3PROC_CREATE:      perf_slot = PERF_NFS3_CREATE;   log_slot = LOG_PROC_CREATE;      break;
+    case NFS3PROC_REMOVE:      perf_slot = PERF_NFS3_REMOVE;   log_slot = LOG_PROC_REMOVE;      break;
+    case NFS3PROC_RENAME:      perf_slot = PERF_NFS3_RENAME;   log_slot = LOG_PROC_RENAME;      break;
+    case NFS3PROC_READDIR:     perf_slot = PERF_NFS3_READDIR;  log_slot = LOG_PROC_READDIR;     break;
+    case NFS3PROC_READDIRPLUS: perf_slot = PERF_NFS3_RDIRPLUS; log_slot = LOG_PROC_READDIRPLUS; break;
+    case NFS3PROC_FSSTAT:      perf_slot = PERF_NFS3_FSSTAT;   log_slot = LOG_PROC_FSSTAT;      break;
+    case NFS3PROC_FSINFO:      perf_slot = PERF_NFS3_FSINFO;   log_slot = LOG_PROC_FSINFO;      break;
+    case NFS3PROC_PATHCONF:    perf_slot = PERF_NFS3_PATHCONF; log_slot = LOG_PROC_PATHCONF;    break;
+    case NFS3PROC_COMMIT:      perf_slot = PERF_NFS3_COMMIT;   log_slot = LOG_PROC_COMMIT;      break;
+    case NFS3PROC_NULL:        perf_slot = -1;                 log_slot = LOG_PROC_NULL;        break;
+    default:                   perf_slot = -1;                 log_slot = -1;                   break;
     }
+
+    /* Install this procedure's effective log level for the duration of the
+       call, then restore the global level on the way out.  Out-of-range
+       (unmapped) procedures resolve to the global level, so the save/restore
+       is a harmless no-op for them. */
+    saved_level = log_get_level();
+    log_set_level(log_proc_get_level(log_slot));
 
     t_start = clock();
 
@@ -1354,4 +1364,7 @@ void handle_nfs3(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
     t_elapsed = clock() - t_start;
     if (perf_slot >= 0)
         mvsprf_record(perf_slot, t_elapsed);
+
+    /* Restore the global level regardless of which procedure ran. */
+    log_set_level(saved_level);
 }

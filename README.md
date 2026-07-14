@@ -501,10 +501,51 @@ on Linux and in EBCDIC on MVS.  The `export_t` struct carries both variants:
 
 ### Logging
 
-`logger.c` provides five levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
-On MVS, `INFO` and above are also sent to the operator console via WTO
-(`_write2op`).  The `log_ascii()` helper converts an ASCII string to EBCDIC
-for use as a `%s` argument on MVS, where `fprintf()` expects EBCDIC.
+`logger.c` provides six levels, from most to least detailed: `DEBUG`,
+`TRACE`, `INFO`, `WARN`, `ERROR`, `FATAL`.  `TRACE` sits between `DEBUG`
+and `INFO` — more detailed than `INFO`, less than `DEBUG`.  The emit
+filter is "drop anything below the current level", so setting the level
+to `TRACE` emits `TRACE` and everything above it.
+
+On MVS, lines are also sent to the operator console via WTO (`_write2op`).
+The console has its **own** threshold (`WTOLVL`, default `INFO`), but it is
+a *subset* of the log stream, not an independent channel: a line reaches
+the console only when it clears **both** the stream level and `WTOLVL`, so
+the effective console floor is `max(LOGLVL, WTOLVL)`.  Raising `WTOLVL`
+quietens the console without touching the stream — e.g. stream at `DEBUG`
+for the log file while the console only shows `WARN` and above — but
+`WTOLVL` can never surface a line the stream level has already filtered
+out.  The `log_ascii()` helper converts an ASCII string to EBCDIC for use
+as a `%s` argument on MVS, where `fprintf()` expects EBCDIC.
+
+#### Per-procedure log levels
+
+Each NFSv3 procedure (GETATTR, SETATTR, WRITE, ...) has its own log-level
+slot in a table owned by the logger.  Every slot starts out *inheriting*
+the global level.  The NFS3 dispatcher installs a procedure's effective
+level for the duration of the call and restores the global level on the
+way out, so one chatty operation can be turned up (or a noisy one turned
+down) without touching the rest.
+
+The table is driven at runtime by the MVS `MODIFY` (`F`) command:
+
+| Command | Effect |
+|---|---|
+| `F NFSD,SET LOGLVL INFO` | Set the **global** log-stream level to `INFO`. |
+| `F NFSD,SET LOGLVL TRACE PROC=WRITE` | Pin the NFS **WRITE** handler to `TRACE`. |
+| `F NFSD,SET LOGLVL INFO PROC=SETATTR` | Pin **SETATTR** to `INFO`. |
+| `F NFSD,SET WTOLVL DEBUG` | Set the **operator-console** (WTO) level to `DEBUG`. |
+
+`<level>` is `DEBUG|TRACE|INFO|WARN|ERROR|FATAL`; `PROC=<name>` is any
+NFS3 procedure name (`GETATTR`, `SETATTR`, `LOOKUP`, `ACCESS`, `READ`,
+`WRITE`, `CREATE`, `REMOVE`, `RENAME`, `READDIR`, `READDIRPLUS`,
+`FSSTAT`, `FSINFO`, `PATHCONF`, `COMMIT`, `NULL`).  A global `SET LOGLVL`
+changes the baseline that every *inheriting* procedure follows; a pinned
+procedure keeps its level until re-pinned.  Parsing is case-insensitive.
+Unrecognised or malformed commands are logged and ignored.
+
+The MODIFY handler in `nfsd.c` simply forwards the operand text to
+`log_handle_modify()`; all command grammar lives in `logger.c`.
 
 ### MVS name-length limits
 

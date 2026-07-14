@@ -58,8 +58,9 @@
 //* Compile application modules
 //*
 //********************************************************************
-//EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC                                
-//MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                
+//EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC
+//LOGGER   EXEC JCCCMOD,MODNAME=LOGGER
+//MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL
 //MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                                
 //MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR
@@ -72,8 +73,9 @@
 //* Compile unit test modules                                         
 //*                                                                   
 //********************************************************************
-//TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS                                
-//TMVSDOL  EXEC JCCCTST,MODNAME=TMVSDOL                               
+//TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS
+//TLOGGER  EXEC JCCCTST,MODNAME=TLOGGER
+//TMVSDOL  EXEC JCCCTST,MODNAME=TMVSDOL
 //TMVSFSZ  EXEC JCCCTST,MODNAME=TMVSFSZ                               
 //TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
 //TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
@@ -112,6 +114,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPWW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TLOGGER)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
 //          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),
