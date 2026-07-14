@@ -319,5 +319,10 @@ void export_dataset_touch(int export_idx, int dataset_idx)
     pds_dataset_t *ds = export_dataset_get(export_idx, dataset_idx);
     if (ds != NULL)
         ds->dir_mtime = (uint32_t)time(NULL);
+    else {
+        log_warn("Server tried to upd dir_mtime for exp_idx %d, " 
+            "ds_idx %d, which was not found\n", 
+            export_idx, dataset_idx);
+    }
 }
 

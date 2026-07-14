@@ -791,3 +791,84 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     return entry;
 }
 
+
+/* -------------------------------------------------------------------- */
+/* Fold a member list into a 32-bit signature (pure; no I/O).           */
+/*                                                                      */
+/* FNV-1a over each entry's 8-char name and its TTR (first_block_tt +   */
+/* first_block_rec), then the member count.  Deterministic and stable   */
+/* for an unchanged, same-order list (a PDS directory is name-sorted);  */
+/* changes on any add / remove / replace (new TTR).  Blind to an        */
+/* in-place update that preserves name, length, and TTR (a "zap").      */
+/* Split out from mvs_pds_dir_signature so it can be unit-tested with an */
+/* in-memory list.                                                       */
+/* -------------------------------------------------------------------- */
+uint32_t mvs_pds_dir_sig_calc(const pds_member_entry_t *list, int count)
+{
+    uint32_t hash;
+    int      i;
+    int      j;
+
+    hash = 2166136261u;   /* FNV-1a offset basis */
+    for (i = 0; i < count; i++) {
+        const pds_member_entry_t *e = &list[i];
+        for (j = 0; j < 8; j++) {
+            hash ^= (uint32_t)(unsigned char)e->name[j];
+            hash *= 16777619u;   /* FNV-1a prime */
+        }
+        hash ^= (uint32_t)(e->first_block_tt & 0xFFu);
+        hash *= 16777619u;
+        hash ^= (uint32_t)((e->first_block_tt >> 8) & 0xFFu);
+        hash *= 16777619u;
+        hash ^= (uint32_t)e->first_block_rec;
+        hash *= 16777619u;
+    }
+    /* Mix in the count so an add+remove that happens to preserve the fold
+       still changes the signature. */
+    hash ^= (uint32_t)count;
+    hash *= 16777619u;
+
+    return hash;
+}
+
+/* -------------------------------------------------------------------- */
+/* Compute a signature of a PDS directory's current contents.           */
+/*                                                                      */
+/* Reads the whole directory and folds it via mvs_pds_dir_sig_calc.     */
+/* -------------------------------------------------------------------- */
+int mvs_pds_dir_signature(
+    const char *dsname,
+    int         export_idx,
+    uint32_t   *sig_out)
+{
+    pds_member_list_t  mlist;
+    int                end_of_dir = 0;
+    int                rc;
+    /* 8 low bytes so every real (EBCDIC) member name compares >= it, and a
+       valid empty C string for the %s log in mvs_read_pds_dir. */
+    char               from_start[9];
+
+    if (sig_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(from_start, 0, sizeof(from_start));
+
+    if (mvspdir_mlist_init(&mlist) != 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    rc = mvs_pds_member_list(dsname, export_idx, from_start, &mlist, &end_of_dir);
+    if (rc < 0) {
+        mvspdir_mlist_free(&mlist);
+        return -1;   /* errno set by mvs_pds_member_list */
+    }
+
+    *sig_out = mvs_pds_dir_sig_calc(mlist.list, mlist.number_in_list);
+
+    mvspdir_mlist_free(&mlist);
+    return 0;
+}
+

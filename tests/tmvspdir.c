@@ -10,6 +10,7 @@
  *   mvs_ispf_count_lines
  *   mvs_encode_ispf_stats
  *   mvs_build_write_stats
+ *   mvs_pds_dir_sig_calc
  *
  * None of these functions call exports_count() or exports_get(), so no
  * stub export table setup is required.
@@ -991,6 +992,127 @@ static MunitTest build_stats_tests[] = {
 
 
 /* ==================================================================== */
+/* Suite 9: mvs_pds_dir_sig_calc                                        */
+/*                                                                      */
+/* The directory-change detector relies on two properties: the same     */
+/* directory contents must fold to the SAME signature (or clients would */
+/* re-read constantly), and any add / remove / replace must fold to a    */
+/* DIFFERENT one (or an out-of-band change would go unnoticed).          */
+/* ==================================================================== */
+
+/* Build a member entry with a given name and TTR. */
+static void dsig_mk(pds_member_entry_t *e, const char *name,
+                    uint16_t tt, uint8_t r)
+{
+    memset(e, 0, sizeof(*e));
+    strncpy(e->name, name, sizeof(e->name) - 1);
+    e->first_block_tt  = tt;
+    e->first_block_rec = r;
+}
+
+/* Same contents -> identical signature (the stability invariant). */
+static MunitResult test_dsig_stable(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t a[3];
+    pds_member_entry_t b[3];
+    (void)params; (void)data;
+
+    dsig_mk(&a[0], "ALPHA",  1, 0); dsig_mk(&b[0], "ALPHA",  1, 0);
+    dsig_mk(&a[1], "BETA",   1, 5); dsig_mk(&b[1], "BETA",   1, 5);
+    dsig_mk(&a[2], "GAMMA",  2, 1); dsig_mk(&b[2], "GAMMA",  2, 1);
+
+    munit_assert(mvs_pds_dir_sig_calc(a, 3) == mvs_pds_dir_sig_calc(b, 3));
+    return MUNIT_OK;
+}
+
+/* Adding (or removing) a member changes the signature. */
+static MunitResult test_dsig_add_remove(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t list[3];
+    uint32_t two, three;
+    (void)params; (void)data;
+
+    dsig_mk(&list[0], "ALPHA", 1, 0);
+    dsig_mk(&list[1], "BETA",  1, 5);
+    dsig_mk(&list[2], "GAMMA", 2, 1);
+
+    two   = mvs_pds_dir_sig_calc(list, 2);
+    three = mvs_pds_dir_sig_calc(list, 3);   /* same array, one more member */
+
+    munit_assert(two != three);
+    return MUNIT_OK;
+}
+
+/* A changed TTR (member replaced in place with new blocks) is detected. */
+static MunitResult test_dsig_ttr_change(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t base[2];
+    pds_member_entry_t tt_diff[2];
+    pds_member_entry_t r_diff[2];
+    uint32_t sig_base;
+    (void)params; (void)data;
+
+    dsig_mk(&base[0],    "ALPHA", 1, 0); dsig_mk(&base[1],    "BETA", 1, 5);
+    dsig_mk(&tt_diff[0], "ALPHA", 1, 0); dsig_mk(&tt_diff[1], "BETA", 9, 5);
+    dsig_mk(&r_diff[0],  "ALPHA", 1, 0); dsig_mk(&r_diff[1],  "BETA", 1, 6);
+
+    sig_base = mvs_pds_dir_sig_calc(base, 2);
+    munit_assert(sig_base != mvs_pds_dir_sig_calc(tt_diff, 2));
+    munit_assert(sig_base != mvs_pds_dir_sig_calc(r_diff,  2));
+    return MUNIT_OK;
+}
+
+/* A changed member name is detected. */
+static MunitResult test_dsig_name_change(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t base[2];
+    pds_member_entry_t renamed[2];
+    (void)params; (void)data;
+
+    dsig_mk(&base[0],    "ALPHA", 1, 0); dsig_mk(&base[1],    "BETA",  1, 5);
+    dsig_mk(&renamed[0], "ALPHA", 1, 0); dsig_mk(&renamed[1], "BETA2", 1, 5);
+
+    munit_assert(mvs_pds_dir_sig_calc(base, 2) !=
+                 mvs_pds_dir_sig_calc(renamed, 2));
+    return MUNIT_OK;
+}
+
+/* An empty directory folds stably and differs from a non-empty one. */
+static MunitResult test_dsig_empty(
+    const MunitParameter params[], void *data)
+{
+    pds_member_entry_t one[1];
+    (void)params; (void)data;
+
+    dsig_mk(&one[0], "ALPHA", 1, 0);
+
+    munit_assert(mvs_pds_dir_sig_calc(NULL, 0) ==
+                 mvs_pds_dir_sig_calc(NULL, 0));
+    munit_assert(mvs_pds_dir_sig_calc(NULL, 0) !=
+                 mvs_pds_dir_sig_calc(one, 1));
+    return MUNIT_OK;
+}
+
+static MunitTest dir_sig_tests[] = {
+    { "/stable",       test_dsig_stable,      NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/add_remove",   test_dsig_add_remove,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/ttr_change",   test_dsig_ttr_change,  NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/name_change",  test_dsig_name_change, NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { "/empty",        test_dsig_empty,       NULL, NULL,
+      MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+
+/* ==================================================================== */
 /* Suite registration                                                   */
 /* ==================================================================== */
 
@@ -1003,6 +1125,7 @@ static MunitSuite sub_suites[] = {
     { "/count_lines", count_lines_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/encode",      encode_tests,      NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/build_stats", build_stats_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/dir_sig",     dir_sig_tests,     NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }
 };
 

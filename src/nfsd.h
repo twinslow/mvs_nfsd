@@ -356,6 +356,17 @@ typedef struct {
     char           file_ext[MAX_FILE_EXT_LEN];     /* extension appended to member file names      */
     mvs_dcb_info_t dcbinfo;
     uint32_t       dir_mtime;   /* dir last-modified (epoch secs); bumped on STOW; 0 = unset */
+
+    /*
+     * Out-of-band change detection (see vfs_stat_dataset).  Members added,
+     * removed, or replaced directly on MVS (IEBGENER, ISPF, ...) do not go
+     * through the NFS write path, so they never bump dir_mtime.  On a
+     * throttled schedule vfs_stat_dataset reads the PDS directory, folds it
+     * into dir_sig, and bumps dir_mtime when the signature changes so
+     * clients re-read the listing.
+     */
+    uint32_t       dir_sig;        /* last directory signature (0 = none yet)     */
+    uint32_t       dir_sig_check;  /* epoch secs of last signature check (0=never) */
 } pds_dataset_t;
 
 /* One exported directory (may group several PDS datasets) */

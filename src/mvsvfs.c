@@ -191,11 +191,25 @@ static uint32_t vfs_dir_epoch(void)
     return (uint32_t)g_dir_epoch;
 }
 
+/*
+ * Minimum seconds between out-of-band directory-change checks for a given
+ * dataset.  Bounds the cost of the signature read to at most one PDS
+ * directory read per this many seconds per dataset, regardless of how many
+ * directory GETATTRs arrive.  Also the upper bound on how long an
+ * out-of-band change (e.g. an IEBGENER add) takes to become visible.
+ * Keep it comfortably larger than a client's READDIRPLUS enumeration time
+ * so a genuine change rarely lands mid-scan (which would cost one harmless
+ * cookie-0 restart on the Linux client).
+ */
+#define DIR_REFRESH_THROTTLE_SECS  10u
+
 static int vfs_stat_dataset(const char *path, int export_idx,
                             int dataset_idx, vfs_stat_t *vs)
 {
     pds_dataset_t *ds;
     uint32_t       dmtime;
+    uint32_t       now_secs;
+    uint32_t       sig;
 
     (void)path;
 
@@ -205,10 +219,33 @@ static int vfs_stat_dataset(const char *path, int export_idx,
         return -1;
     }
 
-    /* Directory mtime: the per-dataset value once a member has been stowed,
+    /* Out-of-band change detection (throttled).  Members added, removed, or
+       replaced directly on MVS (IEBGENER, ISPF, ...) never pass through the
+       NFS write path, so nothing bumps dir_mtime for them.  On a throttled
+       schedule, re-read the PDS directory, fold it into a signature, and
+       bump dir_mtime (and drop any cached listing) when it changes so the
+       client re-reads.  The first check only establishes the baseline. */
+    now_secs = (uint32_t)time(NULL);
+    if (ds->dir_sig_check == 0 ||
+        now_secs - ds->dir_sig_check >= DIR_REFRESH_THROTTLE_SECS) {
+        if (mvs_pds_dir_signature(ds->dsname_ebcdic, export_idx, &sig) == 0) {
+            if (ds->dir_sig_check != 0 && sig != ds->dir_sig) {
+                ds->dir_mtime = now_secs;
+                dir_openlist_invalidate(ds->dsname_ebcdic);
+                log_debug("vfs_stat_dataset: %s changed out-of-band;"
+                          " bumped dir_mtime",
+                          log_ascii(ds->dsname_ebcdic));
+            }
+            ds->dir_sig = sig;
+        }
+        ds->dir_sig_check = now_secs;
+    }
+
+    /* Directory mtime: the per-dataset value once a member has been stowed
+       (via the NFS write path) or an out-of-band change was detected above,
        otherwise the stable server epoch.  It is STABLE between modifications
-       (so the client's readdir does not loop) but BUMPS when a member is
-       added/replaced (so the client invalidates its cached listing). */
+       (so the client's readdir does not loop) but BUMPS when the directory
+       changes (so the client invalidates its cached listing). */
     dmtime = (ds->dir_mtime != 0) ? ds->dir_mtime : vfs_dir_epoch();
 
     vs->ftype = NF3DIR;
@@ -564,9 +601,7 @@ int vfs_remove(const char *path)
     int  dataset_idx;
     int  had_pending;
     int  rc;
-#ifdef __MVS__
     char dsn_path[6 + 44 + 1 + 8 + 1 + 1];   /* //DSN:dsname(member)\0 */
-#endif
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path,
                     MAX_PATH_LEN - 1);
@@ -587,7 +622,6 @@ int vfs_remove(const char *path)
        member we are about to delete. */
     had_pending = pww_discard(pds_dsname, pds_member_name);
 
-#ifdef __MVS__
     strcpy(dsn_path, "//DSN:");
     strcat(dsn_path, pds_dsname);
     strcat(dsn_path, "(");
@@ -595,10 +629,6 @@ int vfs_remove(const char *path)
     strcat(dsn_path, ")");
     errno = 0;
     rc = _unlink(dsn_path);
-#else
-    errno = ENOENT;   /* the POSIX test build has no on-disk PDS member */
-    rc = -1;
-#endif
 
     if (rc != 0) {
         /* If it only lived in the write buffer, discarding it WAS the

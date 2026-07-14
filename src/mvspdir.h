@@ -173,6 +173,24 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     int          export_idx,
     pds_member_entry_t *member_entry);
 
+/* Fold an in-memory member list into a 32-bit signature: FNV-1a over each
+   entry's name and TTR (first_block_tt / first_block_rec), plus the count.
+   Deterministic and stable for an unchanged, same-order list; changes on
+   any add / remove / replace.  Pure (no I/O) so it can be unit-tested. */
+uint32_t mvs_pds_dir_sig_calc(const pds_member_entry_t *list, int count);
+
+/* Compute a cheap signature of a PDS directory's current contents by
+   reading the directory and folding it via mvs_pds_dir_sig_calc.  The
+   value changes when members are added, removed, or replaced (new TTR),
+   letting a caller detect out-of-band changes that did not go through the
+   NFS write path.  It cannot detect an in-place update that preserves
+   name, length, and TTR (a "zap").
+   Returns 0 and sets *sig_out on success, or -1 on error (errno set). */
+int mvs_pds_dir_signature(
+    const char  *dsname,
+    int          export_idx,
+    uint32_t    *sig_out);
+
 
 
 
