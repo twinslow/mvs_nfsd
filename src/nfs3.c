@@ -2,8 +2,11 @@
  * nfs3.c - NFSv3 procedure implementations (RFC 1813).
  *
  * Implemented: NULL, GETATTR, SETATTR, LOOKUP, ACCESS, READ, WRITE,
- *              CREATE, REMOVE, READDIR, READDIRPLUS, FSSTAT, FSINFO,
- *              PATHCONF, COMMIT.
+ *              CREATE, REMOVE, RENAME, READDIR, READDIRPLUS, FSSTAT,
+ *              FSINFO, PATHCONF, COMMIT.
+ *
+ * RENAME is restricted to renaming a member within its own PDS; a
+ * cross-PDS (different directory) request returns NFS3ERR_XDEV.
  *
  * Not implemented (return NFS3ERR_NOTSUPP):
  *   READLINK, MKDIR, SYMLINK, MKNOD, RMDIR, LINK.

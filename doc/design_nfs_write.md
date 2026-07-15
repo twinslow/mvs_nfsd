@@ -468,12 +468,13 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 5. **Idle-flush timeout value** - Yes, I think this should be per member.
    We can poll the pool for timeouts every select loop to look for
    timed out buffered writes. 
-6. **REMOVE / RENAME / SETATTR(size=0 truncate)** — SETATTR(size) and REMOVE
-   are now implemented (SETATTR routes to the pool; REMOVE uses JCC's
-   `_unlink()` on `//DSN:dsname(member)` — the earlier belief that JCC could
-   not delete a member was wrong).  RENAME remains unimplemented: JCC provides
-   no in-place member rename, so it would need a dedicated assembler STOW
-   routine.
+6. **REMOVE / RENAME / SETATTR(size=0 truncate)** — all now implemented.
+   SETATTR(size) routes to the pool; REMOVE uses JCC's `_unlink()` on
+   `//DSN:dsname(member)` (the earlier belief that JCC could not delete a
+   member was wrong); RENAME uses JCC's `rename()` between two
+   `//DSN:dsname(member)` paths, restricted to the same PDS (a cross-PDS
+   request returns `NFS3ERR_XDEV`) — the earlier belief that JCC had no
+   in-place member rename was also wrong.
 
 ## 12. Suggested implementation order
 
@@ -551,10 +552,12 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
 
 - Random in-place update of existing members (impossible on PDS; a re-write
   of the whole member is the only option).
-- **RENAME** — JCC has no in-place member rename, so it is not implementable
-  through JCC alone; it would need a callable S/370 ASM routine (STOW with the
-  change/rename option) and is deferred.
-  (**REMOVE is now implemented** via JCC's `_unlink()` — `vfs_remove` in
+- Cross-PDS **RENAME** (moving a member to a different dataset): not possible
+  as a rename; `vfs_rename` returns `NFS3ERR_XDEV` so the client falls back to
+  copy+delete.  (**Same-PDS RENAME is now implemented** via JCC's `rename()`
+  between two `//DSN:dsname(member)` paths — `vfs_rename` in `src/mvsvfs.c`.
+  It flushes any pending write for the source first, and
+  **REMOVE is implemented** via JCC's `_unlink()` — `vfs_remove` in
   `src/mvsvfs.c`.  It discards any pending write for the member first so a
   later flush can't recreate it, then bumps the directory mtime / invalidates
   the readdir cache like the STOW path.)

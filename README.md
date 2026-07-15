@@ -328,6 +328,7 @@ sudo journalctl -kf
 | WRITE (echoes the client's requested stability) | ✓ |
 | CREATE (UNCHECKED / GUARDED) | ✓ |
 | REMOVE | ✓ |
+| RENAME (within the same PDS only; cross-PDS → NFS3ERR_XDEV) | ✓ |
 | READDIR | ✓ |
 | READDIRPLUS | ✓ |
 | FSSTAT | ✓ |
@@ -335,7 +336,6 @@ sudo journalctl -kf
 | PATHCONF | ✓ |
 | COMMIT | ✓ (flushes the pending member — STOW) |
 | MKDIR | NFS3ERR_NOTSUPP |
-| RENAME | NFS3ERR_NOTSUPP |
 | SYMLINK / READLINK | NFS3ERR_NOTSUPP |
 | LINK | NFS3ERR_NOTSUPP |
 | MKNOD | NFS3ERR_NOTSUPP |
@@ -593,9 +593,10 @@ on every LOOKUP and READDIRPLUS call.
   phase (see the design doc).
 - No locking (`nolock` mount option recommended).
 - No authentication: all clients have full read/write access.
-- RENAME is not implemented — JCC provides no way to rename a PDS member in
-  place; it would need a dedicated assembler STOW routine.  (Create, write, and
-  REMOVE are implemented — REMOVE uses JCC's `_unlink()` on the member.)
+- RENAME works only **within a single PDS** — a member cannot be moved to a
+  different dataset (different directory).  A cross-PDS request returns
+  `NFS3ERR_XDEV`, which prompts the client to fall back to copy+delete.
+  RENAME uses JCC's `rename()` on the member (as REMOVE uses `_unlink()`).
 
 ## Contributing
 

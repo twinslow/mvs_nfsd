@@ -649,16 +649,106 @@ int vfs_remove(const char *path)
 }
  
 /* -------------------------------------------------------------------- */
-/* vfs_rename: rename / move a file.                                    */
+/* vfs_rename: rename a PDS member within its dataset.                   */
+/*                                                                      */
+/* A PDS member cannot be moved to a different dataset, so the source   */
+/* and target must resolve to the SAME PDS; a cross-PDS request is       */
+/* rejected with XDEV so the client can fall back to copy+delete.        */
 /* -------------------------------------------------------------------- */
 int vfs_rename(const char *from, const char *to)
 {
-    errno = EACCES;
-    return -1;
+    char ebcdic_from[MAX_PATH_LEN];
+    char ebcdic_to[MAX_PATH_LEN];
+    char from_dsname[45];
+    char from_member[9];
+    char to_dsname[45];
+    char to_member[9];
+    int  from_export_idx;
+    int  from_dataset_idx;
+    int  to_export_idx;
+    int  to_dataset_idx;
+    int  rc;
+    char from_path[6 + 44 + 1 + 8 + 1 + 1];   /* //DSN:dsname(member)\0 */
+    char to_path[6 + 44 + 1 + 8 + 1 + 1];
 
-#if 0
-    return rename(from, to);
+    ascii_to_ebcdic((uint8_t *)ebcdic_from, (const uint8_t *)from,
+                    MAX_PATH_LEN - 1);
+    ebcdic_from[MAX_PATH_LEN - 1] = '\0';
+    ascii_to_ebcdic((uint8_t *)ebcdic_to, (const uint8_t *)to,
+                    MAX_PATH_LEN - 1);
+    ebcdic_to[MAX_PATH_LEN - 1] = '\0';
+
+    /* Both endpoints must be PDS members; a PDS directory / export root is
+       not a rename target here (that would be a directory rename). */
+    if (mvs_path_type(ebcdic_from, &from_export_idx, &from_dataset_idx)
+            != MVS_PATH_TYPE_PDS_MEMBER) {
+        errno = EISDIR;
+        return -1;
+    }
+    if (mvs_path_type(ebcdic_to, &to_export_idx, &to_dataset_idx)
+            != MVS_PATH_TYPE_PDS_MEMBER) {
+        errno = EISDIR;
+        return -1;
+    }
+    if (mvs_get_pds_dsn_and_member(ebcdic_from, from_dsname,
+                                   from_member, from_export_idx) < 0)
+        return -1;    /* errno set (ENOENT for wrong extension / bad name) */
+    if (mvs_get_pds_dsn_and_member(ebcdic_to, to_dsname,
+                                   to_member, to_export_idx) < 0)
+        return -1;
+
+    /* A member can only be renamed within its own dataset -- there is no
+       cross-PDS member move.  Report XDEV so the client falls back to
+       copy+delete. */
+    if (strcmp(from_dsname, to_dsname) != 0) {
+#ifdef EXDEV
+        errno = EXDEV;
+#else
+        errno = EINVAL;   /* JCC may lack EXDEV; INVAL is the closest we map */
 #endif
+        return -1;
+    }
+
+    /* Settle buffered writes before touching the directory: flush the source
+       so its on-disk member is complete (a member written but not yet stowed
+       would otherwise be lost, or the rename would not find it), and drop any
+       buffer for the target, which the rename is about to replace. */
+    if (pww_flush_member(from_dsname, from_member) < 0)
+        return -1;    /* errno set by the STOW */
+    pww_discard(to_dsname, to_member);
+
+    strcpy(from_path, "//DSN:");
+    strcat(from_path, from_dsname);
+    strcat(from_path, "(");
+    strcat(from_path, from_member);
+    strcat(from_path, ")");
+
+    strcpy(to_path, "//DSN:");
+    strcat(to_path, to_dsname);
+    strcat(to_path, "(");
+    strcat(to_path, to_member);
+    strcat(to_path, ")");
+
+    /* JCC rename() renames the member within the PDS.  NOTE: behaviour when
+       the target member already exists is JCC-defined and unverified here;
+       the common client case (rename to a new, unused name) does not hit it. */
+    errno = 0;
+    rc = rename(from_path, to_path);
+    if (rc != 0)
+        return -1;    /* errno set by rename() */
+
+    /* The source's (now clean) pending slot still references the OLD name;
+       drop it so it cannot shadow the renamed-away member in vfs_stat. */
+    pww_discard(from_dsname, from_member);
+
+    /* Directory changed: bump its mtime and drop the cached scan so clients
+       refresh and the next readdir reflects the new member name. */
+    export_dataset_touch(from_export_idx, from_dataset_idx);
+    dir_openlist_invalidate(from_dsname);
+
+    log_debug("vfs_rename: renamed %s(%s) -> (%s)",
+              from_dsname, from_member, to_member);
+    return 0;
 }
  
 /* -------------------------------------------------------------------- */
@@ -790,7 +880,9 @@ uint32_t vfs_errno_to_nfs3(int err)
 //        case ENXIO:         return NFS3ERR_NXIO;
         case EACCES:        return NFS3ERR_ACCES;
         case EEXIST:        return NFS3ERR_EXIST;
-//        case EXDEV:         return NFS3ERR_XDEV;
+#ifdef EXDEV
+        case EXDEV:         return NFS3ERR_XDEV;
+#endif
 //        case ENODEV:        return NFS3ERR_NODEV;
         case ENOTDIR:       return NFS3ERR_NOTDIR;
         case EISDIR:        return NFS3ERR_ISDIR;
