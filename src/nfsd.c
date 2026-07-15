@@ -171,6 +171,26 @@ static conn_t g_conns[MAX_CONNECTIONS];
 static int    g_nconns = 0;
 
 /* ------------------------------------------------------------------ */
+/* sock_close: close a SOCKET descriptor.                               */
+/*                                                                      */
+/* On the MVS TCP/IP interface a socket MUST be closed with            */
+/* closesocket().  The C library's close() operates on MVS files and   */
+/* does NOT close a socket: the connection stays open, no FIN is ever   */
+/* sent to the peer, and the descriptor leaks.  The visible symptom is  */
+/* a peer (e.g. the Linux NFS client) stuck in FIN_WAIT2 waiting for a  */
+/* FIN that never arrives, while our side sits in CLOSE_WAIT -- and,    */
+/* once MAX_CONNECTIONS descriptors have leaked, accept_conn() starts   */
+/* rejecting new connections and the mount wedges.                      */
+/*                                                                      */
+/* On POSIX, close() is the correct call (there is no closesocket()).   */
+/* ------------------------------------------------------------------ */
+#ifdef __MVS__
+#define sock_close(fd)   closesocket(fd)
+#else
+#define sock_close(fd)   close(fd)
+#endif
+
+/* ------------------------------------------------------------------ */
 /* make_listen_sock: create a TCP listening socket on port.             */
 /* SO_REUSEADDR lets the server restart without waiting for TIME_WAIT.  */
 /* Calls exit() on failure.                                             */
@@ -238,7 +258,7 @@ static void accept_conn(int lsock, int proto)
     if (g_nconns >= MAX_CONNECTIONS) {
         log_error("nfsd: connection table full (%d), dropping",
                 MAX_CONNECTIONS);
-        close(cfd);
+        sock_close(cfd);
         return;
     }
 
@@ -472,7 +492,12 @@ int main(int argc, char *argv[])
         for (i = 0; i < g_nconns; ) {
             if (FD_ISSET(g_conns[i].fd, &rfds)) {
                 if (handle_connection(&g_conns[i]) < 0) {
-                    close(g_conns[i].fd);
+                    /* Peer closed (or the RPC failed): close OUR half so a
+                       FIN goes back and the descriptor is released.  Must be
+                       sock_close() -- see its comment. */
+                    log_warn("nfsd: closing connection fd=%d (proto=%d)",
+                             g_conns[i].fd, g_conns[i].proto);
+                    sock_close(g_conns[i].fd);
                     g_conns[i] = g_conns[--g_nconns];
                     continue;
                 }
@@ -486,9 +511,15 @@ int main(int argc, char *argv[])
 
     log_info("Closing sockets");
 
-    closesocket(pmap_sock);
-    closesocket(mount_sock);
-    closesocket(nfs_sock);
+    /* Close any still-open client connections before the listeners, so each
+       peer gets a FIN rather than being left hanging. */
+    for (i = 0; i < g_nconns; i++)
+        sock_close(g_conns[i].fd);
+    g_nconns = 0;
+
+    sock_close(pmap_sock);
+    sock_close(mount_sock);
+    sock_close(nfs_sock);
 
     mvsprf_dump();
     log_info("Shutting down");

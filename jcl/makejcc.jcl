@@ -97,6 +97,12 @@
 //EXPORTS  EXEC JCCCMOD,MODNAME=EXPORTS                               
 //FHANDLE  EXEC JCCCMOD,MODNAME=FHANDLE                               
 //MOUNT3   EXEC JCCCMOD,MODNAME=MOUNT3                                
+//NFS3     EXEC JCCCMOD,MODNAME=NFS3
+//PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP                               
+//RPC      EXEC JCCCMOD,MODNAME=RPC                                   
+//XDR      EXEC JCCCMOD,MODNAME=XDR                                   
+//HEXDUMP  EXEC JCCCMOD,MODNAME=HEXDUMP     
+//*                          
 //MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL                                
 //MVSFID   EXEC JCCCMOD,MODNAME=MVSFID                                
 //MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                 
@@ -106,11 +112,6 @@
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
-//NFS3     EXEC JCCCMOD,MODNAME=NFS3
-//PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP                               
-//RPC      EXEC JCCCMOD,MODNAME=RPC                                   
-//XDR      EXEC JCCCMOD,MODNAME=XDR                                   
-//HEXDUMP  EXEC JCCCMOD,MODNAME=HEXDUMP                               
 //*                                                                   
 //* This is a mock VFS module that returns fixed files and contents.  
 //MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS                               
