@@ -1,19 +1,39 @@
 /*
- * exports.c - Load and query the NFS export configuration.
+ * exports.c - Load the server configuration (exports and startup commands).
  *
- * Config file format:
+ * The config file is a Windows .ini-style sectioned file:
+ *
+ *   [Init]
+ *   set loglvl info
+ *   set loglvl debug proc=write
+ *
+ *   [Exports]
  *   # comment lines start with #
- *   <nfs-export-path>  <local-host-path>
+ *   /exports    TEMP.TESTPROJ.C
+ *   /exports    TEMP.TESTPROJ.CNTL
+ *   /exports    TEMP.TESTPROJ.JCLLIB
  *
- * Example:
- *   /export/src    /home/user/src
- *   /export/data   /home/user/data
+ * Sections:
+ *   [Init]     Each line is an operator command, executed exactly as if it
+ *              had been entered via the MVS MODIFY (F) interface -- it is
+ *              handed to the same handler.  So anything valid in
+ *              "F NFSD,<cmd>" is valid here.  See doc/readme_config.md.
+ *   [Exports]  "<nfs-export-path>  <pds-dataset-name>", one dataset per
+ *              line.  Repeating an export path groups several PDS datasets
+ *              under it; each appears as a directory (the lower-case
+ *              dsname) under the export root.
  *
- * Blank lines and lines beginning with '#' are ignored.
- * Up to MAX_EXPORTS entries are supported.
+ * Section names are case-insensitive.  Blank lines and lines beginning
+ * with '#' are ignored anywhere.  Lines appearing BEFORE any section
+ * header are treated as [Exports], so pre-section config files keep
+ * working unchanged.  An unrecognised section is reported and its lines
+ * are skipped, so a newer config stays loadable by an older server.
  *
- * For the MVS port: host_path entries will map to PDS dataset names
- * (e.g. HERC01.SYS1.SOURCE) rather than POSIX paths.
+ * Up to MAX_EXPORTS export paths, each with up to MAX_PDS_PER_EXPORT
+ * datasets, are supported.
+ *
+ * Adding a section: add a CFG_SECT_* id, an entry in g_cfg_sections[],
+ * and a case in the dispatch switch in exports_load().
  */
  
 #include <stdio.h>    /* fopen, fclose, fgets */
@@ -32,6 +52,113 @@
 
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
+
+/* ------------------------------------------------------------------ */
+/* Config sections                                                      */
+/* ------------------------------------------------------------------ */
+
+#define CFG_SECT_UNKNOWN   0
+#define CFG_SECT_INIT      1
+#define CFG_SECT_EXPORTS   2
+
+/*
+ * Section header delimiters.
+ *
+ * The config file is read as raw bytes, so on MVS its text is EBCDIC --
+ * and so are C character literals under JCC.  That is exactly why the '#'
+ * comment test below works, and the same reasoning applies here.
+ *
+ * NOTE: '[' and ']' are the most code-page-variable characters in EBCDIC
+ * (they move between CP037 / CP1047 / CP500).  If a section header is ever
+ * not recognised on MVS, this is the first place to look -- the fix is to
+ * compare against ascii_to_ebcdic_c('[') instead of the literal.
+ */
+#define CFG_SECT_OPEN   '['
+#define CFG_SECT_CLOSE  ']'
+
+static const struct { const char *name; int id; } g_cfg_sections[] = {
+    { "INIT",    CFG_SECT_INIT    },
+    { "EXPORTS", CFG_SECT_EXPORTS }
+};
+
+/* Case-insensitive compare (C89 has no strcasecmp; toupper is
+   EBCDIC-correct under JCC, and both operands are in the file's encoding). */
+static int cfg_stricmp(const char *a, const char *b)
+{
+    int ca;
+    int cb;
+
+    while (*a != '\0' && *b != '\0') {
+        ca = toupper((unsigned char)*a);
+        cb = toupper((unsigned char)*b);
+        if (ca != cb) return ca - cb;
+        a++;
+        b++;
+    }
+    return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}
+
+/* Map a section name to its id, or CFG_SECT_UNKNOWN. */
+static int cfg_section_id(const char *name)
+{
+    int i;
+    int n = (int)(sizeof(g_cfg_sections) / sizeof(g_cfg_sections[0]));
+
+    for (i = 0; i < n; i++) {
+        if (cfg_stricmp(name, g_cfg_sections[i].name) == 0)
+            return g_cfg_sections[i].id;
+    }
+    return CFG_SECT_UNKNOWN;
+}
+
+/*
+ * Parse a "[name]" header line (p points at the '[').  Returns the section
+ * id, or CFG_SECT_UNKNOWN if the header is malformed or the name is not
+ * recognised.  The line buffer is modified in place.
+ */
+static int cfg_parse_section(char *p)
+{
+    char *close;
+    char *name;
+    int   len;
+
+    close = strchr(p, CFG_SECT_CLOSE);
+    if (close == NULL) {
+        log_error("exports_load: malformed section header (no closing"
+                  " bracket): %s", p);
+        return CFG_SECT_UNKNOWN;
+    }
+    *close = '\0';
+
+    /* Trim blanks inside the brackets: "[ Init ]" is accepted. */
+    name = p + 1;
+    while (*name != '\0' && isspace((unsigned char)*name)) name++;
+    len = (int)strlen(name);
+    while (len > 0 && isspace((unsigned char)name[len - 1]))
+        name[--len] = '\0';
+
+    return cfg_section_id(name);
+}
+
+/*
+ * Execute one [Init] line as an operator command.
+ *
+ * The line is passed to the very same handler the MVS MODIFY (F) path uses,
+ * so the two interfaces can never drift apart.  The text is already in the
+ * file's encoding (EBCDIC on MVS), which is what the handler expects.
+ */
+static void cfg_do_init_line(const char *cmd)
+{
+    int rc;
+
+    rc = log_handle_modify(cmd);
+    if (rc == 1) {
+        log_warn("exports_load: [Init] unrecognised command: %s", cmd);
+    } else if (rc == 0) {
+        log_debug("exports_load: [Init] applied: %s", cmd);
+    }
+    /* rc < 0: the handler already reported the specific fault. */
+}
  
 /* ------------------------------------------------------------------ */
 /* dataset_init: populate a pds_dataset_t from a dsname token.        */
@@ -106,20 +233,13 @@ static int find_or_create_export(const char *export_path_ebcdic)
 }
 
 /* ------------------------------------------------------------------ */
-/* exports_load: parse config_file and populate the exports table.    */
+/* cfg_do_export_line: handle one [Exports] line.                     */
 /*                                                                    */
-/* Format: "<nfs-export-path>  <pds-dataset-name>", one dataset per   */
-/* line.  Multiple lines with the same export path group several PDS  */
-/* datasets under one export; each appears as a directory (lower-case */
-/* dsname) under the export root.                                     */
-/*                                                                    */
-/* Returns number of exports loaded, or -1 on error.                  */
+/* "<nfs-export-path>  <pds-dataset-name>".  The line buffer is       */
+/* modified in place.                                                 */
 /* ------------------------------------------------------------------ */
-int exports_load(const char *config_file)
+static void cfg_do_export_line(char *p)
 {
-    FILE          *fp;
-    char           line[512];
-    char          *p;
     char          *tok;
     char          *rest;
     int            len;
@@ -127,10 +247,86 @@ int exports_load(const char *config_file)
     export_t      *exp;
     pds_dataset_t *ds;
 
+    /* First token: export (NFS) path */
+    tok = p;
+    while (*p && !isspace((unsigned char)*p)) p++;
+    if (*p) { *p = '\0'; p++; }
+
+    /* Skip whitespace between tokens */
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    /* Second token: PDS dataset name (rest of line) */
+    rest = p;
+    len = (int)strlen(rest);
+    while (len > 0 && isspace((unsigned char)rest[len-1]))
+        rest[--len] = '\0';
+
+    if (len == 0) {
+        log_error("nfsd: warning: missing dataset name for export %s", tok);
+        return;
+    }
+
+    /* Find or create the export this dataset belongs to. */
+    exp_idx = find_or_create_export(tok);
+    if (exp_idx < 0) {
+        log_error("nfsd: warning: max exports (%d) reached, ignoring %s",
+            MAX_EXPORTS, tok);
+        return;
+    }
+    exp = &g_exports[exp_idx];
+
+    if (exp->ndatasets >= MAX_PDS_PER_EXPORT) {
+        log_error("nfsd: warning: max datasets (%d) reached for export %s, "
+            "ignoring %s", MAX_PDS_PER_EXPORT, tok, rest);
+        return;
+    }
+
+    /* Append the dataset to this export. */
+    ds = &exp->datasets[exp->ndatasets];
+    dataset_init(ds, rest);
+    exp->ndatasets++;
+
+    /* Keep the legacy single-dataset fields (used by the compile-only
+       mockvfs.c and the non-MVS dev build) in sync with datasets[0]. */
+    if (exp->ndatasets == 1) {
+        strncpy(exp->host_path_ebcdic, ds->dsname_ebcdic, MAX_PATH - 1);
+        exp->host_path_ebcdic[MAX_PATH - 1] = '\0';
+        strncpy(exp->host_path, ds->dsname_ascii, MAX_PATH - 1);
+        exp->host_path[MAX_PATH - 1] = '\0';
+        strncpy(exp->file_ext, ds->file_ext, MAX_FILE_EXT_LEN - 1);
+        exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+        exp->dcbinfo = ds->dcbinfo;
+    }
+
+    log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (file ext '%s')",
+        exp->export_path_ebcdic, ds->dsname_ebcdic,
+        ds->dirname_ebcdic, ds->file_ext);
+}
+
+/* ------------------------------------------------------------------ */
+/* exports_load: parse config_file, run [Init] commands and populate  */
+/* the exports table.  See the file header for the format.            */
+/*                                                                    */
+/* Returns number of exports loaded, or -1 if the file cannot be read. */
+/* ------------------------------------------------------------------ */
+int exports_load(const char *config_file)
+{
+    FILE *fp;
+    char  line[512];
+    char *p;
+    int   len;
+    int   section;
+    int   warned_unknown;
+
     fp = fopen(config_file, "r");
     if (!fp) return -1;
 
     g_nexports = 0;
+
+    /* Lines before any header are [Exports], so a pre-section config file
+       loads unchanged. */
+    section        = CFG_SECT_EXPORTS;
+    warned_unknown = 0;
 
     while (fgets(line, (int)sizeof(line), fp)) {
         /* strip trailing newline / CR */
@@ -146,63 +342,36 @@ int exports_load(const char *config_file)
         /* skip blank lines and comments */
         if (*p == '\0' || *p == '#') continue;
 
-        /* First token: export (NFS) path */
-        tok = p;
-        while (*p && !isspace((unsigned char)*p)) p++;
-        if (*p) { *p = '\0'; p++; }
-
-        /* Skip whitespace between tokens */
-        while (*p && isspace((unsigned char)*p)) p++;
-
-        /* Second token: PDS dataset name (rest of line) */
-        rest = p;
-        len = (int)strlen(rest);
-        while (len > 0 && isspace((unsigned char)rest[len-1]))
-            rest[--len] = '\0';
-
-        if (len == 0) {
-            log_error("nfsd: warning: missing dataset name for export %s", tok);
+        /* A section header switches context and consumes the line. */
+        if (*p == CFG_SECT_OPEN) {
+            section = cfg_parse_section(p);
+            if (section == CFG_SECT_UNKNOWN) {
+                log_warn("exports_load: ignoring unknown section: %s", p + 1);
+                warned_unknown = 1;
+            } else {
+                log_debug("exports_load: entering section %s", p + 1);
+            }
             continue;
         }
 
-        /* Find or create the export this dataset belongs to. */
-        exp_idx = find_or_create_export(tok);
-        if (exp_idx < 0) {
-            log_error("nfsd: warning: max exports (%d) reached, ignoring %s",
-                MAX_EXPORTS, tok);
-            continue;
+        switch (section) {
+        case CFG_SECT_INIT:
+            cfg_do_init_line(p);
+            break;
+        case CFG_SECT_EXPORTS:
+            cfg_do_export_line(p);
+            break;
+        default:
+            /* Inside an unknown section: skip quietly (already warned once
+               at the header) so a newer config loads on an older server. */
+            break;
         }
-        exp = &g_exports[exp_idx];
-
-        if (exp->ndatasets >= MAX_PDS_PER_EXPORT) {
-            log_error("nfsd: warning: max datasets (%d) reached for export %s, "
-                "ignoring %s", MAX_PDS_PER_EXPORT, tok, rest);
-            continue;
-        }
-
-        /* Append the dataset to this export. */
-        ds = &exp->datasets[exp->ndatasets];
-        dataset_init(ds, rest);
-        exp->ndatasets++;
-
-        /* Keep the legacy single-dataset fields (used by the compile-only
-           mockvfs.c and the non-MVS dev build) in sync with datasets[0]. */
-        if (exp->ndatasets == 1) {
-            strncpy(exp->host_path_ebcdic, ds->dsname_ebcdic, MAX_PATH - 1);
-            exp->host_path_ebcdic[MAX_PATH - 1] = '\0';
-            strncpy(exp->host_path, ds->dsname_ascii, MAX_PATH - 1);
-            exp->host_path[MAX_PATH - 1] = '\0';
-            strncpy(exp->file_ext, ds->file_ext, MAX_FILE_EXT_LEN - 1);
-            exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
-            exp->dcbinfo = ds->dcbinfo;
-        }
-
-        log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (file ext '%s')",
-            exp->export_path_ebcdic, ds->dsname_ebcdic,
-            ds->dirname_ebcdic, ds->file_ext);
     }
 
     fclose(fp);
+
+    if (warned_unknown)
+        log_warn("exports_load: one or more unknown sections were skipped");
 
     return g_nexports;
 }

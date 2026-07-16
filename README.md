@@ -161,26 +161,42 @@ along with the main test harness and executes the tests.
 
 ## Config file
 
-### Linux / POSIX format
+The config file is sectioned, Windows `.ini` style.  Section names are
+case-insensitive; `#` starts a comment and blank lines are ignored.  Full
+reference: **[doc/readme_config.md](doc/readme_config.md)**.
 
+```ini
+[Init]
+set loglvl info
+set loglvl debug proc=write
+
+[Exports]
+# Export some PDS datasets
+/exports    TEMP.TESTPROJ.C
+/exports    TEMP.TESTPROJ.CNTL
+/exports    TEMP.TESTPROJ.JCLLIB
 ```
-# nfsd.conf
-# <nfs-export-path>  <local-host-path>
-/export/src    /home/user/src
-/export/data   /home/user/data
-```
 
-Lines beginning with `#` are comments.  Blank lines are ignored.
-Up to 16 exports are supported.
+Lines appearing before any section header are treated as `[Exports]`, so
+older section-less config files keep working unchanged.  An unrecognised
+section is reported and skipped.
 
-### MVS format
+### `[Init]`
 
-Each NFS export maps to one or more MVS PDS datasets. The export line may
-be specified multiple times, with each line representing a single dataset.
+Each line is an operator command, executed at startup exactly as if typed at
+the MVS console via `F NFSD,<command>` — it is handed to the same handler, so
+the two interfaces cannot drift apart.  See
+[Per-procedure log levels](#per-procedure-log-levels) for the available
+commands.  Note the built-in startup level is `DEBUG`, so `set loglvl info`
+is usually the first line you want.
 
-```
-# nfsd.conf
-# <nfs-export-path>  <local-host-path>
+### `[Exports]`
+
+Each NFS export maps to one or more MVS PDS datasets.  Repeat the export path
+to group several datasets under it, one dataset per line:
+
+```ini
+[Exports]
 /export/src    TEMP.TESTPROJ.C
 /export/other  TEMP.TESTPROJ.CNTL
 /export/other  TEMP.TESTPROJ.JCLLIB
@@ -189,7 +205,10 @@ be specified multiple times, with each line representing a single dataset.
 For the mountpoint for /export/src, the NFS client and OS will show a single directory
 of "temp.testproj.c" (a lowercase version of the dataset name). For the /export/other
 mountpoint two directories will be shown -- the lower case versions of the dataset
-names. 
+names.
+
+The member file extension is derived from the dataset's last qualifier,
+lower-cased (members of `TEMP.TESTPROJ.CNTL` appear as `*.cntl`).
 
 ## Running on MVS
 
