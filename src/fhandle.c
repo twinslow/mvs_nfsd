@@ -1,299 +1,308 @@
 /*
- * fhandle.c - File handle construction and path-resolution cache.
+ * fhandle.c - NFS file handle construction, resolution, and wire format.
  *
- * FILE HANDLE LAYOUT (16 bytes, big-endian on wire):
- *   bytes  0- 3: magic     = OUR_FH_MAGIC ('NFS3')
- *   bytes  4- 7: export_id
- *   bytes  8-11: reserved  = 0
- *   bytes 12-15: id32      -- stable 32-bit ID for this file
+ * The handle is SELF-DESCRIBING: it carries the name of the object it
+ * refers to, so resolving it needs no server-side state.  There is no
+ * cache, nothing to evict, and a handle stays valid across a server
+ * restart -- which is what RFC 1813 requires.  NFS3ERR_STALE is returned
+ * only when the object is genuinely unreachable (its export or dataset is
+ * no longer exported), never because the server forgot something.
  *
- * The id32 is allocated from the path cache below.  Keying on
- * (dev, ino) from vfs_stat_t avoids the previous design where the same
- * raw truncated values were stored directly in the handle, making it
- * impossible to distinguish the stable ID from a raw inode number.
+ * See doc/readme_filehandles.md for the full rationale and layout.
  *
- * PATH CACHE
- * ----------
- * A flat array of FH_CACHE_SIZE (512) entries.  Each entry stores:
- *   (export_id, dev, ino)  -- the filesystem identity (32-bit each)
- *   id32                   -- the stable token carried in the handle
- *   relpath                -- path relative to export root
+ * WIRE LAYOUT (60 bytes; <= NFS3_FHSIZE 64, and 4-byte aligned so XDR
+ * adds no padding):
  *
- * Two lookup modes are needed:
- *   - By (export_id, dev, ino): used when inserting / building handles.
- *   - By (export_id, id32):     used when resolving a received handle.
+ *   bytes  0- 3 : magic     = OUR_FH_MAGIC ('NFS3'), big-endian
+ *   bytes  4- 7 : export_id = stable hash of the export path, big-endian
+ *   bytes  8-51 : dsname    = 44 bytes, ASCII, blank-padded
+ *   bytes 52-59 : member    =  8 bytes, ASCII, blank-padded
  *
- * id32 values are issued from a monotonically increasing counter.  With
- * a 512-entry cache a 32-bit counter will not wrap in practice.
+ * Object kinds are distinguished by which name fields are set:
+ *   export root   -> dsname all blank, member all blank
+ *   PDS directory -> dsname set,       member all blank
+ *   PDS member    -> dsname set,       member set
  *
- * Round-robin eviction.  Entries are populated:
- *   - On MOUNTPROC3_MNT       (export root, relpath = "")
- *   - On NFS3PROC_LOOKUP      (child path built from parent + name)
- *   - On NFS3PROC_READDIRPLUS (every entry scanned in a directory)
+ * ASCII, not EBCDIC: the names are stored in the handle exactly as they
+ * travel on the wire, so a handle is readable in a packet trace.  That
+ * means the pad/trim character MUST be the literal 0x20 (FH_PAD_CHAR) --
+ * NOT ' ', which under JCC on MVS is EBCDIC 0x40.
  *
- * Portability note: all types are uint32_t so this file compiles
- * cleanly on both 64-bit Linux (x86_64) and 32-bit MVS with GCCMVS.
- * On Linux, vfs_stat_t.raw_dev and .raw_ino carry st_dev/st_ino
- * truncated to 32 bits (see vfs.c); on MVS the VFS layer maps PDS
- * dataset/member indices directly into these 32-bit fields.
+ * export_id is a HASH of the export path, not a table index: an index
+ * would silently resolve to a different export if nfsd.conf were
+ * reordered, returning wrong data.  A hash either matches the same export
+ * or matches none (-> correctly stale).
+ *
+ * JCC C89 compliance: declarations precede statements; block comments only.
  */
 
-#include <string.h>   /* memset, strncpy, snprintf */
+#include <string.h>
 #include <stdio.h>
 
 #include "ebcdic.h"
+#include "mvsio.h"     /* mvs_path_type, mvs_get_pds_dsn_and_member */
+#include "mvsfid.h"    /* mvs_fid_ino32 -- stable export-path hash   */
 #include "nfsd.h"
+#include "logger.h"
 
 /* ------------------------------------------------------------------ */
-/* Cache entry                                                          */
+/* Internal: copy 'src' into 'n' wire bytes, ASCII-blank padded.        */
 /* ------------------------------------------------------------------ */
-typedef struct {
-    int      valid;
-    uint32_t export_id;
-    uint32_t dev;           /* raw_dev from vfs_stat_t */
-    uint32_t ino;           /* raw_ino from vfs_stat_t */
-    uint32_t id32;          /* stable ID carried in the file handle */
-    char     relpath[MAX_PATH];
-} cache_entry_t;
-
-static cache_entry_t g_cache[FH_CACHE_SIZE];
-static int           g_cache_next  = 0;   /* next eviction slot */
-static int           g_cache_count = 0;   /* entries ever inserted (capped at FH_CACHE_SIZE) */
-static uint32_t      g_id_seq      = 1;   /* id32 allocator; never issues 0 */
-
-/* ------------------------------------------------------------------ */
-/* fh_init: clear the cache at startup                                  */
-/* ------------------------------------------------------------------ */
-void fh_init(void)
-{
-    memset(g_cache, 0, sizeof(g_cache));
-    g_cache_next  = 0;
-    g_cache_count = 0;
-    g_id_seq      = 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* Internal: find slot by filesystem identity.  Returns -1 if absent.  */
-/* ------------------------------------------------------------------ */
-static int cache_find_by_ino(uint32_t export_id, uint32_t dev, uint32_t ino)
+static void fh_put_field(uint8_t *dst, const char *src, int n)
 {
     int i;
-    int limit = (g_cache_count < FH_CACHE_SIZE) ? g_cache_count : FH_CACHE_SIZE;
-    for (i = 0; i < limit; i++) {
-        if (g_cache[i].valid
-            && g_cache[i].export_id == export_id
-            && g_cache[i].dev       == dev
-            && g_cache[i].ino       == ino)
-            return i;
-    }
-    return -1;
+    int len;
+
+    len = (int)strlen(src);
+    if (len > n) len = n;
+
+    for (i = 0; i < len; i++)
+        dst[i] = (uint8_t)src[i];
+    for (; i < n; i++)
+        dst[i] = (uint8_t)FH_PAD_CHAR;
 }
 
 /* ------------------------------------------------------------------ */
-/* Internal: find slot by stable id32.  Returns -1 if absent.          */
+/* Internal: copy 'n' wire bytes into a NUL-terminated string with     */
+/* trailing ASCII blanks removed.  'dst' must hold n+1 bytes.          */
 /* ------------------------------------------------------------------ */
-static int cache_find_by_id(uint32_t export_id, uint32_t id32)
+static void fh_get_field(char *dst, const uint8_t *src, int n)
 {
     int i;
-    int limit = (g_cache_count < FH_CACHE_SIZE) ? g_cache_count : FH_CACHE_SIZE;
-    for (i = 0; i < limit; i++) {
-        if (g_cache[i].valid
-            && g_cache[i].export_id == export_id
-            && g_cache[i].id32      == id32)
-            return i;
+
+    for (i = 0; i < n; i++)
+        dst[i] = (char)src[i];
+    dst[n] = '\0';
+
+    /* Trim trailing ASCII blanks (0x20 -- NOT ' ', see the header note). */
+    for (i = n - 1; i >= 0; i--) {
+        if ((uint8_t)dst[i] != (uint8_t)FH_PAD_CHAR) break;
+        dst[i] = '\0';
     }
-    return -1;
 }
 
 /* ------------------------------------------------------------------ */
-/* Internal: evict the next slot and return its index.                  */
+/* Internal: the stable identity of an export = hash of its path.      */
 /* ------------------------------------------------------------------ */
-static int cache_alloc_slot(void)
+static uint32_t fh_export_id(const export_t *exp)
 {
-    int i = g_cache_next;
-    g_cache_next = (g_cache_next + 1) % FH_CACHE_SIZE;
-    if (g_cache_count < FH_CACHE_SIZE) g_cache_count++;
-    return i;
+    return mvs_fid_ino32(exp->export_path_ebcdic, NULL);
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_make: construct a file handle from (export_id, dev, ino).         */
-/*                                                                      */
-/* Looks up or allocates a stable id32 for the (dev, ino) pair.        */
-/* Sets fh->dev = 0 (reserved) and fh->ino = id32.                     */
-/*                                                                      */
-/* Separating id32 from the raw inode value means the handle's id32    */
-/* is never confused with a raw ino, and the cache can be updated       */
-/* without changing the handle the client holds.                        */
+/* Internal: find the export whose path hashes to 'id', or NULL.       */
 /* ------------------------------------------------------------------ */
-void fh_make(our_fhandle_t *fh, uint32_t export_id,
-             uint32_t dev, uint32_t ino)
+static export_t *fh_find_export(uint32_t id)
 {
-    int      i;
-    uint32_t id32;
+    int       i;
+    int       n = exports_count();
+    export_t *exp;
 
-    i = cache_find_by_ino(export_id, dev, ino);
-    if (i >= 0) {
-        id32 = g_cache[i].id32;
-    } else {
-        /* New entry: allocate slot and a fresh id32 */
-        i    = cache_alloc_slot();
-        id32 = g_id_seq++;
-        if (g_id_seq == 0) g_id_seq = 1;   /* keep id32 != 0 */
-
-        g_cache[i].valid     = 1;
-        g_cache[i].export_id = export_id;
-        g_cache[i].dev       = dev;
-        g_cache[i].ino       = ino;
-        g_cache[i].id32      = id32;
-        g_cache[i].relpath[0] = '\0';
+    for (i = 0; i < n; i++) {
+        exp = exports_get(i);
+        if (exp != NULL && fh_export_id(exp) == id)
+            return exp;
     }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* fh_from_path: build the handle that names the object at abspath.     */
+/*                                                                      */
+/* abspath is the ASCII NFS path (e.g. "/exports/temp.proj.cntl/a.cntl")*/
+/* Returns 0 on success, -1 if the path is not within any export.       */
+/* ------------------------------------------------------------------ */
+int fh_from_path(const char *abspath, our_fhandle_t *fh)
+{
+    char           ebcdic_path[MAX_PATH];
+    char           dsn_ebcdic[MAX_DSNAME_LEN];
+    char           mem_ebcdic[FH_MEMBER_LEN + 1];
+    int            export_idx;
+    int            dataset_idx;
+    int            path_type;
+    export_t      *exp;
+    pds_dataset_t *ds;
+
+    memset(fh, 0, sizeof(*fh));
+
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)abspath,
+                    MAX_PATH - 1);
+    ebcdic_path[MAX_PATH - 1] = '\0';
+
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+    if (path_type < 0) return -1;
+
+    exp = exports_get(export_idx);
+    if (exp == NULL) return -1;
 
     fh->magic     = OUR_FH_MAGIC;
-    fh->export_id = export_id;
-    fh->dev       = 0u;     /* reserved */
-    fh->ino       = id32;
-}
+    fh->export_id = fh_export_id(exp);
 
-/* ------------------------------------------------------------------ */
-/* fh_encode: write our_fhandle_t to 16 bytes in big-endian order       */
-/* ------------------------------------------------------------------ */
-void fh_encode(const our_fhandle_t *fh, uint8_t *bytes)
-{
-    bytes[ 0] = (uint8_t)(fh->magic     >> 24);
-    bytes[ 1] = (uint8_t)(fh->magic     >> 16);
-    bytes[ 2] = (uint8_t)(fh->magic     >>  8);
-    bytes[ 3] = (uint8_t)(fh->magic         );
-    bytes[ 4] = (uint8_t)(fh->export_id >> 24);
-    bytes[ 5] = (uint8_t)(fh->export_id >> 16);
-    bytes[ 6] = (uint8_t)(fh->export_id >>  8);
-    bytes[ 7] = (uint8_t)(fh->export_id      );
-    bytes[ 8] = (uint8_t)(fh->dev       >> 24);
-    bytes[ 9] = (uint8_t)(fh->dev       >> 16);
-    bytes[10] = (uint8_t)(fh->dev       >>  8);
-    bytes[11] = (uint8_t)(fh->dev            );
-    bytes[12] = (uint8_t)(fh->ino       >> 24);
-    bytes[13] = (uint8_t)(fh->ino       >> 16);
-    bytes[14] = (uint8_t)(fh->ino       >>  8);
-    bytes[15] = (uint8_t)(fh->ino            );
-}
+    /* The export root: no dataset, no member. */
+    if (path_type == MVS_PATH_TYPE_ROOT)
+        return 0;
 
-/* ------------------------------------------------------------------ */
-/* fh_decode: read our_fhandle_t from 'len' bytes (must be OUR_FHSIZE). */
-/* Returns 0 on success, -1 if the magic is wrong or len is too small.  */
-/* ------------------------------------------------------------------ */
-int fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh)
-{
-    if (len < OUR_FHSIZE) return -1;
+    /* Both DATASET and PDS_MEMBER name a dataset.  Take the dsname from
+       the config (already ASCII) rather than re-deriving it. */
+    ds = export_dataset_get(export_idx, dataset_idx);
+    if (ds == NULL) return -1;
+    strncpy(fh->dsname, ds->dsname_ascii, MAX_DSNAME_LEN - 1);
+    fh->dsname[MAX_DSNAME_LEN - 1] = '\0';
 
-    fh->magic = ((uint32_t)bytes[ 0] << 24)
-              | ((uint32_t)bytes[ 1] << 16)
-              | ((uint32_t)bytes[ 2] <<  8)
-              |  (uint32_t)bytes[ 3];
+    /* A PDS directory has no member. */
+    if (path_type != MVS_PATH_TYPE_PDS_MEMBER)
+        return 0;
 
-    if (fh->magic != OUR_FH_MAGIC) return -1;
+    /* A member: let the MVS mapping validate + extract it (EBCDIC), then
+       convert to the ASCII the handle carries. */
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, dsn_ebcdic,
+                                   mem_ebcdic, export_idx) < 0)
+        return -1;
 
-    fh->export_id = ((uint32_t)bytes[ 4] << 24)
-                  | ((uint32_t)bytes[ 5] << 16)
-                  | ((uint32_t)bytes[ 6] <<  8)
-                  |  (uint32_t)bytes[ 7];
-
-    fh->dev = ((uint32_t)bytes[ 8] << 24)
-            | ((uint32_t)bytes[ 9] << 16)
-            | ((uint32_t)bytes[10] <<  8)
-            |  (uint32_t)bytes[11];
-
-    fh->ino = ((uint32_t)bytes[12] << 24)
-            | ((uint32_t)bytes[13] << 16)
-            | ((uint32_t)bytes[14] <<  8)
-            |  (uint32_t)bytes[15];
-
+    ebcdic_to_ascii((uint8_t *)fh->member, (const uint8_t *)mem_ebcdic,
+                    strlen(mem_ebcdic));
+    fh->member[strlen(mem_ebcdic)] = '\0';
     return 0;
 }
 
 /* ------------------------------------------------------------------ */
-/* fh_cache_insert: record or refresh (export_id, dev, ino) -> relpath  */
+/* fh_resolve: rebuild the ASCII NFS path this handle names.            */
 /*                                                                      */
-/* If an entry for (export_id, dev, ino) already exists, only the      */
-/* relpath is updated (preserving the existing id32).  Otherwise a new  */
-/* slot is evicted and a fresh id32 allocated.                          */
-/*                                                                      */
-/* relpath is relative to the export root with NO leading '/'.          */
-/* The empty string "" represents the export root itself.               */
-/* ------------------------------------------------------------------ */
-void fh_cache_insert(uint32_t export_id, uint32_t dev,
-                     uint32_t ino, const char *relpath)
-{
-    int      i;
-    uint32_t id32;
-
-    i = cache_find_by_ino(export_id, dev, ino);
-    if (i >= 0) {
-        /* Refresh relpath in existing entry */
-        strncpy(g_cache[i].relpath, relpath, MAX_PATH - 1);
-        g_cache[i].relpath[MAX_PATH - 1] = '\0';
-        return;
-    }
-
-    /* New entry */
-    i    = cache_alloc_slot();
-    id32 = g_id_seq++;
-    if (g_id_seq == 0) g_id_seq = 1;
-
-    g_cache[i].valid     = 1;
-    g_cache[i].export_id = export_id;
-    g_cache[i].dev       = dev;
-    g_cache[i].ino       = ino;
-    g_cache[i].id32      = id32;
-    strncpy(g_cache[i].relpath, relpath, MAX_PATH - 1);
-    g_cache[i].relpath[MAX_PATH - 1] = '\0';
-}
-
-/* ------------------------------------------------------------------ */
-/* fh_cache_lookup: find the relpath for (export_id, id32).             */
-/*                                                                      */
-/* id32 is the value stored in our_fhandle_t.ino (the file handle's    */
-/* stable file ID).  Copies at most maxlen-1 bytes into relpath.        */
-/* Returns 0 on success, -1 if not found (handle is stale).            */
-/* ------------------------------------------------------------------ */
-int fh_cache_lookup(uint32_t export_id, uint32_t id32,
-                    char *relpath, uint32_t maxlen)
-{
-    int i = cache_find_by_id(export_id, id32);
-    if (i < 0) return -1;
-    strncpy(relpath, g_cache[i].relpath, maxlen - 1);
-    relpath[maxlen - 1] = '\0';
-    return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* fh_resolve: convert a file handle to its canonical NFS path.         */
-/*                                                                      */
-/* Looks up the relpath in the cache by (export_id, id32), then        */
-/* prepends the export's NFS path (export_path).  The result is the    */
-/* export-relative path the VFS layer classifies via mvs_path_type.    */
-/* Returns 0 on success, -1 if the handle is stale or unknown.          */
+/* Returns 0 on success, -1 only when the handle is TRULY stale: its    */
+/* export is gone, or the dataset it names is no longer exported.       */
 /* ------------------------------------------------------------------ */
 int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
 {
-    char      relpath[MAX_PATH];
-    export_t *exp;
+    export_t      *exp;
+    pds_dataset_t *ds;
+    pds_dataset_t *cand;
+    int            export_idx;
+    int            i;
+    int            n;
+    int            len;
+    char           slash;
+    char           dot;
+    char           member_lc[FH_MEMBER_LEN + 1];
+    char           ext_ascii[MAX_FILE_EXT_LEN];
 
-    exp = exports_find_by_id(fh->export_id);
-    if (!exp) return -1;
+    if (fh->magic != OUR_FH_MAGIC) return -1;
 
-    /* fh->ino carries the stable id32 */
-    if (fh_cache_lookup(fh->export_id, fh->ino, relpath, MAX_PATH) < 0)
+    exp = fh_find_export(fh->export_id);
+    if (exp == NULL) {
+        log_debug("fh_resolve: no export matches id=0x%08X (stale)",
+                  fh->export_id);
         return -1;
+    }
 
-    if (relpath[0] == '\0') {
-        /* The handle IS the export root (a virtual directory). */
+    /* The path we build is ASCII, so every separator must be converted:
+       a C character literal is EBCDIC under JCC on MVS. */
+    slash = (char)ebcdic_to_ascii_c('/');
+    dot   = (char)ebcdic_to_ascii_c('.');
+
+    /* No dsname -> the handle IS the export root. */
+    if (fh->dsname[0] == '\0') {
         strncpy(abspath, exp->export_path, maxlen - 1);
         abspath[maxlen - 1] = '\0';
-    } else {
-        /* export_path / relpath  (relpath is "<dirname>" or "<dirname>/<member>") */
-        snprintf(abspath, maxlen, "%s%c%s", exp->export_path,
-            ebcdic_to_ascii_c('/'), relpath);
+        return 0;
     }
+
+    /* Find the named dataset within this export.  Matching on the real
+       dsname (not an index) is what makes the handle survive a config
+       change: if the dataset is no longer exported, the handle is stale. */
+    export_idx = exports_get_id(exp);
+    ds = NULL;
+    n  = export_dataset_count(export_idx);
+    for (i = 0; i < n; i++) {
+        cand = export_dataset_get(export_idx, i);
+        if (cand != NULL && strcmp(cand->dsname_ascii, fh->dsname) == 0) {
+            ds = cand;
+            break;
+        }
+    }
+    if (ds == NULL) {
+        log_debug("fh_resolve: dataset '%s' not exported (stale)",
+                  log_ascii(fh->dsname));
+        return -1;
+    }
+
+    /* No member -> the handle is the PDS directory. */
+    if (fh->member[0] == '\0') {
+        snprintf(abspath, maxlen, "%s%c%s",
+                 exp->export_path, slash, ds->dirname_ascii);
+        return 0;
+    }
+
+    /* A member: <export>/<dirname>/<member>.<ext>, lower-cased to match the
+       names readdir hands out.  The extension is config-derived, which is
+       why it need not live in the handle. */
+
+    /* ASCII-only case fold: the handle is ASCII, so neither tolower() nor
+       'A'/'Z' literals (EBCDIC under JCC) may be used here. */
+    len = (int)strlen(fh->member);
+    for (i = 0; i < len; i++) {
+        uint8_t c = (uint8_t)fh->member[i];
+        if (c >= 0x41u && c <= 0x5Au)      /* ASCII 'A'..'Z' */
+            c = (uint8_t)(c + 0x20u);      /* -> 'a'..'z'    */
+        member_lc[i] = (char)c;
+    }
+    member_lc[len] = '\0';
+
+    /* file_ext is derived from the EBCDIC dsname, so it is EBCDIC. */
+    len = (int)strlen(ds->file_ext);
+    if (len > MAX_FILE_EXT_LEN - 1) len = MAX_FILE_EXT_LEN - 1;
+    ebcdic_to_ascii((uint8_t *)ext_ascii, (const uint8_t *)ds->file_ext,
+                    (size_t)len);
+    ext_ascii[len] = '\0';
+
+    /* The format string holds ONLY conversion specifiers: a literal '.' or
+       '/' in it would be EBCDIC on MVS and corrupt the ASCII path. */
+    snprintf(abspath, maxlen, "%s%c%s%c%s%c%s",
+             exp->export_path, slash, ds->dirname_ascii, slash,
+             member_lc, dot, ext_ascii);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* fh_encode: serialise the handle into OUR_FHSIZE wire bytes.          */
+/* ------------------------------------------------------------------ */
+void fh_encode(const our_fhandle_t *fh, uint8_t *bytes)
+{
+    bytes[0] = (uint8_t)(fh->magic     >> 24);
+    bytes[1] = (uint8_t)(fh->magic     >> 16);
+    bytes[2] = (uint8_t)(fh->magic     >>  8);
+    bytes[3] = (uint8_t)(fh->magic          );
+    bytes[4] = (uint8_t)(fh->export_id >> 24);
+    bytes[5] = (uint8_t)(fh->export_id >> 16);
+    bytes[6] = (uint8_t)(fh->export_id >>  8);
+    bytes[7] = (uint8_t)(fh->export_id      );
+
+    fh_put_field(&bytes[8],  fh->dsname, FH_DSNAME_LEN);
+    fh_put_field(&bytes[8 + FH_DSNAME_LEN], fh->member, FH_MEMBER_LEN);
+}
+
+/* ------------------------------------------------------------------ */
+/* fh_decode: parse 'len' wire bytes into a handle.                     */
+/* Returns 0 on success, -1 on a wrong length or bad magic.             */
+/* ------------------------------------------------------------------ */
+int fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh)
+{
+    if (len != (uint32_t)OUR_FHSIZE) return -1;
+
+    memset(fh, 0, sizeof(*fh));
+
+    fh->magic = ((uint32_t)bytes[0] << 24)
+              | ((uint32_t)bytes[1] << 16)
+              | ((uint32_t)bytes[2] <<  8)
+              |  (uint32_t)bytes[3];
+
+    if (fh->magic != OUR_FH_MAGIC) return -1;
+
+    fh->export_id = ((uint32_t)bytes[4] << 24)
+                  | ((uint32_t)bytes[5] << 16)
+                  | ((uint32_t)bytes[6] <<  8)
+                  |  (uint32_t)bytes[7];
+
+    fh_get_field(fh->dsname, &bytes[8], FH_DSNAME_LEN);
+    fh_get_field(fh->member, &bytes[8 + FH_DSNAME_LEN], FH_MEMBER_LEN);
     return 0;
 }

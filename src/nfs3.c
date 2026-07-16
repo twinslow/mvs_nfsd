@@ -29,12 +29,17 @@ static uint8_t g_read_buf [MAX_READ_SIZE];
 static uint8_t g_write_buf[MAX_WRITE_SIZE];
 
 /*
- * Per-entry worst-case wire size for READDIRPLUS:
+ * Per-entry worst-case wire size for READDIRPLUS (excluding the name):
  *   value_follows(4) + fileid(8) + name_len_hdr(4) + name_padded(var) +
  *   cookie(8) + post_op_attr(4+84) + name_handle_present(4) +
- *   fh_opaque_len(4) + fh_data(OUR_FHSIZE=16) = 140 bytes + name
+ *   fh_opaque_len(4) + fh_data(OUR_FHSIZE)
+ *
+ * MUST track OUR_FHSIZE: this bounds the reply against the client's
+ * maxcount, so under-estimating it overruns what the client asked for.
+ * (It was previously hard-coded at 140, which silently became a 44-byte
+ * per-entry under-estimate when the handle grew from 16 to 60 bytes.)
  */
-#define READDIRPLUS_ENTRY_OVERHEAD 140u
+#define READDIRPLUS_ENTRY_OVERHEAD (124u + (uint32_t)OUR_FHSIZE)
 
 /* ================================================================== */
 /* XDR helpers for NFS3 types                                          */
@@ -163,25 +168,6 @@ void xdr_read_sattr3(xdr_t *x, sattr3_t *a)
 /* Procedure handlers                                                   */
 /* ================================================================== */
 
-/* Helper: build the relative path of a child given its parent relpath */
-static void make_child_relpath(const char *parent_rel, const char *name,
-                                char *child_rel, size_t maxlen)
-{
-#ifdef __MVS__
-    char ascii_slash_char = ebcdic_to_ascii_c('/');
-#else
-    char ascii_slash_char = '/';
-#endif
-
-    if (parent_rel[0] == '\0') {
-        strncpy(child_rel, name, maxlen - 1);
-        child_rel[maxlen - 1] = '\0';
-    } else {
-        snprintf(child_rel, maxlen, "%s%c%s", 
-            parent_rel, ascii_slash_char, name);
-    }
-}
-
 /*
  * name_is_valid: return 1 if name is safe to use as a path component.
  *
@@ -234,29 +220,6 @@ static uint32_t check_access(const vfs_stat_t *st, uint32_t uid,
     if (mode & 01u) granted |= ACCESS3_EXECUTE;
 
     return granted & requested;
-}
-
-/* Helper: strip last component from relpath to get parent relpath */
-static void parent_relpath(const char *relpath, char *parent, size_t maxlen)
-{
-    char ascii_slash_char;
-    char *slash;
-
-#ifdef __MVS__
-    ascii_slash_char = ebcdic_to_ascii_c('/');
-#else
-    ascii_slash_char = '/';
-#endif
-
-    slash = strrchr(relpath, ascii_slash_char);
-    if (!slash) {
-        parent[0] = '\0';   /* parent is export root */
-    } else {
-        size_t len = (size_t)(slash - relpath);
-        if (len >= maxlen) len = maxlen - 1;
-        memcpy(parent, relpath, len);
-        parent[len] = '\0';
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -370,8 +333,6 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
     char          name[MAX_NAME];
     char          dir_path[MAX_PATH];
     char          obj_path[MAX_PATH];
-    char          dir_rel[MAX_PATH];
-    char          obj_rel[MAX_PATH];
     vfs_stat_t    obj_st, dir_st;
     int           has_dir;
 
@@ -412,14 +373,16 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    fh_make(&obj_fh, dir_fh.export_id, obj_st.raw_dev, obj_st.raw_ino);
-
-    /* Cache the object's relative path */
-    dir_rel[0] = '\0';
-    fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
-    make_child_relpath(dir_rel, name, obj_rel, MAX_PATH);
-    fh_cache_insert(dir_fh.export_id, obj_st.raw_dev, obj_st.raw_ino,
-                    obj_rel);
+    /* The handle names the object, so it needs no cache entry.  This can
+       only fail if the path is outside every export, which cannot happen
+       after the vfs_stat above succeeded. */
+    if (fh_from_path(obj_path, &obj_fh) < 0) {
+        xdr_write_uint32(out, NFS3ERR_SERVERFAULT);
+        xdr_write_post_op_attr(out, &dir_st, has_dir);
+        log_warn("nfs3.proc_lookup: cannot build handle for %s",
+                 log_ascii(obj_path));
+        return;
+    }
 
     xdr_write_uint32(out, NFS3_OK);
     xdr_write_fhandle(out, &obj_fh);
@@ -613,8 +576,6 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
     sattr3_t      a;
     char          dir_path[MAX_PATH];
     char          obj_path[MAX_PATH];
-    char          dir_rel[MAX_PATH];
-    char          obj_rel[MAX_PATH];
     vfs_stat_t    dir_pre, dir_post, obj_st;
     int           has_dir_pre, has_dir_post, has_obj;
     uint32_t      status;
@@ -713,14 +674,8 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
     }
 
     has_obj = (vfs_stat(obj_path, &obj_st) == 0);
-    if (has_obj) {
-        fh_make(&obj_fh, dir_fh.export_id, obj_st.raw_dev, obj_st.raw_ino);
-        dir_rel[0] = '\0';
-        fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
-        make_child_relpath(dir_rel, name, obj_rel, MAX_PATH);
-        fh_cache_insert(dir_fh.export_id, obj_st.raw_dev,
-                        obj_st.raw_ino, obj_rel);
-    }
+    if (has_obj && fh_from_path(obj_path, &obj_fh) < 0)
+        has_obj = 0;   /* cannot name it -> just omit the optional handle */
 
     xdr_write_uint32(out, NFS3_OK);
     if (has_obj) {
@@ -887,10 +842,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     uint64_t      cookie;
     uint32_t      maxcount;
     char          dir_path[MAX_PATH];
-    char          dir_rel[MAX_PATH];
     char          entry_path[MAX_PATH];
-    char          entry_rel[MAX_PATH];
-    char          prel[MAX_PATH];   /* parent relpath for ".." */
     vfs_stat_t    dir_st, est;
     int           has_dir, has_est;
     vfs_dir_t    *dp;
@@ -940,10 +892,6 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_post_op_attr(out, &dir_st, has_dir);
     xdr_write_raw(out, zero8, 8);      /* cookieverf */
 
-    /* Retrieve this directory's relpath for building child relpaths */
-    dir_rel[0] = '\0';
-    fh_cache_lookup(dir_fh.export_id, dir_fh.ino, dir_rel, MAX_PATH);
-
     /* vfs_seekdir_to(dp, cookie); -- now called as part of vfs_opendir */
     eof = 1; wrote_one = 0; entry_count = 0;
     ecookie = cookie; lrcookie = 0;
@@ -967,23 +915,14 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
             break;
         }
 
-        /* Determine relpath for cache insertion */
-        if (strcmp(ename, ".") == 0) {
-            /* "." -- same as the directory itself */
-            strncpy(entry_rel, dir_rel, MAX_PATH - 1);
-            entry_rel[MAX_PATH - 1] = '\0';
-        } else if (strcmp(ename, "..") == 0) {
-            /* ".." -- parent of the current directory */
-            parent_relpath(dir_rel, prel, MAX_PATH);
-            strncpy(entry_rel, prel, MAX_PATH - 1);
-            entry_rel[MAX_PATH - 1] = '\0';
-        } else {
-            make_child_relpath(dir_rel, ename, entry_rel, MAX_PATH);
+        /* The handle names the entry, so there is nothing to cache.  An
+           entry we cannot name is skipped rather than sent with a handle
+           the client could not use. */
+        if (fh_from_path(entry_path, &efh) < 0) {
+            log_warn("nfs3.proc_readdirplus: skipping unnameable entry %s",
+                     log_ascii(entry_path));
+            continue;
         }
-
-        fh_cache_insert(dir_fh.export_id, est.raw_dev,
-                        est.raw_ino, entry_rel);
-        fh_make(&efh, dir_fh.export_id, est.raw_dev, est.raw_ino);
 
         xdr_write_uint32(out, 1u);           /* value_follows */
         xdr_write_uint64(out, est.fileid);
@@ -1227,21 +1166,11 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
     has_fpost = (vfs_stat(fdir_path, &fpost) == 0);
     has_tpost = (vfs_stat(tdir_path, &tpost) == 0);
 
-    /* Update the path cache for the renamed file so handles issued
-     * before the rename continue to resolve to the new location. */
-    if (status == NFS3_OK) {
-        vfs_stat_t mv_st;
-        if (vfs_stat(to_path, &mv_st) == 0) {
-            char tdir_rel[MAX_PATH];
-            char new_rel[MAX_PATH];
-            tdir_rel[0] = '\0';
-            fh_cache_lookup(tdir.export_id, tdir.ino,
-                            tdir_rel, MAX_PATH);
-            make_child_relpath(tdir_rel, tname, new_rel, MAX_PATH);
-            fh_cache_insert(tdir.export_id, mv_st.raw_dev,
-                            mv_st.raw_ino, new_rel);
-        }
-    }
+    /* No path-cache fixup is needed: a handle names its object, so the
+       renamed member's handle is simply the one derived from its new path.
+       A handle held for the OLD name now names an object that no longer
+       exists -- fh_resolve still yields a path, vfs_stat fails, and the
+       client correctly gets a stale/absent answer for that name only. */
 
     xdr_write_uint32(out, status);
     xdr_write_wcc_data(out, &fpre, has_fpre, &fpost, has_fpost);

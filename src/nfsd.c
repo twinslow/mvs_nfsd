@@ -373,7 +373,7 @@ int main(int argc, char *argv[])
     log_info("nfsd: loaded %d export(s) from %s",
             n, argv[optind]);
 
-    fh_init();
+    /* File handles are self-describing -- no handle cache to initialise. */
 
     /* Publish actual ports for portmapper responses */
     g_port_pmap  = port_pmap;

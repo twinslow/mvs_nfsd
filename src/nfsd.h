@@ -69,8 +69,7 @@
 #define export_dataset_find_by_dirname  expDsFnd
 #define export_dataset_touch            expDsTch
 /* fhandle.c */
-#define fh_cache_insert         fhCachIn
-#define fh_cache_lookup         fhCachLk
+#define fh_from_path            fhFromPa
 #define fh_resolve              fhResolv
 /* vfs.c */
 #define vfs_pread               vfsPread
@@ -292,17 +291,29 @@
 /* Maximum NFS3 file handle size (wire format) */
 #define NFS3_FHSIZE       64
  
-/* Our file handle is 16 bytes: magic(4) + export_id(4) + rsvd(4) + id32(4) */
-#define OUR_FHSIZE        16
+/*
+ * Our file handle is 60 bytes and SELF-DESCRIBING -- it carries the object's
+ * name, so it needs no server-side state and stays valid across restarts:
+ *
+ *   magic(4) + export_id(4) + dsname(44, ASCII) + member(8, ASCII)
+ *
+ * 60 <= NFS3_FHSIZE (64) and is 4-byte aligned, so XDR adds no padding.
+ * See doc/readme_filehandles.md.
+ */
+#define OUR_FHSIZE        60
 #define OUR_FH_MAGIC      0x4E465333u  /* 'NFS3' */
- 
+
+/* Wire field widths inside the handle (ASCII, blank-padded). */
+#define FH_DSNAME_LEN     44    /* max MVS dsname                          */
+#define FH_MEMBER_LEN      8    /* max PDS member name                     */
+#define FH_PAD_CHAR       0x20  /* ASCII blank -- NOT ' ' (EBCDIC 0x40!)   */
+
 #define MAX_EXPORTS       16
 #define MAX_PDS_PER_EXPORT 32   /* max PDS datasets grouped under one export */
 #define MAX_PATH          256
 #define MAX_NAME          256
 #define MAX_FILE_EXT_LEN  16
 #define MAX_DSNAME_LEN    45    /* 44-char MVS dsname + NUL */
-#define FH_CACHE_SIZE     512
 #define MAX_CONNECTIONS   16
  
 /*
@@ -321,26 +332,35 @@
 /* -------------------------------------------------------------------- */
  
 /*
- * Our file handle (16 bytes, fits within NFS3 64-byte limit).
+ * Our file handle (60 bytes, within the NFS3 64-byte limit).
  *
- * All four fields are stored big-endian in the wire encoding regardless
- * of host endianness (see fh_encode / fh_decode in fhandle.c).
+ * The handle NAMES its object rather than referencing server-side state,
+ * so it survives a server restart and never goes stale for bookkeeping
+ * reasons.  RFC 1813 requires a handle to stay valid for the lifetime of
+ * the object it refers to; NFS3ERR_STALE means the OBJECT is gone, not
+ * that the server forgot about it.
  *
- * The 'ino' field carries a stable 32-bit ID allocated from the path
- * cache in fhandle.c.  The ID maps a (dev64, ino64) pair to a compact
- * token that avoids collisions from truncating 64-bit inodes.  'dev' is
- * reserved and always 0 in handles we issue.
+ * The three object kinds are distinguished by which name fields are set:
  *
- * For the MVS port:
- *   export_id  -> PDS dataset index in the exports table
- *   dev        -> reserved (always 0)
- *   ino        -> stable ID from the cache allocator, keyed on dataset+member
+ *   export root  : dsname == "",  member == ""   (a virtual directory)
+ *   PDS directory: dsname set,    member == ""
+ *   PDS member   : dsname set,    member set
+ *
+ * 'export_id' is a STABLE HASH of the export path (mvs_fid_ino32), not a
+ * table index -- an index would silently resolve to the wrong export if
+ * the config were reordered.  If no export matches the hash the handle is
+ * genuinely stale.
+ *
+ * dsname / member are held in ASCII (the wire form too), so a handle is
+ * readable in a packet trace.  The numeric fields are big-endian on the
+ * wire regardless of host endianness.  See fh_encode / fh_decode and
+ * doc/readme_filehandles.md.
  */
 typedef struct {
-    uint32_t magic;      /* always OUR_FH_MAGIC */
-    uint32_t export_id;  /* index into exports table */
-    uint32_t dev;        /* reserved, always 0 */
-    uint32_t ino;        /* stable 32-bit file ID (from path cache) */
+    uint32_t magic;                  /* always OUR_FH_MAGIC                 */
+    uint32_t export_id;              /* stable hash of the export path      */
+    char     dsname[MAX_DSNAME_LEN]; /* ASCII, upper-case; "" = export root */
+    char     member[FH_MEMBER_LEN + 1]; /* ASCII, upper-case; "" = PDS dir  */
 } our_fhandle_t;
  
 /*
@@ -441,8 +461,15 @@ typedef struct {
     uint32_t mtime_nsec;
     uint32_t ctime_sec;
     uint32_t ctime_nsec;
-    uint32_t raw_dev;      /* st_dev truncated to 32 bits -- used as cache key */
-    uint32_t raw_ino;      /* st_ino truncated to 32 bits -- used as cache key */
+    /*
+     * raw_dev / raw_ino were the file-handle cache key.  Handles are now
+     * self-describing (see fhandle.c) and no cache exists, so nothing reads
+     * these any more -- they are still filled in by the VFS layers and are
+     * retained only as a debugging aid.  'fileid' is the value that matters
+     * (it is reported to clients in fattr3).
+     */
+    uint32_t raw_dev;      /* unused: former cache key */
+    uint32_t raw_ino;      /* unused: former cache key */
 } vfs_stat_t;
  
 /* VFS filesystem-level statistics */
@@ -547,17 +574,24 @@ void           export_dataset_touch(int export_idx, int dataset_idx);
 
 /* -------------------------------------------------------------------- */
 /* Prototypes: fhandle.c                                                */
+/*                                                                      */
+/* Handles are self-describing, so there is no cache and no init: the   */
+/* pair below is a pure, total mapping between an NFS path and a handle. */
 /* -------------------------------------------------------------------- */
-void fh_init(void);
-void fh_make(our_fhandle_t *fh, uint32_t export_id,
-             uint32_t dev, uint32_t ino);
+
+/* fh_from_path: build the handle naming the object at abspath (ASCII).
+ * Returns 0 on success, -1 if the path is not within an export. */
+int  fh_from_path(const char *abspath, our_fhandle_t *fh);
+
+/* fh_resolve: rebuild the ASCII NFS path the handle names.
+ * Returns 0 on success, -1 if the handle is genuinely stale (its export
+ * or dataset is no longer exported) -- the caller maps that to
+ * NFS3ERR_STALE. */
+int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
+
+/* Wire encode / decode.  fh_decode returns -1 on a bad magic or length. */
 int  fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh);
 void fh_encode(const our_fhandle_t *fh, uint8_t *bytes);
-void fh_cache_insert(uint32_t export_id, uint32_t dev,
-                     uint32_t ino, const char *relpath);
-int  fh_cache_lookup(uint32_t export_id, uint32_t id32,
-                     char *relpath, uint32_t maxlen);
-int  fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen);
  
 /* -------------------------------------------------------------------- */
 /* Prototypes: vfs.c                                                    */

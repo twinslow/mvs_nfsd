@@ -371,8 +371,11 @@ same export.
 
 - On POSIX this is the `rename(2)` system call, which is atomic when both paths are
   on the same filesystem.
-- After a successful rename, the NFS layer calls `fh_cache_insert()` to update the
-  path cache.  Your implementation does not need to update the cache directly.
+- No file-handle bookkeeping is needed after a rename.  Handles are
+  self-describing (they name their object), so the renamed file's handle is simply
+  the one derived from its new path, and a handle held for the old name correctly
+  refers to an object that no longer exists.  See
+  [readme_filehandles.md](readme_filehandles.md).
 - On systems that do not support atomic rename-over (i.e. the destination must be
   deleted first), there is a window where the file temporarily disappears.  Clients
   may see `NFS3ERR_NOENT` in that window.  This is an inherent limitation of such

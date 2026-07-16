@@ -29,7 +29,6 @@ void handle_mount(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
     export_t *exp;
     vfs_stat_t st;
     our_fhandle_t fh;
-    uint32_t  exp_id;
     int       i;
     int       nexp;
 
@@ -55,7 +54,7 @@ void handle_mount(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
          * Reply:
          *   status: uint32 (MNT3_OK=0 or error)
          *   if OK:
-         *     fhandle: opaque (our 16-byte handle)
+         *     fhandle: opaque (our OUR_FHSIZE-byte handle)
          *     auth_flavours: counted array of uint32
          */
         if (xdr_read_string(in, dirpath, MAX_PATH) < 0 || in->error) {
@@ -84,11 +83,12 @@ void handle_mount(int fd, rpc_call_t *call, xdr_t *in, xdr_t *out)
             break;
         }
 
-        exp_id = (uint32_t)exports_get_id(exp);
-        fh_make(&fh, exp_id, st.raw_dev, st.raw_ino);
-
-        /* Cache the root: relpath is empty string */
-        fh_cache_insert(exp_id, st.raw_dev, st.raw_ino, "");
+        /* The root handle names the export itself (no dataset, no member);
+           it is self-describing, so there is nothing to cache. */
+        if (fh_from_path(exp->export_path, &fh) < 0) {
+            xdr_write_uint32(out, MNT3ERR_IO);
+            break;
+        }
 
         xdr_write_uint32(out, MNT3_OK);
         xdr_write_fhandle(out, &fh);

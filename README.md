@@ -557,20 +557,32 @@ functions and globals in the MVS build are mapped to short names via
 
 ## File handle design
 
-Each file handle is 16 bytes (well within the NFS3 64-byte limit):
+Each file handle is 60 bytes (within the NFS3 64-byte limit, and a multiple
+of 4 so XDR adds no padding).  The handle is **self-describing** — it
+carries the name of the object it refers to, so resolving it needs no
+server-side state and a handle stays valid across a server restart:
 
 ```
 bytes  0- 3: magic      = 0x4E465333 ('NFS3')
-bytes  4- 7: export_id  (index into exports table)
-bytes  8-11: raw_dev    (export_id cast to uint32_t, on MVS)
-bytes 12-15: raw_ino    (mvs_fid_ino32(dsname, member), on MVS)
+bytes  4- 7: export_id  = stable hash of the export path (NOT an index)
+bytes  8-51: dsname     = MVS dataset name, 44 bytes, ASCII, blank-padded
+bytes 52-59: member     = PDS member name,  8 bytes, ASCII, blank-padded
 ```
 
-On the Linux/POSIX build `raw_dev` and `raw_ino` hold `st_dev` and `st_ino`
-from `stat()`.
+The object kind is implied by which name fields are set: both empty = the
+export root; dsname only = a PDS directory; both set = a PDS member.  The
+file extension is not carried — it comes from the dataset's config.
 
-All fields are stored big-endian on the wire.  See `fh_encode()` /
-`fh_decode()` in `fhandle.c`.
+Because the handle names its object, there is **no file-handle cache** and
+`NFS3ERR_STALE` is returned only when the object is genuinely unreachable
+(its export or dataset is no longer exported) — never because the server
+lost track of it.
+
+The names are ASCII (so a handle is readable in a packet trace); the two
+numeric fields are big-endian.  See `fh_encode()` / `fh_decode()` in
+`fhandle.c`, and **[doc/readme_filehandles.md](doc/readme_filehandles.md)**
+for the full rationale, the EBCDIC pitfalls, and the upgrade note (clients
+must remount once).
 
 A path cache (512 entries, round-robin eviction) maps `(export_id, raw_dev,
 raw_ino)` to the file's relative path from the export root.  It is populated

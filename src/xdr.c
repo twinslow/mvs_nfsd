@@ -203,7 +203,8 @@ void xdr_write_string(xdr_t *x, const char *s, uint32_t len)
 }
 
 /* ------------------------------------------------------------------ */
-/* Write an NFS3 file handle: encodes our 16-byte handle as an opaque   */
+/* Write an NFS3 file handle: encodes our OUR_FHSIZE-byte handle as an  */
+/* opaque.  OUR_FHSIZE is 4-byte aligned, so XDR adds no padding.       */
 /* ------------------------------------------------------------------ */
 void xdr_write_fhandle(xdr_t *x, const our_fhandle_t *fh)
 {

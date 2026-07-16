@@ -89,8 +89,19 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
         return -1;
     }
 
-    /* Split the path into dataset and member name. */
-    mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name, export_idx);
+    /* Split the path into dataset and member name.
+     *
+     * The return value MUST be checked.  This call fails for a name that
+     * cannot be a member of this PDS -- notably a wrong file extension, such
+     * as vi's "foo.jcllib~" backup -- but it has ALREADY filled in
+     * dsname/member from the leading part of the name before it rejects the
+     * extension.  Ignoring the failure and falling through would let
+     * "foo.jcllib~" match the pending-write buffer of "foo.jcllib" in
+     * pww_find() below, so stat would report one object's attributes (and
+     * identity) for a completely different name. */
+    if (mvs_get_pds_dsn_and_member(path, pds_dsname, pds_member_name,
+                                   export_idx) < 0)
+        return -1;    /* errno set (ENOENT for wrong extension / bad name) */
 
     /* A member being written is not yet stowed in the PDS directory, so it
        must still be visible to stat.  Report its in-progress size from the
@@ -441,8 +452,14 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         return -1;
     }
 
-    /* Split the path into dataset and member name. */
-    mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname, pds_member_name, export_idx);
+    /* Split the path into dataset and member name.  The return value MUST be
+       checked -- see the note in vfs_stat: on failure (e.g. a wrong file
+       extension) dsname/member are already populated, so falling through
+       would let a name like "foo.jcllib~" read "foo.jcllib"'s pending
+       buffer below. */
+    if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
+                                   pds_member_name, export_idx) < 0)
+        return -1;    /* errno set (ENOENT for wrong extension / bad name) */
 
     /* If the member is being written (buffered, not yet stowed), serve the
        read from the pending buffer so the not-yet-stowed data is visible.
