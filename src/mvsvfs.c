@@ -42,8 +42,31 @@
 #include "mvsdol.h"
 #include "logger.h"
 
-#define PATH_SEPARATOR_ASCII  (char)0x2f  
-#define PATH_SEPARATOR_EBCDIC (char)0x61 
+#define PATH_SEPARATOR_ASCII  (char)0x2f
+#define PATH_SEPARATOR_EBCDIC (char)0x61
+
+/* -------------------------------------------------------------------- */
+/* errno compatibility                                                   */
+/*                                                                       */
+/* JCC's <errno.h> follows standard POSIX errno numbering but OMITS      */
+/* several values, leaving their slots unused -- it defines 17 EEXIST    */
+/* and then jumps to 20 ENOTDIR, and 28 ENOSPC / 29 ESPIPE then jumps to */
+/* 33 EDOM.  So the canonical numbers for the ones we need are free and  */
+/* can simply be supplied.                                               */
+/*                                                                       */
+/* The #ifndef defers to the platform (POSIX defines these already), and */
+/* because JCC follows POSIX numbering it would add them at these very   */
+/* values anyway -- so this cannot collide, now or later.                */
+/*                                                                       */
+/* Do NOT replace this with an "#ifdef EXDEV ... #else errno = EINVAL"   */
+/* fallback: on JCC that silently always takes the fallback, and the     */
+/* client then receives NFS3ERR_INVAL, which Windows renders as the      */
+/* famously misleading "The volume for a file has been externally        */
+/* altered".                                                             */
+/* -------------------------------------------------------------------- */
+#ifndef EXDEV
+#define EXDEV   18    /* Cross-device link / rename -> NFS3ERR_XDEV */
+#endif
 
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t as appropriate for a PDS dataset         */
@@ -716,13 +739,9 @@ int vfs_rename(const char *from, const char *to)
 
     /* A member can only be renamed within its own dataset -- there is no
        cross-PDS member move.  Report XDEV so the client falls back to
-       copy+delete. */
+       copy+delete (see the errno note at the top of this file). */
     if (strcmp(from_dsname, to_dsname) != 0) {
-#ifdef EXDEV
         errno = EXDEV;
-#else
-        errno = EINVAL;   /* JCC may lack EXDEV; INVAL is the closest we map */
-#endif
         return -1;
     }
 
@@ -897,9 +916,7 @@ uint32_t vfs_errno_to_nfs3(int err)
 //        case ENXIO:         return NFS3ERR_NXIO;
         case EACCES:        return NFS3ERR_ACCES;
         case EEXIST:        return NFS3ERR_EXIST;
-#ifdef EXDEV
         case EXDEV:         return NFS3ERR_XDEV;
-#endif
 //        case ENODEV:        return NFS3ERR_NODEV;
         case ENOTDIR:       return NFS3ERR_NOTDIR;
         case EISDIR:        return NFS3ERR_ISDIR;
