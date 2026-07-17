@@ -289,7 +289,7 @@ nc -zv 192.168.1.168 11111
 After installing "Services For NFS" / "Client for NFS" on Windows 11 Pro:
 
 ```
-mount -o "nolock,nfsvers=3,tcp,soft,timeo=10" 192.168.1.168:/exports/jcllib x:
+mount -o "nolock,nfsvers=3,tcp,soft,timeo=10" 192.168.1.168:/exports x:
 ```
 
 ### Non-root (high ports — development and testing)
@@ -623,7 +623,12 @@ on every LOOKUP and READDIRPLUS call.
   returns `NFS3ERR_NOSPC`.  Disk-backed spill for larger members is a future
   phase (see the design doc).
 - No locking (`nolock` mount option recommended).
-- No authentication: all clients have full read/write access.
+- No authentication and no per-client access control: access is a property
+  of the *export*, not the client.  An export (or a single dataset) can be
+  marked read-only with the `ro` keyword, and the reported permission bits
+  are configurable (`dirperm` / `memperm` / `rootperm`) — see
+  [doc/readme_config.md](doc/readme_config.md).  Read-only is enforced for
+  every client including one mounting as root.
 - RENAME works only **within a single PDS** — a member cannot be moved to a
   different dataset (different directory).  A cross-PDS request returns
   `NFS3ERR_XDEV`, which prompts the client to fall back to copy+delete.

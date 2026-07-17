@@ -1,9 +1,22 @@
 # Design: Read-Only Exports and Configurable Permission Bits
 
-Status: **Proposed — not implemented.** This document is the design record;
-implement after the open decisions in §10 are settled.
+Status: **Implemented.** All decisions in §10 are settled (§10.4 landed as
+`#ifndef EROFS / #define EROFS 30`, not the private sentinel first sketched).
+This document is retained as the design record; the user-facing reference is
+[readme_config.md](readme_config.md) §3.
 
 Author: design discussion, dino_nfs.
+
+Implementation touchpoints:
+- Config: `src/cfgopts.c` (pure keyword-option parsing — `cfg_parse_octal`,
+  `cfg_parse_keywords`, `cfg_resolve_opts` — split out so it can be
+  unit-tested by `tests/tcfgopts.c`); `src/exports.c` (line/section/block
+  handling, fail-closed compaction); `src/nfsd.h` (`pds_dataset_t` /
+  `export_t` / `vfs_stat_t` fields).
+- Enforcement: `mvs_check_writable()` in `src/mvsvfs.c`, called from the six
+  mutating `vfs_*`; `EROFS` mapped in `vfs_errno_to_nfs3()`.
+- Reporting: `vfs_report_mode()` in the three `vfs_stat_*`; the read-only
+  mask in `check_access()` (`src/nfs3.c`).
 
 ## 1. Goal
 
@@ -561,20 +574,29 @@ Nothing to do; log the setting at load time instead.
 
 ## 12. Test plan
 
-**Unit-testable (pure, in `tests/`):**
+**Unit tests — `tests/tcfgopts.c` (DONE).** The pure option helpers were
+split into `src/cfgopts.c` so they link without the export table
+(`tstubs.c`). Covered:
 
 - Keyword parsing: `ro`, `rw`, octal values, leading zero, case-insensitive,
   order-independent.
-- Octal rejection: `778`, `999`, `1777`, empty, trailing junk.
-- Defaults: no keywords → `readonly=0`, `dirperm=0777`, `memperm=0777`,
-  `rootperm=0555` (the memset trap in §3).
-- Mode masking: `ro` + `memperm=666` → reported `0444`.
-- **Inheritance flattening** (§2.4): export `ro dirperm=555` + dataset
-  `memperm=400` → dataset resolves to `readonly=1, dirperm=0555,
-  memperm=0400`; dataset `dirperm=755` overrides the export default.
+- Octal rejection: `778`, `999`, `1777`, `4000`, empty, trailing junk.
+- Defaults: no keywords → `readonly=0`, `dirperm=0777`, `memperm=0777`.
+- **Inheritance flattening** (§2.4): export perms inherited, dataset
+  overrides, memperm inherited while dirperm overridden.
 - **Ceiling enforcement**: `rw` on a dataset inside an `ro` export is an
-  error, not an override.
-- **Level enforcement**: `rootperm` on a dataset line is an error.
+  error; `rw` inside a read-write export is allowed.
+- **Level enforcement**: `rootperm` at dataset level is an error.
+
+Still exercised only on-MVS (they need the exports table / VFS, not the pure
+helpers):
+
+- Mode masking end-to-end: `ro` + `memperm=666` → reported `0444`.
+- The `rootperm=0555` default (the `find_or_create_export` memset trap, §3).
+- **Block parsing** (§8.2): unterminated `{` at EOF, stray `}`, nested `{`,
+  and a section header inside an open block are each errors.
+- **Fail-closed scope** (§10.1): a bad keyword on the third dataset of a
+  block fails the *whole* export — assert the export is absent, not
 - **Block parsing** (§8.2): unterminated `{` at EOF, stray `}`, nested `{`,
   and a section header inside an open block are each errors.
 - **Fail-closed scope** (§10.1): a bad keyword on the third dataset of a

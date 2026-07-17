@@ -65,7 +65,10 @@
 /* altered".                                                             */
 /* -------------------------------------------------------------------- */
 #ifndef EXDEV
-#define EXDEV   18    /* Cross-device link / rename -> NFS3ERR_XDEV */
+#define EXDEV   18    /* Cross-device link / rename -> NFS3ERR_XDEV     */
+#endif
+#ifndef EROFS
+#define EROFS   30    /* Read-only file system      -> NFS3ERR_ROFS     */
 #endif
 
 /* -------------------------------------------------------------------- */
@@ -93,6 +96,40 @@ static uint64_t vfs_stat_member_size_calc(
     return calc_estimated_size;
 }
 
+
+/*
+ * Mode to REPORT for an object, given its configured permission bits and
+ * whether it lives on a read-only export.  On a read-only export the write
+ * bits are stripped, so `ls -l` and ACCESS never advertise a write we would
+ * then refuse (design §4.3).  This is cosmetic honesty only -- enforcement
+ * does not depend on it (see mvs_check_writable / check_access).
+ */
+static uint32_t vfs_report_mode(uint32_t perm, int readonly)
+{
+    return readonly ? (perm & ~0222u) : perm;
+}
+
+/*
+ * Gate for every mutating operation.  Returns 0 if the dataset may be
+ * modified, or -1 with errno=EROFS if it is on a read-only export.
+ *
+ * This is the enforcement point, and it is deliberately independent of uid
+ * and of the reported mode bits: `ro` is a filesystem property, not a
+ * permission, so no caller (not even uid 0) may override it (design §4.2).
+ * Call it immediately after the dataset is resolved and BEFORE any state is
+ * touched -- in particular before the pending-write pool -- so a refused
+ * operation never creates or dirties a pending slot.
+ */
+static int mvs_check_writable(int export_idx, int dataset_idx)
+{
+    pds_dataset_t *ds = export_dataset_get(export_idx, dataset_idx);
+
+    if (ds != NULL && ds->readonly) {
+        errno = EROFS;
+        return -1;
+    }
+    return 0;
+}
 
 static int vfs_stat_pds_member(const char *path, int export_idx,
                                int dataset_idx, vfs_stat_t *vs)
@@ -134,7 +171,8 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
         if (pm != NULL) {
             time_t now_t = time(NULL);
             vs->ftype = NF3REG;
-            vs->mode = 0777;
+            vs->mode = vfs_report_mode(ds->memperm, ds->readonly);
+            vs->fs_readonly = ds->readonly ? 1u : 0u;
             vs->nlink = 1;
             vs->uid = 0;
             vs->gid = 0;
@@ -176,7 +214,8 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
         set_size = vfs_stat_member_size_calc(ds, member_entry->size);
 
     vs->ftype = NF3REG;
-    vs->mode = 0777; /* read/write/execute permissions for everyone */
+    vs->mode = vfs_report_mode(ds->memperm, ds->readonly);
+    vs->fs_readonly = ds->readonly ? 1u : 0u;
     vs->nlink = 1;   /* convention for files: one link from parent directory */
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
@@ -283,7 +322,8 @@ static int vfs_stat_dataset(const char *path, int export_idx,
     dmtime = (ds->dir_mtime != 0) ? ds->dir_mtime : vfs_dir_epoch();
 
     vs->ftype = NF3DIR;
-    vs->mode = 0777; /* read/write/execute permissions for everyone */
+    vs->mode = vfs_report_mode(ds->dirperm, ds->readonly);
+    vs->fs_readonly = ds->readonly ? 1u : 0u;
     vs->nlink = 2;   /* convention for directories: link from parent and self-link */
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
@@ -331,7 +371,11 @@ static int vfs_stat_root(const char *path, int export_idx, vfs_stat_t *vs)
     epoch = vfs_dir_epoch();
 
     vs->ftype = NF3DIR;
-    vs->mode = 0777;
+    /* The export root is ALWAYS read-only for ACCESS -- it cannot be modified
+       through NFS (MKDIR/RMDIR are NOTSUPP), so this is a fact, not policy
+       (design §4.4).  rootperm only tunes the reported r/x bits. */
+    vs->mode = vfs_report_mode(exp->rootperm, 1);
+    vs->fs_readonly = 1u;
     vs->nlink = 2;
     vs->uid = 0;
     vs->gid = 0;
@@ -555,6 +599,8 @@ int vfs_pwrite(const char *path, const void *buf,
                  path_type == MVS_PATH_TYPE_DATASET) ? EISDIR : ENOENT;
         return -1;
     }
+    if (mvs_check_writable(export_idx, dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
     if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
                                    pds_member_name, export_idx) < 0)
         return -1;
@@ -615,6 +661,8 @@ int vfs_create(const char *path, uint32_t mode)
         errno = EACCES;
         return -1;
     }
+    if (mvs_check_writable(export_idx, dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
     if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
                                    pds_member_name, export_idx) < 0)
         return -1;
@@ -654,6 +702,10 @@ int vfs_remove(const char *path)
         errno = EISDIR;
         return -1;
     }
+    /* Refuse before touching the pending pool, so a rejected remove cannot
+       discard a buffered write. */
+    if (mvs_check_writable(export_idx, dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
     if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
                                    pds_member_name, export_idx) < 0)
         return -1;    /* errno set (ENOENT for wrong extension / bad name) */
@@ -737,6 +789,13 @@ int vfs_rename(const char *from, const char *to)
                                    to_member, to_export_idx) < 0)
         return -1;
 
+    /* BOTH ends must be writable (design §5).  Same-PDS is enforced below, so
+       these normally name the same dataset, but the two-export-of-one-PDS
+       edge is covered by checking each. */
+    if (mvs_check_writable(from_export_idx, from_dataset_idx) < 0 ||
+        mvs_check_writable(to_export_idx, to_dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
+
     /* A member can only be renamed within its own dataset -- there is no
        cross-PDS member move.  Report XDEV so the client falls back to
        copy+delete (see the errno note at the top of this file). */
@@ -809,6 +868,8 @@ int vfs_truncate(const char *path, uint64_t size)
         errno = EISDIR;
         return -1;
     }
+    if (mvs_check_writable(export_idx, dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
     if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
                                    pds_member_name, export_idx) < 0)
         return -1;
@@ -835,8 +896,9 @@ int vfs_truncate(const char *path, uint64_t size)
 /* via pww_touch_stats (which no-ops unless the member already has stats */
 /* and the time actually changed).  The content is NOT rewritten and the */
 /* modification level is NOT bumped -- a time change is not a content     */
-/* change.  Always returns 0: SETATTR must not fail, as clients issue it  */
-/* during the write sequence.                                            */
+/* change.  Returns 0 for the normal case (SETATTR must not fail, as       */
+/* clients issue it during the write sequence), except on a read-only      */
+/* export, where it fails with EROFS.                                      */
 /* -------------------------------------------------------------------- */
 int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
@@ -871,11 +933,14 @@ int vfs_set_times(const char *path,
     if (mvs_path_type(ebcdic_path, &export_idx, &dataset_idx)
             != MVS_PATH_TYPE_PDS_MEMBER)
         return 0;
+    /* A time change rewrites ISPF stats via STOW, so it is a mutation and is
+       refused on a read-only export (the one case where SETATTR does fail). */
+    if (mvs_check_writable(export_idx, dataset_idx) < 0)
+        return -1;    /* errno = EROFS -> NFS3ERR_ROFS */
     if (mvs_get_pds_dsn_and_member(ebcdic_path, pds_dsname,
                                    pds_member_name, export_idx) < 0)
         return 0;                         /* unresolvable -- accept, no change */
 
-    (void)dataset_idx;
     return pww_touch_stats(export_idx, pds_dsname, pds_member_name, new_time);
 }
  
@@ -917,6 +982,7 @@ uint32_t vfs_errno_to_nfs3(int err)
         case EACCES:        return NFS3ERR_ACCES;
         case EEXIST:        return NFS3ERR_EXIST;
         case EXDEV:         return NFS3ERR_XDEV;
+        case EROFS:         return NFS3ERR_ROFS;
 //        case ENODEV:        return NFS3ERR_NODEV;
         case ENOTDIR:       return NFS3ERR_NOTDIR;
         case EISDIR:        return NFS3ERR_ISDIR;

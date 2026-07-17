@@ -38,7 +38,7 @@
  
 #include <stdio.h>    /* fopen, fclose, fgets */
 #include <string.h>   /* strncpy, strlen, strcmp, strchr */
-#include <ctype.h>    /* isspace */
+#include <ctype.h>    /* isspace, tolower */
 #include <time.h>     /* time */
  
 #ifndef __MVS__
@@ -49,6 +49,7 @@
 #include "ebcdic.h"
 #include "logger.h"
 #include "mvsio.h"
+#include "cfgopts.h"   /* cfg_opts_t + keyword parsing (pure, unit-tested) */
 
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
@@ -81,21 +82,45 @@ static const struct { const char *name; int id; } g_cfg_sections[] = {
     { "EXPORTS", CFG_SECT_EXPORTS }
 };
 
-/* Case-insensitive compare (C89 has no strcasecmp; toupper is
-   EBCDIC-correct under JCC, and both operands are in the file's encoding). */
-static int cfg_stricmp(const char *a, const char *b)
-{
-    int ca;
-    int cb;
+/* ------------------------------------------------------------------ */
+/* [Exports] line / block parsing                                       */
+/*                                                                      */
+/* The keyword-option logic (cfg_opts_t, cfg_parse_keywords,            */
+/* cfg_resolve_opts, cfg_parse_octal, cfg_stricmp) lives in cfgopts.c   */
+/* so it can be unit-tested; the line/section/block handling and the   */
+/* export table stay here.                                             */
+/* ------------------------------------------------------------------ */
 
-    while (*a != '\0' && *b != '\0') {
-        ca = toupper((unsigned char)*a);
-        cb = toupper((unsigned char)*b);
-        if (ca != cb) return ca - cb;
-        a++;
-        b++;
+#define CFG_MAX_TOKS       16  /* path/dsname + a generous run of keywords   */
+
+/* Block markers.  '{' / '}' are literals, which are EBCDIC under JCC and so
+   match the EBCDIC config file -- the same reasoning as the '#'/'[' handling
+   above. */
+#define CFG_BLOCK_OPEN         '{'
+#define CFG_BLOCK_CLOSE        '}'
+
+/* ---- [Exports] block parser state (reset at the top of exports_load) ---- */
+static int        g_blk_open;      /* 1 while a { ... } block is open        */
+static int        g_blk_exp_idx;   /* export index of the open block         */
+static cfg_opts_t g_blk_opts;      /* export-level keywords of the open block */
+
+/*
+ * Split 's' in place into whitespace-separated tokens.  Returns the token
+ * count, or -1 if there are more than 'maxtoks' (treated as a config error).
+ */
+static int cfg_tokenize(char *s, char *toks[], int maxtoks)
+{
+    int n = 0;
+
+    for (;;) {
+        while (*s && isspace((unsigned char)*s)) s++;
+        if (*s == '\0') break;
+        if (n >= maxtoks) return -1;
+        toks[n++] = s;
+        while (*s && !isspace((unsigned char)*s)) s++;
+        if (*s) { *s = '\0'; s++; }
     }
-    return (int)(unsigned char)*a - (int)(unsigned char)*b;
+    return n;
 }
 
 /* Map a section name to its id, or CFG_SECT_UNKNOWN. */
@@ -203,6 +228,13 @@ static void dataset_init(pds_dataset_t *ds, const char *dsname_ebcdic)
         log_info("exports_load: %s DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
             ds->dsname_ebcdic, ds->dcbinfo.dsorg, ds->dcbinfo.recfm,
             ds->dcbinfo.lrecl, ds->dcbinfo.blksize);
+
+    /* Option defaults.  memset above left these 0, and 0 is a valid but
+       catastrophic 0000 mode -- assign the real defaults explicitly.
+       cfg_resolve_opts() overwrites them once keywords are parsed. */
+    ds->readonly = 0;
+    ds->dirperm  = CFG_PERM_DIR_DEFAULT;
+    ds->memperm  = CFG_PERM_MEM_DEFAULT;
 }
 
 /* ------------------------------------------------------------------ */
@@ -229,61 +261,59 @@ static int find_or_create_export(const char *export_path_ebcdic)
     ebcdic_to_ascii(g_exports[idx].export_path,
         g_exports[idx].export_path_ebcdic, MAX_PATH - 1);
     g_exports[idx].ndatasets = 0;
+
+    /* Option defaults (memset left these 0 -- 0 is a valid 0000 mode). */
+    g_exports[idx].readonly = 0;
+    g_exports[idx].rootperm = CFG_PERM_ROOT_DEFAULT;
+    g_exports[idx].failed   = 0;
     return idx;
 }
 
 /* ------------------------------------------------------------------ */
-/* cfg_do_export_line: handle one [Exports] line.                     */
-/*                                                                    */
-/* "<nfs-export-path>  <pds-dataset-name>".  The line buffer is       */
-/* modified in place.                                                 */
+/* cfg_fail_export: mark an export as failed (dropped at load end).   */
 /* ------------------------------------------------------------------ */
-static void cfg_do_export_line(char *p)
+static void cfg_fail_export(int exp_idx)
 {
-    char          *tok;
-    char          *rest;
-    int            len;
-    int            exp_idx;
-    export_t      *exp;
+    if (exp_idx >= 0 && exp_idx < g_nexports)
+        g_exports[exp_idx].failed = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* cfg_add_dataset: append one dataset to export 'exp_idx', resolving  */
+/* its options against the (optional) export-level opts.               */
+/*                                                                    */
+/* On any error the export is marked failed (fail-closed, §10.1).      */
+/* ------------------------------------------------------------------ */
+static void cfg_add_dataset(int exp_idx, const char *dsname,
+                            const cfg_opts_t *exp_opts,
+                            const cfg_opts_t *ds_opts)
+{
+    export_t      *exp = &g_exports[exp_idx];
     pds_dataset_t *ds;
 
-    /* First token: export (NFS) path */
-    tok = p;
-    while (*p && !isspace((unsigned char)*p)) p++;
-    if (*p) { *p = '\0'; p++; }
-
-    /* Skip whitespace between tokens */
-    while (*p && isspace((unsigned char)*p)) p++;
-
-    /* Second token: PDS dataset name (rest of line) */
-    rest = p;
-    len = (int)strlen(rest);
-    while (len > 0 && isspace((unsigned char)rest[len-1]))
-        rest[--len] = '\0';
-
-    if (len == 0) {
-        log_error("nfsd: warning: missing dataset name for export %s", tok);
-        return;
-    }
-
-    /* Find or create the export this dataset belongs to. */
-    exp_idx = find_or_create_export(tok);
-    if (exp_idx < 0) {
-        log_error("nfsd: warning: max exports (%d) reached, ignoring %s",
-            MAX_EXPORTS, tok);
-        return;
-    }
-    exp = &g_exports[exp_idx];
-
     if (exp->ndatasets >= MAX_PDS_PER_EXPORT) {
-        log_error("nfsd: warning: max datasets (%d) reached for export %s, "
-            "ignoring %s", MAX_PDS_PER_EXPORT, tok, rest);
+        log_error("exports_load: max datasets (%d) reached for export %s,"
+            " failing export", MAX_PDS_PER_EXPORT, exp->export_path_ebcdic);
+        cfg_fail_export(exp_idx);
         return;
     }
 
-    /* Append the dataset to this export. */
     ds = &exp->datasets[exp->ndatasets];
-    dataset_init(ds, rest);
+    dataset_init(ds, dsname);
+
+    if (cfg_resolve_opts(exp_opts, ds_opts, &ds->readonly, &ds->dirperm,
+                         &ds->memperm, ds->dsname_ebcdic) < 0) {
+        cfg_fail_export(exp_idx);   /* diagnostic already logged */
+        return;
+    }
+
+    /* Honour it, but a directory with no execute bit cannot be entered --
+       almost always a typo (design §9). */
+    if ((ds->dirperm & 0111) == 0)
+        log_warn("exports_load: %s: dirperm=%03o has no execute bit --"
+            " clients will not be able to enter the directory",
+            ds->dsname_ebcdic, (unsigned)ds->dirperm);
+
     exp->ndatasets++;
 
     /* Keep the legacy single-dataset fields (used by the compile-only
@@ -298,9 +328,147 @@ static void cfg_do_export_line(char *p)
         exp->dcbinfo = ds->dcbinfo;
     }
 
-    log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (file ext '%s')",
-        exp->export_path_ebcdic, ds->dsname_ebcdic,
-        ds->dirname_ebcdic, ds->file_ext);
+    log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (ext '%s',"
+        " %s dirperm=%03o memperm=%03o)",
+        exp->export_path_ebcdic, ds->dsname_ebcdic, ds->dirname_ebcdic,
+        ds->file_ext, ds->readonly ? "ro" : "rw",
+        (unsigned)ds->dirperm, (unsigned)ds->memperm);
+}
+
+/* ------------------------------------------------------------------ */
+/* cfg_open_block: handle a "<path> [kw...] {" line.  toks[0..n-1] are */
+/* the tokens with the trailing "{" already stripped.                  */
+/* ------------------------------------------------------------------ */
+static void cfg_open_block(char *toks[], int n)
+{
+    int       exp_idx;
+    export_t *exp;
+
+    /* n is the token count with the trailing "{" already removed; toks[0]
+       must be the export path.  A lone "{" (n == 0) has no path. */
+    if (n < 1) {
+        log_error("exports_load: '{' with no export path");
+        g_blk_open    = 1;    /* swallow the body so it is not misread */
+        g_blk_exp_idx = -1;
+        memset(&g_blk_opts, 0, sizeof(g_blk_opts));
+        return;
+    }
+
+    exp_idx = find_or_create_export(toks[0]);
+    if (exp_idx < 0) {
+        log_error("exports_load: max exports (%d) reached, ignoring %s",
+            MAX_EXPORTS, toks[0]);
+        /* No export to fail; open a "swallow" block so its body is skipped. */
+        g_blk_open    = 1;
+        g_blk_exp_idx = -1;
+        memset(&g_blk_opts, 0, sizeof(g_blk_opts));
+        return;
+    }
+
+    g_blk_open    = 1;
+    g_blk_exp_idx = exp_idx;
+
+    /* Export-level keywords: toks[1..n-1]. */
+    if (cfg_parse_keywords(&toks[1], n - 1, &g_blk_opts,
+                           CFG_LEVEL_EXPORT, toks[0]) < 0) {
+        cfg_fail_export(exp_idx);
+        return;                 /* body still skipped via the failed export */
+    }
+
+    exp = &g_exports[exp_idx];
+    if (g_blk_opts.has_readonly && g_blk_opts.readonly) exp->readonly = 1;
+    if (g_blk_opts.has_rootperm)                        exp->rootperm = g_blk_opts.rootperm;
+
+    log_info("nfsd: export '%s' block (%s rootperm=%03o)",
+        exp->export_path_ebcdic, exp->readonly ? "ro" : "rw",
+        (unsigned)exp->rootperm);
+}
+
+/* ------------------------------------------------------------------ */
+/* cfg_do_export_line: handle one non-header [Exports] line, tracking  */
+/* the flat form and the { ... } block form (state in g_blk_*).        */
+/* The line buffer is modified in place.                               */
+/* ------------------------------------------------------------------ */
+static void cfg_do_export_line(char *p)
+{
+    char *toks[CFG_MAX_TOKS];
+    int   n;
+    int   has_open;
+    cfg_opts_t ds_opts;
+
+    /* A lone "}" closes an open block. */
+    if (p[0] == CFG_BLOCK_CLOSE && p[1] == '\0') {
+        if (!g_blk_open) {
+            log_error("exports_load: stray '}' with no open block");
+            return;
+        }
+        g_blk_open = 0;
+        return;
+    }
+
+    n = cfg_tokenize(p, toks, CFG_MAX_TOKS);
+    if (n < 0) {
+        log_error("exports_load: too many tokens on line: %s", p);
+        if (g_blk_open) cfg_fail_export(g_blk_exp_idx);
+        return;
+    }
+    if (n == 0)
+        return;   /* nothing but stripped whitespace */
+
+    /* Does the line end with a lone "{" token? */
+    has_open = (toks[n - 1][0] == CFG_BLOCK_OPEN && toks[n - 1][1] == '\0');
+
+    /* ---- Inside an open block: each line is a dataset ---- */
+    if (g_blk_open) {
+        if (has_open) {
+            log_error("exports_load: nested '{' is not supported (export %s)",
+                g_exports[g_blk_exp_idx >= 0 ? g_blk_exp_idx : 0].export_path_ebcdic);
+            cfg_fail_export(g_blk_exp_idx);
+            return;
+        }
+        if (g_blk_exp_idx < 0)
+            return;   /* swallow block (export table was full) */
+        if (g_exports[g_blk_exp_idx].failed)
+            return;   /* already failed; skip the rest of the body */
+
+        /* toks[0] = dataset name, toks[1..] = dataset keywords. */
+        if (cfg_parse_keywords(&toks[1], n - 1, &ds_opts,
+                               CFG_LEVEL_DATASET, toks[0]) < 0) {
+            cfg_fail_export(g_blk_exp_idx);
+            return;
+        }
+        cfg_add_dataset(g_blk_exp_idx, toks[0], &g_blk_opts, &ds_opts);
+        return;
+    }
+
+    /* ---- Not in a block ---- */
+
+    if (has_open) {
+        /* "<path> [export-kw...] {" -- open a block (drop the "{" token). */
+        cfg_open_block(toks, n - 1);
+        return;
+    }
+
+    /* Flat form: "<path> <dsname> [dataset-kw...]" */
+    if (n < 2) {
+        log_error("exports_load: missing dataset name for export %s", toks[0]);
+        return;
+    }
+    {
+        int exp_idx = find_or_create_export(toks[0]);
+        if (exp_idx < 0) {
+            log_error("exports_load: max exports (%d) reached, ignoring %s",
+                MAX_EXPORTS, toks[0]);
+            return;
+        }
+        /* Flat form has no export-level keywords -> pass NULL. */
+        if (cfg_parse_keywords(&toks[2], n - 2, &ds_opts,
+                               CFG_LEVEL_DATASET, toks[1]) < 0) {
+            cfg_fail_export(exp_idx);
+            return;
+        }
+        cfg_add_dataset(exp_idx, toks[1], NULL, &ds_opts);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -328,6 +496,10 @@ int exports_load(const char *config_file)
     section        = CFG_SECT_EXPORTS;
     warned_unknown = 0;
 
+    /* [Exports] block-parser state. */
+    g_blk_open    = 0;
+    g_blk_exp_idx = -1;
+
     while (fgets(line, (int)sizeof(line), fp)) {
         /* strip trailing newline / CR */
         len = (int)strlen(line);
@@ -344,6 +516,13 @@ int exports_load(const char *config_file)
 
         /* A section header switches context and consumes the line. */
         if (*p == CFG_SECT_OPEN) {
+            /* A section may not begin inside an open export block. */
+            if (g_blk_open) {
+                log_error("exports_load: new section started inside an open"
+                          " '{' block -- failing that export");
+                cfg_fail_export(g_blk_exp_idx);
+                g_blk_open = 0;
+            }
             section = cfg_parse_section(p);
             if (section == CFG_SECT_UNKNOWN) {
                 log_warn("exports_load: ignoring unknown section: %s", p + 1);
@@ -368,10 +547,38 @@ int exports_load(const char *config_file)
         }
     }
 
+    /* An unterminated block would otherwise silently swallow whatever came
+       after it; fail that export. */
+    if (g_blk_open) {
+        log_error("exports_load: end of file inside an open '{' block --"
+                  " failing that export");
+        cfg_fail_export(g_blk_exp_idx);
+        g_blk_open = 0;
+    }
+
     fclose(fp);
 
     if (warned_unknown)
         log_warn("exports_load: one or more unknown sections were skipped");
+
+    /* Fail-closed (design §10.1): drop any export that hit a config error,
+       whole -- a partially-applied export is worse than a missing one.
+       Compact the table in place; nothing holds an export index yet. */
+    {
+        int i;
+        int j = 0;
+        for (i = 0; i < g_nexports; i++) {
+            if (g_exports[i].failed) {
+                log_error("exports_load: DROPPING export '%s' due to config"
+                          " error(s) above", g_exports[i].export_path_ebcdic);
+                continue;
+            }
+            if (j != i)
+                g_exports[j] = g_exports[i];   /* struct copy */
+            j++;
+        }
+        g_nexports = j;
+    }
 
     return g_nexports;
 }

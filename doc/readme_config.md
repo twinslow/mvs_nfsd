@@ -117,8 +117,77 @@ seen as `*.cntl`. A file whose extension does not match is not a valid
 member name in that PDS.
 
 Limits: up to `MAX_EXPORTS` (16) export paths, each with up to
-`MAX_PDS_PER_EXPORT` (32) datasets. Exceeding either logs a warning and
-ignores the extra line.
+`MAX_PDS_PER_EXPORT` (32) datasets.
+
+### 3.1 Options (keywords)
+
+Keywords tune read-only status and the permission bits reported to clients.
+They are case-insensitive and order-independent.
+
+| Keyword | Level | Meaning | Default |
+|---|---|---|---|
+| `ro` | export, dataset | Refuse all mutating operations | *(read-write)* |
+| `rw` | export, dataset | Explicitly read-write | *(on)* |
+| `dirperm=<octal>` | export, dataset | Mode reported for a PDS directory | `777` |
+| `memperm=<octal>` | export, dataset | Mode reported for its members | `777` |
+| `rootperm=<octal>` | **export only** | Mode reported for the export root | `555` |
+
+Values are **octal** (`755` = `0755`); a leading zero is accepted; the range
+is `0`–`777` (no setuid/setgid/sticky bits).
+
+`ro` never advertises write: the reported directory/member mode has its write
+bits stripped, so `ls -l` and the NFS `ACCESS` check agree with reality. Read-
+only is enforced independently of the mode and of the client's user id — even
+a client mounting as root cannot write a `ro` export. A refused write returns
+`NFS3ERR_ROFS` ("read-only file system").
+
+The **export root is always read-only** (it can't be modified through NFS —
+MKDIR/RMDIR are unsupported), so its default mode is `555`. `rootperm=` only
+tunes the read/execute bits.
+
+### 3.2 Flat form
+
+Append keywords after the dataset name; they apply to that **dataset**:
+
+```ini
+[Exports]
+/pub      SYS1.PROCLIB      ro
+/exports  TEMP.TESTPROJ.C   dirperm=755 memperm=644
+```
+
+One mount can mix read-only and read-write datasets this way.
+
+### 3.3 Block form (per-export)
+
+To set an option once for a whole export — or to set `rootperm`, which is
+export-level — use a brace block. Keywords **before** `{` are export-level
+and inherited by every dataset inside; keywords after a dataset name refine
+them:
+
+```ini
+[Exports]
+/pub  ro rootperm=555 dirperm=555 memperm=444 {
+    SYS1.PROCLIB
+    SYS1.MACLIB     memperm=400
+}
+```
+
+Inheritance:
+
+- `dirperm` / `memperm` are **defaults** a dataset may override either way.
+- `ro` is a **ceiling**: a dataset may narrow to `ro` inside a read-write
+  export, but `rw` on a dataset inside an `ro` export is an error.
+
+### 3.4 Errors fail the export (fail-closed)
+
+Unlike an unknown *section* (warned and skipped, §1), a bad **export**
+keyword — an unknown keyword, an unparseable/out-of-range value, a keyword at
+the wrong level (`rootperm` on a dataset), `rw` inside an `ro` export, or a
+malformed `{ }` block — **drops the whole export**, with an error logged. The
+reasoning is asymmetric risk: an unknown section cannot make data writable, a
+mistyped keyword can (a typo'd `read-only` silently leaving an export
+writable is exactly the outcome to avoid). A missing export is safe and
+obvious; a partially-applied one is neither.
 
 ## 4. Adding a section
 

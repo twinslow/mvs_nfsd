@@ -99,7 +99,9 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
  
     vs->raw_dev = (uint32_t) st.st_dev;
     vs->raw_ino = (uint32_t) st.st_ino;
- 
+
+    vs->fs_readonly = 0;   /* the POSIX dev build has no read-only exports */
+
     return 0;
 }
  

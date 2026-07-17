@@ -195,6 +195,14 @@ static int name_is_valid(const char *name)
 /*
  * check_access: evaluate NFS3 ACCESS bits against POSIX mode, uid, gid.
  * Returns the subset of 'requested' that is actually permitted.
+ *
+ * Read-only enforcement: the write bits (MODIFY/EXTEND/DELETE) are stripped
+ * for an object on a read-only export AFTER the permission logic -- including
+ * after the root branch.  This is essential, not decorative: root (uid 0)
+ * otherwise gets write access regardless of the mode, and a Linux client
+ * mounting as root sends uid 0.  A read-only *filesystem* is not a permission
+ * and no uid may override it (design §4.2 / §6.1).  Getting this wrong would
+ * pass every Windows test (Windows sends uid -2) and be wide open on Linux.
  */
 static uint32_t check_access(const vfs_stat_t *st, uint32_t uid,
                               uint32_t gid, uint32_t requested)
@@ -207,17 +215,20 @@ static uint32_t check_access(const vfs_stat_t *st, uint32_t uid,
         granted = ACCESS3_READ | ACCESS3_LOOKUP | ACCESS3_MODIFY
                 | ACCESS3_EXTEND | ACCESS3_DELETE;
         if (mode & 0111u) granted |= ACCESS3_EXECUTE;
-        return granted & requested;
+    } else {
+        /* Select the relevant rwx triplet */
+        if      (uid == st->uid) mode >>= 6;
+        else if (gid == st->gid) mode >>= 3;
+        /* else: other bits are already in bits 2-0 */
+
+        if (mode & 04u) granted |= ACCESS3_READ | ACCESS3_LOOKUP;
+        if (mode & 02u) granted |= ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE;
+        if (mode & 01u) granted |= ACCESS3_EXECUTE;
     }
 
-    /* Select the relevant rwx triplet */
-    if      (uid == st->uid) mode >>= 6;
-    else if (gid == st->gid) mode >>= 3;
-    /* else: other bits are already in bits 2-0 */
-
-    if (mode & 04u) granted |= ACCESS3_READ | ACCESS3_LOOKUP;
-    if (mode & 02u) granted |= ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE;
-    if (mode & 01u) granted |= ACCESS3_EXECUTE;
+    /* A read-only export never grants write, for any uid. */
+    if (st->fs_readonly)
+        granted &= ~(ACCESS3_MODIFY | ACCESS3_EXTEND | ACCESS3_DELETE);
 
     return granted & requested;
 }

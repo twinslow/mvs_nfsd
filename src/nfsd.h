@@ -387,6 +387,20 @@ typedef struct {
      */
     uint32_t       dir_sig;        /* last directory signature (0 = none yet)     */
     uint32_t       dir_sig_check;  /* epoch secs of last signature check (0=never) */
+
+    /*
+     * Per-dataset export options (config keywords; see
+     * doc/design_export_options.md).  These are the RESOLVED values: any
+     * export-level defaults have already been folded in at config-load time,
+     * so the VFS reads only these and never walks back to the export_t.
+     *
+     * Defaults (assigned explicitly in dataset_init AFTER its memset -- 0 is a
+     * valid but catastrophic 0000 mode):
+     *   readonly = 0, dirperm = 0777, memperm = 0777.
+     */
+    uint8_t        readonly;   /* 1 = ro: every mutating op fails            */
+    uint16_t       dirperm;    /* mode reported for the PDS directory        */
+    uint16_t       memperm;    /* mode reported for its members              */
 } pds_dataset_t;
 
 /* One exported directory (may group several PDS datasets) */
@@ -403,6 +417,29 @@ typedef struct {
     char host_path_ebcdic[MAX_PATH];   /* local path on this host: /home/user/foo or MVS PDS dataset name */
     char file_ext[MAX_FILE_EXT_LEN]; /* optional extension to add to all files in this export */
     mvs_dcb_info_t      dcbinfo;
+
+    /*
+     * Export-level options (config keywords; see doc/design_export_options.md).
+     *   readonly  -- a ceiling folded into every dataset's readonly at load
+     *                time; kept here only for diagnostics / the load log line,
+     *                not consulted per operation.
+     *   rootperm  -- mode reported for the (synthetic) export root.  Default
+     *                0555 -- assigned explicitly in find_or_create_export
+     *                AFTER its memset.  The root is ALWAYS read-only for
+     *                ACCESS regardless of this value (it cannot be modified
+     *                through NFS: MKDIR/RMDIR are NOTSUPP).
+     */
+    uint8_t       readonly;
+    uint16_t      rootperm;
+
+    /*
+     * Set during config parsing if this export hit any error (a bad keyword,
+     * bad value, wrong-level keyword, or malformed block).  Such exports are
+     * dropped wholesale at the end of exports_load -- a partially-applied
+     * export is a worse outcome than a missing one (design §10.1).  Never
+     * true after load returns.
+     */
+    uint8_t       failed;
 
     /* Multi-PDS dataset list (source of truth for the MVS 3-level model) */
     pds_dataset_t datasets[MAX_PDS_PER_EXPORT];
@@ -470,6 +507,15 @@ typedef struct {
      */
     uint32_t raw_dev;      /* unused: former cache key */
     uint32_t raw_ino;      /* unused: former cache key */
+
+    /*
+     * Internal only -- NOT part of fattr3, never sent on the wire.  Set by
+     * the vfs_stat_* helpers: 1 if this object lives on a read-only export.
+     * check_access() uses it to mask the write bits AFTER the root branch,
+     * so read-only is enforced even for uid 0 (see check_access / the design
+     * doc §6.1).
+     */
+    uint32_t fs_readonly;
 } vfs_stat_t;
  
 /* VFS filesystem-level statistics */

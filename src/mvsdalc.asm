@@ -254,10 +254,6 @@ RETC@0   DS    0H
          SR    R15,R15               R15=0 and fall through
 *
 RETURN   JCCRETRN                    R15 has return value
-*ETURN   L     R13,4(0,R13)          Get previous stack frame
-*        L     R14,12(0,R13)         Restore R14
-*        LM    R1,R12,24(R13)        Restore R1-R12
-*        BR    R14                   Return to caller
 *
 ***********************************************************************
 ***********************************************************************

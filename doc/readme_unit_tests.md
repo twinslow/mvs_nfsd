@@ -229,6 +229,23 @@ a known export index.
 | `/no_ext` | Exports with no extension restriction accept any filename |
 | `/export_idx` | Correct `host_path` is used for each `export_idx` value |
 
+### tcfgopts.c — export keyword options (`cfgopts.c`)
+
+Tests the pure config-option helpers behind the `ro` / `dirperm` / `memperm`
+/ `rootperm` keywords.  `cfgopts.c` was split out of `exports.c` precisely so
+these could be unit-tested without the export table (which `tstubs.c`
+replaces).
+
+| Sub-suite | What is tested |
+|---|---|
+| `/octal` | `cfg_parse_octal`: valid values, leading zero, and rejection of non-octal digits, trailing junk, empty, and values > 0777 |
+| `/keywords` | `cfg_parse_keywords`: `ro`/`rw`, perm values, case-insensitivity, order-independence, `rootperm` level check, unknown keyword, bad value |
+| `/resolve` | `cfg_resolve_opts`: defaults, export→dataset inheritance and override, the `ro` ceiling, and `rw`-inside-`ro` rejected |
+
+> Note: this list is not exhaustive — several later modules (`tmvspdir`,
+> `tmvsprw`, `tmvspww`, `tlogger`, `tcfgopts`) are registered in `runall.c`
+> and `testrun.jcl` but not all detailed here.
+
 ---
 
 ## Adding a new test suite
