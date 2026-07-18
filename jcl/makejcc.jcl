@@ -86,6 +86,7 @@
 //GETCIB   EXEC ASMMOD,MODULE=GETCIB
 //MVSDALC  EXEC ASMMOD,MODULE=MVSDALC
 //MVSSTOW  EXEC ASMMOD,MODULE=MVSSTOW
+//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ 
 //*
 //********************************************************************
 //*
@@ -95,6 +96,7 @@
 //EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC                                
 //LOGGER   EXEC JCCCMOD,MODNAME=LOGGER                               
 //EXPORTS  EXEC JCCCMOD,MODNAME=EXPORTS                               
+//CFGOPTS  EXEC JCCCMOD,MODNAME=CFGOPTS                               
 //FHANDLE  EXEC JCCCMOD,MODNAME=FHANDLE                               
 //MOUNT3   EXEC JCCCMOD,MODNAME=MOUNT3                                
 //NFS3     EXEC JCCCMOD,MODNAME=NFS3
@@ -134,6 +136,7 @@
 //* PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)                       
 //PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(CFGOPTS)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOUNT3)              
@@ -161,5 +164,6 @@
     INCLUDE SYSLMOD(GETCIB)                                          
     INCLUDE SYSLMOD(MVSDALC)                                         
     INCLUDE SYSLMOD(MVSSTOW)                                         
+    INCLUDE SYSLMOD(MVSENQ)                                         
     NAME NFSD(R)                                                     
 //                                                                    
