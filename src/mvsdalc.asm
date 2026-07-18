@@ -118,6 +118,7 @@ DUNFCLOS DS   0H
          USING S99RB,R3     
          L     R2,S99TXTPP  Load the address of the TU list 
          DROP  R3           using the request block 
+         MVC   WTOMSG,=CL45'Allocate TU list at '
          BAL   R6,DUMPTULS  Dump the list of text units
 * 
          LA    R1,REQBLKA   Load ptr location
@@ -198,6 +199,13 @@ DO@UNALC DS    0H
 *---------------------------------------------------------------------*
 * Copy dataset name, member name to text units                        *
 *---------------------------------------------------------------------*
+*
+         LA    R2,TUUDSNA1    Get address of dsname TU
+         ST    R2,TUUPTRDS    Store it in the list of TUs 
+         LA    R2,TUUDSMEM    Get address of member TU
+         O     R2,=XL4'80000000' Set high bit for end of list
+         ST    R2,TUUPTRMN    Store it in the list of TUs  
+*   
          L     R1,PARMLIST
 *
          L     R2,8(R1)       3rd parm - dataset name
@@ -212,16 +220,16 @@ DO@UNALC DS    0H
          LA    R4,L'TUUMEMBR  Length of destination field        
          BAL   R6,STRCOPY     Copy string 
 *       
-         LA    R2,TUUDSMEM    Get address of member name TU
-         O     R2,=XL4'80000000'  Set high bit for end of list
-         ST    R2,TUUPTRMN    Store TU address in list
-         L     R2,TUUPTRDS    Get dataset name pointer
-         N     R2,=XL8'7FFFFFFF' Force high bit off
-         ST    R2,TUUPTRDS    Save it back in list 
+*        LA    R2,TUUDSMEM    Get address of member name TU
+*        O     R2,=XL4'80000000'  Set high bit for end of list
+*        ST    R2,TUUPTRMN    Store TU address in list
+*        LA    R2,TUUDSNA1    Get addr of dataset TU
+*        N     R2,=XL8'7FFFFFFF' Force high bit off
+*        ST    R2,TUUPTRDS    Save it back in list 
          B     DONEMEM2       Done with member name processing
 *
 NOMEMNA2 DS    0H             No member name supplied 
-         L     R2,TUUPTRDS    Get dataset name pointer
+         LA    R2,TUUDSNA1    Get addr of dataset TU
          O     R2,=XL8'80000000' Set high bit on for end of list
          ST    R2,TUUPTRDS    Save it back in list 
 *
@@ -230,6 +238,14 @@ DONEMEM2 DS    0H
 * Unallocate by dataset name and possibly member name if specified
 *
          BAL   R6,SETRBUNA  Setup the request block for unallocate
+*
+         LA    R3,REQBLK    Load address of the request block
+         USING S99RB,R3     
+         L     R2,S99TXTPP  Load the address of the TU list 
+         DROP  R3           using the request block 
+         MVC   WTOMSG,=CL45'Unallocate TU list at '
+         BAL   R6,DUMPTULS  Dump the list of text units
+*
          LA    R1,REQBLKA   Load ptr location
          DYNALLOC           Do the SVC99
          LTR   R15,R15
@@ -338,7 +354,6 @@ STRCEND  DS    0H
 DUMPTULS DS    0H
          
          LR    R3,R2
-         MVC   WTOMSG,=CL45'TU list at '
          MVC   WTOREG,=CL3'R2'     Address of TU list
          BAL   R7,DBGX4WTO
 *

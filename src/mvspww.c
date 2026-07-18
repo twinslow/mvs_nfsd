@@ -66,7 +66,10 @@ static pending_member_t *pww_find_slot(const char *dsname_ebcdic,
     return NULL;
 }
 
-/* Build the "//DSN:dsname(member)" open path. */
+#ifndef __MVS__
+/* Build the "//DSN:dsname(member)" open path.  MVS goes through dynamic
+   allocation + "//DDN:" instead (see pww_flush_slot), so this is only used
+   by the non-MVS (dev/mock) build. */
 static void pww_member_path(char *out, const char *dsname_ebcdic,
                             const char *member_name)
 {
@@ -76,17 +79,55 @@ static void pww_member_path(char *out, const char *dsname_ebcdic,
     strcat(out, member_name);
     strcat(out, ")");
 }
+#endif
 
-/* Write the buffered member out in one pass and STOW it (fclose).
-   The ASCII buffer is left intact (translated via g_pww_xlate in chunks).
-   Returns 0 on success, -1 on failure (errno set by stdio). */
-static int pww_flush_slot(pending_member_t *pm)
+/* Open 'open_target' ("//DDN:ddname" on MVS, "//DSN:dsname(member)"
+   elsewhere), write the pending member's buffer as text records, and STOW it
+   at close.  The ASCII buffer is left intact (translated via g_pww_xlate in
+   chunks).  Returns 0 on success, -1 on failure (errno set by stdio).
+   The caller owns any dynamic allocation and frees it regardless of the
+   result -- keeping that cleanup in one place is why this is split out. */
+static int pww_write_member(pending_member_t *pm, const char *open_target)
 {
     FILE    *fh;
-    char     path[6 + 44 + 1 + 8 + 1 + 1];
     uint32_t off;
     uint32_t n;
     size_t   w;
+
+    fh = fopen(open_target, "wt");    /* text mode: record per '\n', STOW on close */
+    if (fh == NULL) {
+        log_error("pww_flush_slot: fopen %s failed: %s",
+                  open_target, strerror(errno));
+        return -1;
+    }
+
+    for (off = 0; off < pm->high_water; off += n) {
+        n = pm->high_water - off;
+        if (n > sizeof(g_pww_xlate))
+            n = sizeof(g_pww_xlate);
+        ascii_to_ebcdic(g_pww_xlate, pm->buf + off, (size_t)n);
+        w = fwrite(g_pww_xlate, 1, (size_t)n, fh);
+        if (w != (size_t)n) {
+            log_error("pww_flush_slot: short write on %s (%u of %u)",
+                      open_target, (unsigned)w, n);
+            fclose(fh);
+            return -1;
+        }
+    }
+
+    if (fclose(fh) != 0) {            /* STOW happens here */
+        log_error("pww_flush_slot: fclose(STOW) %s failed: %s",
+                  open_target, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/* Write the buffered member out in one pass and STOW it.
+   Returns 0 on success, -1 on failure (errno set by stdio). */
+static int pww_flush_slot(pending_member_t *pm)
+{
+    char     path[6 + 44 + 1 + 8 + 1 + 1];
 
     pds_member_entry_t  existing_ent;
     pds_member_entry_t *existing;
@@ -94,6 +135,11 @@ static int pww_flush_slot(pending_member_t *pm)
     uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
     int                 want_stats;
     int32_t             line_count;
+#ifdef __MVS__
+    char     ddname[9];
+    int      k;
+    int      wrc;
+#endif
 
     /* Read the member's current directory entry (if any) BEFORE opening it
        for output, so we never have the PDS open for input and output at once.
@@ -106,33 +152,54 @@ static int pww_flush_slot(pending_member_t *pm)
     want_stats = mvs_build_write_stats(&new_stats, existing, line_count,
                                        time(NULL));
 
+#ifdef __MVS__
+    /* Allocate DSN(MEMBER) with DISP=SHR (mvs_dynalloc hard-codes SHR) and let
+       JCC write the member through the returned ddname.  This shares the PDS
+       with ISPF/TSO; JCC's "//DSN:" open instead allocates DISP=OLD, which
+       fails whenever anyone else has the dataset -- and would lock them out.
+       options = 0: NO FREE=CLOSE, so we MUST unallocate explicitly on every
+       path below, or the allocation (and its SYSDSN enqueue) leaks.
+
+       NOTE: serialisation against a concurrent updater (e.g. an ISPF save of
+       the same member) is a SEPARATE, later change.  On its own this widens
+       the already-unserialised STOW window -- the stats STOW below is already
+       DISP=SHR today. */
+    ddname[0] = '\0';
+    if (mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
+                     pm->dsname_ebcdic, pm->member_name, ddname) != 0) {
+        log_error("pww_flush_slot: dynalloc %s(%s) failed",
+                  pm->dsname_ebcdic, pm->member_name);
+        return -1;    /* nothing allocated -> nothing to free */
+    }
+
+    /* The ddname is 8 blank-padded chars, not NUL-terminated; trim the pad
+       before building "//DDN:ddname" (a trailing blank would break the open). */
+    ddname[8] = '\0';
+    for (k = 8; k > 0 && ddname[k - 1] == ' '; k--)
+        ddname[k - 1] = '\0';
+    strcpy(path, "//DDN:");
+    strcat(path, ddname);
+
+    wrc = pww_write_member(pm, path);
+
+    /* Unallocate on success AND failure (we did not use FREE=CLOSE).  The
+       member name MUST be supplied: the allocation is DSN(MEMBER), and
+       unallocating by dataset name alone does not release it (confirmed on
+       MVS via the SYSDSN enqueues in IMON/370).  The server is single-
+       threaded, so this dataset is not otherwise allocated in our address
+       space here. */
+    if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
+                     pm->dsname_ebcdic, pm->member_name, ddname) != 0)
+        log_warn("pww_flush_slot: unalloc %s(%s) failed",
+                 pm->dsname_ebcdic, pm->member_name);
+
+    if (wrc != 0)
+        return -1;
+#else
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
-
-    fh = fopen(path, "wt");        /* text mode: record per '\n', STOW on close */
-    if (fh == NULL) {
-        log_error("pww_flush_slot: fopen %s failed: %s", path, strerror(errno));
+    if (pww_write_member(pm, path) != 0)
         return -1;
-    }
-
-    for (off = 0; off < pm->high_water; off += n) {
-        n = pm->high_water - off;
-        if (n > sizeof(g_pww_xlate))
-            n = sizeof(g_pww_xlate);
-        ascii_to_ebcdic(g_pww_xlate, pm->buf + off, (size_t)n);
-        w = fwrite(g_pww_xlate, 1, (size_t)n, fh);
-        if (w != (size_t)n) {
-            log_error("pww_flush_slot: short write on %s (%u of %u)",
-                path, (unsigned)w, n);
-            fclose(fh);
-            return -1;
-        }
-    }
-
-    if (fclose(fh) != 0) {         /* STOW happens here */
-        log_error("pww_flush_slot: fclose(STOW) %s failed: %s",
-            path, strerror(errno));
-        return -1;
-    }
+#endif
 
     pm->dirty = 0;
     log_info("pww_flush_slot: stowed %s(%s), %u bytes",
