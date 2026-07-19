@@ -53,6 +53,58 @@
 //SYSIN    DD   DSN=&INFILE(&MODNAME),DISP=SHR
 //*
 //JCCCTST  PEND
+//*
+//*-------------------------------------------------------------------
+//* Proc to assemble a module using ASMF into the load library
+//*-------------------------------------------------------------------
+//ASMMOD   PROC SOUT='*',
+//          ASMOPTS='OBJ,NODECK,NOLIST',
+//          MAC='SYS1.MACLIB',
+//          MAC1='SYS1.AMODGEN',
+//          MAC2='TONYW.DINONFS.ASM',
+//          MAC3='SYS2.MACLIB',
+//          SRCLIB='TONYW.DINONFS.ASM',
+//          LOADLIB='TONYW.DINONFS.LOAD',
+//          MODULE='XXXXX'
+//*
+//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K                    
+//SYSLIB   DD   DSN=&MAC,DISP=SHR                                  
+//         DD   DSN=&MAC1,DISP=SHR                                 
+//         DD   DSN=&MAC2,DISP=SHR                                 
+//         DD   DSN=&MAC3,DISP=SHR                                 
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),    
+//             SEP=(SYSLIB)                                        
+//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),     
+//             SEP=(SYSLIB,SYSUT1)                                 
+//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))      
+//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089                      
+//SYSPUNCH DD   SYSOUT=&SOUT                                           
+//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),       
+//             DISP=(MOD,PASS)
+//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)             
+//*                                     
+//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,    
+//             COND=(8,LT,ASM)                                     
+//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)                     
+//*         DD   DDNAME=SYSIN                                       
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),    
+//             SPACE=(1024,(50,20))                                
+//SYSPRINT DD   SYSOUT=&SOUT
+//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)          
+//*
+//ASMMOD   PEND
+//*
+//********************************************************************
+//*
+//* ASSEMBLE MODULES
+//*
+//********************************************************************
+//*
+//GETCIB   EXEC ASMMOD,MODULE=GETCIB
+//MVSDALC  EXEC ASMMOD,MODULE=MVSDALC
+//MVSSTOW  EXEC ASMMOD,MODULE=MVSSTOW
+//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ 
+//*
 //********************************************************************
 //*
 //* Compile application modules
@@ -91,7 +143,8 @@
 //* Compile RUNALL, then link and run tests                           
 //*                                                                   
 //********************************************************************
-//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',         
+//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',   
+//             PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',       
 //             JOPTS='-D_MVS -D__MVS__ -o -list=//DDN:SYSPRINT'       
 //COMPILE.JCCINCS DD DISP=SHR,DSN=SYSD.MUNIT.H                        
 //          DD DISP=SHR,DSN=TONYW.DINONFS.H                           
@@ -120,7 +173,12 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TLOGGER)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TCFGOPTS)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
+//LKED.SYSLIN DD
+//          DD DDNAME=SYSIN
+//LKED.SYSIN DD *
+    INCLUDE SYSLIB(MVSENQ)
+//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.DINONFS.LOAD
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
 //          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),
-//          DCB=(DSORG=PS,RECFM=VB,LRECL=255,BLKSIZE=27998)                             
+//          DCB=(DSORG=PS,RECFM=VB,LRECL=255,BLKSIZE=27998)
 //                                                                    

@@ -31,19 +31,19 @@ static pending_member_t g_pww_pool[PWW_MAX_PENDING];
    in case the client writes more before the slot is released. */
 static uint8_t g_pww_xlate[4096];
 
-/* -------------------------------------------------------------------- */
-/* Init                                                                  */
-/* -------------------------------------------------------------------- */
-void pww_init(void)
-{
-    memset(g_pww_pool, 0, sizeof(g_pww_pool));
-}
+/* ==================================================================== */
+/* Slot pool internals                                                   */
+/*                                                                       */
+/* Lifecycle of the pending_member_t slots -- find / acquire / release,  */
+/* per-slot init, and buffer growth.  All static; the flush machinery    */
+/* and the public API below operate through these.                       */
+/* ==================================================================== */
 
-/* -------------------------------------------------------------------- */
-/* Slot helpers                                                          */
-/* -------------------------------------------------------------------- */
+/* Defined in the flush-machinery section below; pww_slot_acquire calls it
+   to flush a dirty slot before evicting it. */
+static int pww_flush_slot(pending_member_t *pm);
 
-static void pww_release_slot(pending_member_t *pm)
+static void pww_slot_release(pending_member_t *pm)
 {
     if (pm->buf != NULL)
         free(pm->buf);
@@ -52,7 +52,7 @@ static void pww_release_slot(pending_member_t *pm)
 }
 
 /* Find the USED slot for (dsname, member), or NULL. */
-static pending_member_t *pww_find_slot(const char *dsname_ebcdic,
+static pending_member_t *pww_slot_find(const char *dsname_ebcdic,
                                        const char *member_name)
 {
     int i;
@@ -65,6 +65,90 @@ static pending_member_t *pww_find_slot(const char *dsname_ebcdic,
     }
     return NULL;
 }
+
+/* Obtain a slot to use for (dsname, member): the existing one if present,
+   otherwise a FREE slot, otherwise evict (flush if dirty) the least
+   recently used slot.  Never returns NULL. */
+static pending_member_t *pww_slot_acquire(const char *dsname_ebcdic,
+                                          const char *member_name)
+{
+    pending_member_t *pm;
+    int i;
+    int lru;
+
+    pm = pww_slot_find(dsname_ebcdic, member_name);
+    if (pm != NULL)
+        return pm;
+
+    for (i = 0; i < PWW_MAX_PENDING; i++) {
+        if (g_pww_pool[i].status == PWW_STATUS_FREE)
+            return &g_pww_pool[i];
+    }
+
+    /* Pool full: evict the least-recently-used slot (flush it first). */
+    lru = 0;
+    for (i = 1; i < PWW_MAX_PENDING; i++) {
+        if (g_pww_pool[i].last_write_time < g_pww_pool[lru].last_write_time)
+            lru = i;
+    }
+    log_warn("pww_slot_acquire: pool full, evicting %s(%s)",
+        g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
+    if (g_pww_pool[lru].dirty)
+        (void)pww_flush_slot(&g_pww_pool[lru]);
+    pww_slot_release(&g_pww_pool[lru]);
+    return &g_pww_pool[lru];
+}
+
+/* Initialise a freshly-acquired slot for (export, dataset, dsname, member). */
+static void pww_slot_init(pending_member_t *pm, int export_idx, int dataset_idx,
+                          const char *dsname_ebcdic, const char *member_name)
+{
+    memset(pm, 0, sizeof(*pm));
+    pm->status      = PWW_STATUS_USED;
+    pm->export_idx  = export_idx;
+    pm->dataset_idx = dataset_idx;
+    strncpy(pm->dsname_ebcdic, dsname_ebcdic, sizeof(pm->dsname_ebcdic) - 1);
+    strncpy(pm->member_name,   member_name,   sizeof(pm->member_name) - 1);
+    pm->buf             = NULL;
+    pm->buf_cap         = 0;
+    pm->high_water      = 0;
+    pm->dirty           = 0;
+    pm->last_write_time = time(NULL);
+}
+
+/* Ensure pm->buf has capacity for at least 'need' bytes (<= cap limit). */
+static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
+{
+    uint32_t new_cap;
+    uint8_t *new_buf;
+
+    if (need > (uint32_t)PWW_MAX_MEMBER_BYTES) {
+        errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
+        return -1;
+    }
+    if (need <= pm->buf_cap)
+        return 0;
+
+    new_cap = (pm->buf_cap != 0) ? pm->buf_cap : 65536u;
+    while (new_cap < need)
+        new_cap *= 2u;
+    if (new_cap > (uint32_t)PWW_MAX_MEMBER_BYTES)
+        new_cap = (uint32_t)PWW_MAX_MEMBER_BYTES;
+
+    new_buf = (uint8_t *)realloc(pm->buf, (size_t)new_cap);
+    if (new_buf == NULL) {
+        log_error("pww_slot_ensure_cap: realloc to %u bytes failed", new_cap);
+        errno = ENOMEM;
+        return -1;
+    }
+    pm->buf     = new_buf;
+    pm->buf_cap = new_cap;
+    return 0;
+}
+
+/* ==================================================================== */
+/* Flush machinery -- write the buffered member to the PDS and STOW it   */
+/* ==================================================================== */
 
 #ifndef __MVS__
 /* Build the "//DSN:dsname(member)" open path.  MVS goes through dynamic
@@ -309,101 +393,27 @@ static int pww_flush_slot(pending_member_t *pm)
     return 0;
 }
 
-/* Obtain a slot to use for (dsname, member): the existing one if present,
-   otherwise a FREE slot, otherwise evict (flush if dirty) the least
-   recently used slot.  Never returns NULL. */
-static pending_member_t *pww_acquire_slot(const char *dsname_ebcdic,
-                                          const char *member_name)
+/* ==================================================================== */
+/* Public API (declared in mvspww.h; called from the vfs_* layer)        */
+/* ==================================================================== */
+
+/* Initialise the pool.  Call once at startup. */
+void pww_init(void)
 {
-    pending_member_t *pm;
-    int i;
-    int lru;
-
-    pm = pww_find_slot(dsname_ebcdic, member_name);
-    if (pm != NULL)
-        return pm;
-
-    for (i = 0; i < PWW_MAX_PENDING; i++) {
-        if (g_pww_pool[i].status == PWW_STATUS_FREE)
-            return &g_pww_pool[i];
-    }
-
-    /* Pool full: evict the least-recently-used slot (flush it first). */
-    lru = 0;
-    for (i = 1; i < PWW_MAX_PENDING; i++) {
-        if (g_pww_pool[i].last_write_time < g_pww_pool[lru].last_write_time)
-            lru = i;
-    }
-    log_warn("pww_acquire_slot: pool full, evicting %s(%s)",
-        g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
-    if (g_pww_pool[lru].dirty)
-        (void)pww_flush_slot(&g_pww_pool[lru]);
-    pww_release_slot(&g_pww_pool[lru]);
-    return &g_pww_pool[lru];
+    memset(g_pww_pool, 0, sizeof(g_pww_pool));
 }
-
-/* Initialise a freshly-acquired slot for (export, dataset, dsname, member). */
-static void pww_init_slot(pending_member_t *pm, int export_idx, int dataset_idx,
-                          const char *dsname_ebcdic, const char *member_name)
-{
-    memset(pm, 0, sizeof(*pm));
-    pm->status      = PWW_STATUS_USED;
-    pm->export_idx  = export_idx;
-    pm->dataset_idx = dataset_idx;
-    strncpy(pm->dsname_ebcdic, dsname_ebcdic, sizeof(pm->dsname_ebcdic) - 1);
-    strncpy(pm->member_name,   member_name,   sizeof(pm->member_name) - 1);
-    pm->buf             = NULL;
-    pm->buf_cap         = 0;
-    pm->high_water      = 0;
-    pm->dirty           = 0;
-    pm->last_write_time = time(NULL);
-}
-
-/* Ensure pm->buf has capacity for at least 'need' bytes (<= cap limit). */
-static int pww_ensure_cap(pending_member_t *pm, uint32_t need)
-{
-    uint32_t new_cap;
-    uint8_t *new_buf;
-
-    if (need > (uint32_t)PWW_MAX_MEMBER_BYTES) {
-        errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
-        return -1;
-    }
-    if (need <= pm->buf_cap)
-        return 0;
-
-    new_cap = (pm->buf_cap != 0) ? pm->buf_cap : 65536u;
-    while (new_cap < need)
-        new_cap *= 2u;
-    if (new_cap > (uint32_t)PWW_MAX_MEMBER_BYTES)
-        new_cap = (uint32_t)PWW_MAX_MEMBER_BYTES;
-
-    new_buf = (uint8_t *)realloc(pm->buf, (size_t)new_cap);
-    if (new_buf == NULL) {
-        log_error("pww_ensure_cap: realloc to %u bytes failed", new_cap);
-        errno = ENOMEM;
-        return -1;
-    }
-    pm->buf     = new_buf;
-    pm->buf_cap = new_cap;
-    return 0;
-}
-
-/* -------------------------------------------------------------------- */
-/* Public API                                                            */
-/* -------------------------------------------------------------------- */
 
 int pww_create(int export_idx, int dataset_idx,
                const char *dsname_ebcdic, const char *member_name)
 {
     pending_member_t *pm;
 
-    pm = pww_acquire_slot(dsname_ebcdic, member_name);
+    pm = pww_slot_acquire(dsname_ebcdic, member_name);
     if (pm->status != PWW_STATUS_USED ||
         strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
         strcmp(pm->member_name, member_name) != 0) {
         /* Fresh or reused slot: (re)initialise it. */
-        pww_init_slot(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
     } else {
         /* Re-create over an existing pending member: truncate contents. */
         pm->high_water = 0;
@@ -433,14 +443,14 @@ int pww_write(int export_idx, int dataset_idx,
         return -1;
     }
 
-    pm = pww_acquire_slot(dsname_ebcdic, member_name);
+    pm = pww_slot_acquire(dsname_ebcdic, member_name);
     if (pm->status != PWW_STATUS_USED ||
         strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
         strcmp(pm->member_name, member_name) != 0) {
-        pww_init_slot(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
     }
 
-    if (pww_ensure_cap(pm, (uint32_t)end) < 0)
+    if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
         return -1;    /* errno set (ENOSPC/ENOMEM) */
 
     /* Zero-fill any gap between the current end and this write's offset. */
@@ -474,7 +484,7 @@ int pww_truncate(int export_idx, int dataset_idx,
         return -1;
     }
 
-    pm = pww_find_slot(dsname_ebcdic, member_name);
+    pm = pww_slot_find(dsname_ebcdic, member_name);
 
     if (pm == NULL) {
         /* No pending member.  A truncate-to-empty (the O_TRUNC case) starts a
@@ -484,8 +494,8 @@ int pww_truncate(int export_idx, int dataset_idx,
            client is not blocked (see doc/design_nfs_write.md). */
         if (size != 0)
             return 0;
-        pm = pww_acquire_slot(dsname_ebcdic, member_name);
-        pww_init_slot(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        pm = pww_slot_acquire(dsname_ebcdic, member_name);
+        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
         pm->dirty           = 1;
         pm->last_write_time = time(NULL);
         log_debug("pww_truncate: %s(%s) -> 0 (new empty)",
@@ -503,7 +513,7 @@ int pww_truncate(int export_idx, int dataset_idx,
 
     /* Adjust the existing pending member to exactly 'size' bytes. */
     if (size > pm->buf_cap) {
-        if (pww_ensure_cap(pm, size) < 0)
+        if (pww_slot_ensure_cap(pm, size) < 0)
             return -1;
     }
     if (size > pm->high_water)
@@ -518,17 +528,17 @@ int pww_truncate(int export_idx, int dataset_idx,
 
 pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name)
 {
-    return pww_find_slot(dsname_ebcdic, member_name);
+    return pww_slot_find(dsname_ebcdic, member_name);
 }
 
 int pww_discard(const char *dsname_ebcdic, const char *member_name)
 {
-    pending_member_t *pm = pww_find_slot(dsname_ebcdic, member_name);
+    pending_member_t *pm = pww_slot_find(dsname_ebcdic, member_name);
     if (pm == NULL)
         return 0;                  /* nothing buffered for this member */
     /* Drop the buffer WITHOUT flushing -- the caller (REMOVE) is deleting the
        member, so it must not be re-STOWed by a later flush. */
-    pww_release_slot(pm);
+    pww_slot_release(pm);
     return 1;
 }
 
@@ -536,7 +546,7 @@ int pww_flush_member(const char *dsname_ebcdic, const char *member_name)
 {
     pending_member_t *pm;
 
-    pm = pww_find_slot(dsname_ebcdic, member_name);
+    pm = pww_slot_find(dsname_ebcdic, member_name);
     if (pm == NULL)
         return 0;                  /* nothing pending: already committed */
     if (!pm->dirty)
@@ -562,7 +572,7 @@ void pww_flush_idle(time_t now)
                 log_error("pww_flush_idle: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
         }
-        pww_release_slot(pm);
+        pww_slot_release(pm);
     }
 }
 
@@ -578,7 +588,7 @@ void pww_flush_all(void)
                 log_error("pww_flush_all: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
         }
-        pww_release_slot(pm);
+        pww_slot_release(pm);
     }
 }
 
@@ -602,7 +612,7 @@ int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
 
     /* If content is still pending (dirty), the upcoming flush will set the
        changed date -- skip, or this STOW would just be overwritten. */
-    pm = pww_find_slot(dsname_ebcdic, member_name);
+    pm = pww_slot_find(dsname_ebcdic, member_name);
     if (pm != NULL && pm->dirty)
         return 0;
 
