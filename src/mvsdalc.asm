@@ -199,12 +199,6 @@ DO@UNALC DS    0H
          LA    R4,L'TUUMEMBR  Length of destination field        
          BAL   R6,STRCOPY     Copy string 
 *       
-*        LA    R2,TUUDSMEM    Get address of member name TU
-*        O     R2,=XL4'80000000'  Set high bit for end of list
-*        ST    R2,TUUPTRMN    Store TU address in list
-*        LA    R2,TUUDSNA1    Get addr of dataset TU
-*        N     R2,=XL8'7FFFFFFF' Force high bit off
-*        ST    R2,TUUPTRDS    Save it back in list 
          B     DONEMEM2       Done with member name processing
 *
 NOMEMNA2 DS    0H             No member name supplied 
@@ -265,19 +259,6 @@ SETRBALC LA    R2,REQBLK
          MVI   S99RBLN,REQBLKLN        Set reqblk length
          MVI   S99VERB,S99VRBAL        Set verb for allocate
          LA    R3,TUPTRALC             TU list for alloc
-         ST    R3,S99TXTPP             Store text pointer list
-         DROP  R2 
-         BR    R6 
-*          
-*---------------------------------------------------------------------*
-* Setup request block for info -- get DDNAME                          *
-*---------------------------------------------------------------------*
-SETRBINF LA    R2,REQBLK
-         USING S99RB,R2 
-         XC    REQBLK,REQBLK           Zero the request block      
-         MVI   S99RBLN,REQBLKLN        Set reqblk length
-         MVI   S99VERB,S99VRBIN        Set verb for info retrieve
-         LA    R3,TUPTRINF             TU list for info
          ST    R3,S99TXTPP             Store text pointer list
          DROP  R2 
          BR    R6 
@@ -461,23 +442,6 @@ TUDSSA1  DC    AL2(DALSTATS),AL2(1),AL2(1),X'08'   DISP=SHR
 TUDCLOSE DC    AL2(DALCLOSE),AL2(0)         FREE=CLOSE (flag, no parm)
 TURTDDN  DC    AL2(DALRTDDN),AL2(1),AL2(8)  Return assigned ddname here
 DDNRET   DC    CL8' '              SVC99 stores the ddname in this area
-*---------------------------------------------------------------------*
-*
-* This is the TU list for the info retrieval to get DDNAME
-*
-TUPTRINF DS    0F
-         DC    A(TUIDSN1)          DSNAME
-*        DC    A(TUDSMEM)          Dataset member
-         DC    A(TURDDNI1+X'80000000') TU for returned DD name
-*
-* Now the text units for info call
-*
-TUIDSN1  DC    AL2(DINDSNAM),AL2(1)         DSN=
-IDSNLEN  DC    AL2(44)                     length -- patched at runtime
-TUIDSN   DC    CL44' '
-TURDDNI1 DC    AL2(DINRTDDN),AL2(1)
-DDNAMLEN DC    AL2(8)           Length of return buffer for ddname
-DDNAME   DS    CL8              SVC99 will return DDNAME here  
 *
 *---------------------------------------------------------------------*
 *
