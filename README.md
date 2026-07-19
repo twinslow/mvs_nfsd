@@ -23,7 +23,7 @@ a mounted dataset. I'm sure there are plenty of bugs at this time, even we are f
 them as we find them. I wouldn't go exporting/mounting `SYS1.PROCLIB` or `SYS1.PARMLIB`, or
 other important datasets that could prevent an IPL from completing. 
 
-### **Please have a recovery mechanmism in place if things go badly wrong.**
+### **Please have a recovery mechanism in place if things go badly wrong.**
 
 ## Feature Status
 
@@ -36,7 +36,7 @@ other important datasets that could prevent an IPL from completing.
 | Create / write files (PDS member) | Working |
 | ISPF statistics set/updated on write and `touch` | Working |
 | Remove a file (PDS member) | Working |
-| Rename files | Not implemented |
+| Rename files (same PDS) | Working |
 
 ## Source files
 
@@ -48,7 +48,8 @@ other important datasets that could prevent an IPL from completing.
 | `types.h` | Portable integer types (`uint8_t`, `uint32_t`, `uint64_t`, etc.) |
 | `xdr.c` | XDR encode/decode — pure byte manipulation |
 | `rpc.c` | RPC TCP framing, call parsing, reply headers |
-| `exports.c` | Config file parser and export table |
+| `exports.c` | Config file parser (sections, `[Init]`/`[Exports]`) and export table |
+| `cfgopts.c/h` | Export keyword-option parsing — `ro`/`rw`, `dirperm`/`memperm`/`rootperm`, `fileext`/`nofileext`; pure and unit-tested, used by `exports.c` |
 | `fhandle.c` | File handle encoding and path cache |
 | `portmap.c` | Portmapper protocol (port 111) |
 | `mount3.c` | MOUNT protocol (port 20048) |
@@ -85,11 +86,13 @@ other important datasets that could prevent an IPL from completing.
 | `logger.c/h` | Levelled logging (`log_debug/info/warn/error/fatal`); MVS WTO support |
 | `hexdump.c/h` | Hex dump helper for debug output |
 | `ressock.c` | Reserved-port socket helper |
-| `asmutils.h` | C prototypes + name aliases for the MVS assembler helpers (`getcib`, `mvs_dynalloc`, `mvs_stow`) |
-| `getcib.asm` | CIB (Console Information Block) reader — MVS assembler module |
-| `mvsdalc.asm` | SVC 99 dynamic allocation (`mvs_dynalloc`) — MVS assembler |
+| `asmutils.h` | C prototypes + name aliases for the MVS assembler helpers (`getcib`, `mvs_dynalloc`, `mvs_stow`, `mvs_enq`) |
+| `getcib.asm` | CIB (Console Information Block) reader (`getcib`) — MVS assembler module |
+| `mvsdalc.asm` | SVC 99 dynamic allocation (`mvs_dynalloc`), `DISP=SHR`, returns its ddname via `DALRTDDN` — MVS assembler |
 | `mvsstow.asm` | BLDL / FIND / STOW-REPLACE ISPF-stats update (`mvs_stow`) — MVS assembler |
-| `asmutils.h` | Contains prototypes and macro definitions for ASM modules |
+| `mvsenq.asm` | ENQ / DEQ / TEST on the `SPFEDIT` resource (`mvs_enq`) — serialises member writes with ISPF/EDIT — MVS assembler |
+| `jccprolg.asm` | `JCCPROLG` macro — JCC stack-frame entry linkage used by the assembler modules |
+| `jccretrn.asm` | `JCCRETRN` macro — JCC return linkage used by the assembler modules |
 
 ### JCL
 
@@ -111,6 +114,18 @@ other important datasets that could prevent an IPL from completing.
 | `tests/tmvsdol.c` | Tests for directory open-list pool (`mvsdol.c`) |
 | `tests/tmvsfsz.c` | Tests for the file-size cache (`mvsfsz.c`) |
 | `tests/tmvsprf.c` | Tests for the performance stats tracking (`mvsprf.c`) |
+| `tests/tmvspww.c` | Tests for `mvspww.c` — the pending-member write pool (in-memory buffer management) |
+| `tests/tcfgopts.c` | Tests for `cfgopts.c` — export keyword parsing and option resolution |
+| `tests/tlogger.c` | Tests for `logger.c` — log-level and per-procedure level handling |
+
+Standalone diagnostic programs (each has its own `main()` and is run
+individually — not part of the `runall` munit suite):
+
+| File | Purpose |
+|---|---|
+| `tests/testcib.c` | Exercises the `getcib` (GETCIB) assembler helper in a loop |
+| `tests/testenq.c` | Exercises the `mvs_enq` (MVSENQ) ENQ / DEQ / TEST helper |
+| `tests/ispftoun.c` | Dev-host utility for ISPF-stats packed-decimal / date decoding experiments |
 
 ## Building
 
