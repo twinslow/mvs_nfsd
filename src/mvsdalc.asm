@@ -154,41 +154,20 @@ DUNFCLOS DS   0H
 ALLOCOK  DS    0H
 *
 *---------------------------------------------------------------------*
-* Get the DDNAME for the allocation                                   *
+* Copy the assigned DDNAME to the caller's output buffer.             *
+*                                                                     *
+* SVC99 returned the ddname in DDNRET (the DALRTDDN text unit on the  *
+* ALLOC request), so it belongs to THIS allocation -- dataset name    *
+* AND member.  A separate info retrieval keyed on dataset name alone  *
+* is ambiguous when the same dataset is allocated more than once at   *
+* the same time (e.g. a memberless read allocation held concurrently) *
+* and could hand back a foreign, memberless ddname.                   *
 *---------------------------------------------------------------------*
 *
-         MVC   TUIDSN,TUDSN Copy the dataset name from alloc TU
-         MVC   IDSNLEN,DSNLEN Copy the actual dsname length too
-*
-         BAL   R6,SETRBINF  Setup the request block for info
-*
-         LA    R1,REQBLKA   Load ptr location
-         DYNALLOC           Do the SVC99
-         LTR   R15,R15      Zero RC?
-         BZ    INFOK
-         WTO   'Dynamic allocation info failed'
-*
-* SVC99 info fail
-* Unallocate by dataset name
-*
-         MVC   TUUDSN,TUDSN     Copy DSN and member from alloc TUs
-         MVC   TUUMEMBR,TUMEMBR
-*
-         BAL   R6,SETRBUNA  Setup the request block for unallocate
-         LA    R1,REQBLKA   Load ptr location
-         DYNALLOC           Do the SVC99
-         LTR   R15,R15
-         BZ    UNALOCOK         
-         WTO   'Dynamic unallocation failed'
-*
-UNALOCOK B     RETC@M1       Return code -1       
-*
-INFOK    DS    0H
-*        Now we need to copy the DDNAME to the output buffer
          L     R1,PARMLIST
          L     R2,16(R1)     5th param is buff for ddname
-         MVC   0(L'DDNAME,R2),DDNAME
-         B     RETC@0       All good... RC = 0 
+         MVC   0(L'DDNRET,R2),DDNRET
+         B     RETC@0       All good... RC = 0
 *
 ***********************************************************************
 ***********************************************************************
@@ -460,17 +439,18 @@ WTOLEN   EQU   *-WTOPLIST
 * This is the TU list for the allocate
 *
 *
-TUPTRALC DS    0F               Addr of TU for ...    
+TUPTRALC DS    0F               Addr of TU for ...
          DC    A(TUDSNA1)          DSNAME
+         DC    A(TURTDDN)      Return assigned ddname (always present)
 TUAPTRMN DC    A(TUDSMEM)          Dataset member ... we zap to zero
-*                                  if we are not specifying a member 
+*                                  if we are not specifying a member
 *                                  name, or store the addr if we are.
-*                                  (for reuse). 
+*                                  (for reuse).
 TUPOLST  DC    A(TUDSSA1)          Dataset status
-         DC    A(TUDCLOSE+X'80000000') Free=close 
+         DC    A(TUDCLOSE+X'80000000') Free=close
 *
 * Now the text units for allocate
-*         
+*
          DS    0F
 TUDSNA1  DC    AL2(DALDSNAM),AL2(1)        DSN=
 DSNLEN   DC    AL2(44)                    length -- patched at runtime
@@ -479,6 +459,8 @@ TUDSMEM  DC    AL2(DALMEMBR),AL2(1),AL2(8)         MEMBER
 TUMEMBR  DC    CL8' '
 TUDSSA1  DC    AL2(DALSTATS),AL2(1),AL2(1),X'08'   DISP=SHR
 TUDCLOSE DC    AL2(DALCLOSE),AL2(0)         FREE=CLOSE (flag, no parm)
+TURTDDN  DC    AL2(DALRTDDN),AL2(1),AL2(8)  Return assigned ddname here
+DDNRET   DC    CL8' '              SVC99 stores the ddname in this area
 *---------------------------------------------------------------------*
 *
 * This is the TU list for the info retrieval to get DDNAME

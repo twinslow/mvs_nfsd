@@ -6,10 +6,14 @@ Shipped: CREATE / WRITE / COMMIT with buffer-then-STOW (§5, §7); stability
 echoed to the client (§4); pending members visible to `stat`/`read` before the
 STOW (§5.1); ISPF statistics set on write and refreshed on `touch`/SETATTR
 (§9.1); SETATTR size (truncate) and time handling; and a restart-unique write
-verifier seeded from the hashed JES2 job id (§6). Phase 1 keeps write buffers
-**in memory** with a per-member cap; disk-backed spill (§8) remains a future
-phase. The sections below record the design and rationale; §3 is the original
-pre-implementation baseline and is retained for context only.
+verifier seeded from the hashed JES2 job id (§6). The member is written through
+a **`DISP=SHR` dynamic allocation** (not JCC's `DISP=OLD` `//DSN:` open) and
+serialised against ISPF/EDIT with the **`SPFEDIT` enqueue**, both taken at
+CREATE / first WRITE and held for the slot's lifetime (§7.2) — so a member open
+in an editor fails the write cleanly rather than corrupting or blocking. Phase 1
+keeps write buffers **in memory** with a per-member cap; disk-backed spill (§8)
+remains a future phase. The sections below record the design and rationale; §3
+is the original pre-implementation baseline and is retained for context only.
 
 ## 1. Goal
 
@@ -101,6 +105,15 @@ client will not resend).  The idle timeout bounds the window; a client
 `COMMIT` closes it immediately.  Acceptable for Phase 1; revisit for stronger
 durability later.
 
+**Locked member → the write fails (not the commit).**  Because the member is
+allocated and its `SPFEDIT` enqueue taken at CREATE / first WRITE (§7.2), a
+member currently open in ISPF/EDIT (or REVIEW) fails that first operation with
+`NFS3ERR_ACCES` — the client reports "access denied".  This is deliberately at
+WRITE, not COMMIT: **every** client issues WRITE, whereas the Linux NFS client
+never issues COMMIT, so failing at commit time would let a locked-member write
+silently succeed-then-lose on Linux.  Once the editor releases the member, a
+retried write proceeds normally.
+
 ## 5. Data model — the pending-member write pool
 
 A new module, tentatively `mvspww.c` / `mvspww.h` (PDS member **w**rite,
@@ -110,7 +123,7 @@ pool (`mvsdol`) and read cache (`mvsprw`):
 
 ```c
 typedef struct {
-    uint8_t   status;              /* FREE / IN_USE */
+    uint8_t   status;              /* FREE / USED                        */
     int       export_idx;
     int       dataset_idx;         /* resolves RECFM/LRECL + real dsname */
     char      dsname_ebcdic[45];
@@ -119,21 +132,35 @@ typedef struct {
     uint32_t  buf_cap;             /* allocated capacity                 */
     uint32_t  high_water;          /* highest offset+count written = size*/
     time_t    last_write_time;     /* for the idle-flush sweep           */
-    int       dirty;               /* has unflushed data                 */
+    uint8_t   dirty;               /* has unflushed data                 */
+
+    /* Serialisation / allocation state (§7.2), acquired at CREATE / first
+       WRITE and held until the slot is released.  Each flag reflects a
+       resource currently held and drives exactly what to clean up on
+       release or error, so the flags never lie. */
+    uint8_t   enq_held;            /* 1 = SPFEDIT enqueue is held         */
+    uint8_t   allocated;           /* 1 = the DSN(member) is allocated    */
+    char      ddname[9];           /* ddname of that allocation           */
     /* (Phase 2) scratch-dataset handle / name for disk spill            */
 } pending_member_t;
 ```
 
 Keyed by (export_idx, dataset_idx, member_name).  Lifecycle:
 
-- **CREATE** allocates a pending slot, records the file handle / relpath,
-  and marks the member as existing with size 0.
-- **WRITE** finds the slot (or allocates one on first write), grows the
-  buffer if needed, copies `count` bytes to `buf[offset]`, updates
-  `high_water` and `last_write_time`.
+- **CREATE** allocates a pending slot and, on MVS, **takes the `SPFEDIT`
+  enqueue and dynamically allocates `DSN(member)` `DISP=SHR`** (§7.2), holding
+  both for the slot's lifetime; marks the member as existing with size 0.  If
+  the enqueue or allocation fails, the CREATE fails and the slot is released.
+- **WRITE** finds the slot; on the **first** write it initialises the slot and
+  takes the enqueue + allocation as for CREATE.  Then it grows the buffer if
+  needed, copies `count` bytes to `buf[offset]`, and updates `high_water` and
+  `last_write_time`.  Follow-on writes just buffer — the enqueue/allocation are
+  already held.
 - **COMMIT / timeout / eviction / shutdown** flushes: convert `buf[0 ..
-  high_water]` to records and write the member in one pass, then mark
-  clean (and free or retain the slot briefly).
+  high_water]` to records and write the member in one pass **through the held
+  allocation's ddname**, then mark clean.  COMMIT keeps the slot (more writes
+  may follow); the idle sweep / eviction / shutdown **release** the slot, which
+  drops the enqueue and allocation (§7.2).
 
 ### 5.1 Pending members must be visible to `vfs_stat`
 
@@ -194,8 +221,9 @@ persisted boot counter (option 2) is not needed.
 
 A member's buffer is flushed on any of:
 
-1. **COMMIT** for that member — flush immediately, then reply.  (Also flush
-   on a WRITE the client marked `FILE_SYNC`, if we choose to honour that.)
+1. **COMMIT** for that member — flush immediately, then reply.  (A WRITE is
+   never flushed per write, whatever its stability — see §4; we echo the
+   stability instead and STOW once, at one of the triggers below.)
 2. **Idle timeout** — no writes for N seconds (proposed 5–10s), tracked
    **per member** and polled once per select iteration (confirmed approach,
    §11.1).  Covers clients that drop the connection without COMMIT.
@@ -220,16 +248,22 @@ latency to a few seconds.  This mirrors how the DOL pool and read cache
 already use time-based expiry.  `COMMIT`-driven flushes happen inline in
 `proc_commit` and don't wait for the sweep.
 
-The flush itself:
+The flush itself (`pww_flush_slot`) — note it neither enqueues nor allocates;
+both are already held from first write (§7.2), so it opens the held allocation
+by its ddname:
 
 ```
-fopen("//DSN:dsname(member)", "wt")           -- text mode, member DCB
+fopen("//DDN:ddname", "wt")                   -- held DISP=SHR alloc, text mode
   convert buf[0..high_water]: split on '\n' into LRECL records,
                               ASCII -> EBCDIC, pad/truncate per RECFM
   fwrite the records
 fclose                                          -- performs the STOW
-mark slot clean; free buffer (or retain slot for reuse)
+set ISPF stats (§9.1); bump dir mtime + invalidate readdir cache (§7.1)
+mark slot clean; buffer + allocation + enqueue retained until slot release
 ```
+
+On the non-MVS (dev/mock) build there is no enqueue or dynamic allocation, and
+the flush opens `//DSN:dsname(member)` directly.
 
 ### 7.1 Directory-change visibility (after a STOW)
 
@@ -256,6 +290,60 @@ a time**.  Since a flush is a self-contained `fopen…fclose` and the server
 is single-threaded, flushing one member at a time is inherent — multiple
 buffers may sit in memory but are flushed serially.
 
+### 7.2 Serialisation and allocation — the SPFEDIT enqueue, held from first write
+
+Two problems the naive `fopen("//DSN:dsname(member)", "wt")` flush did not
+solve, both about **sharing the PDS with TSO/ISPF while it is up**:
+
+1. **Whole-dataset lock.**  JCC's `//DSN:` open allocates the dataset
+   `DISP=OLD`, which takes an *exclusive* dataset-level `SYSDSN` enqueue — it
+   fails (or waits) if anyone else, including ISPF, has the PDS allocated.  We
+   instead **dynamically allocate `DISP=SHR`** (SVC 99, `mvs_dynalloc` in
+   `src/mvsdalc.asm`) and open the returned ddname with `fopen("//DDN:ddname",
+   "wt")`, so the server shares the PDS the way TSO users do.
+2. **Member-level races with an editor.**  `DISP=SHR` shares the dataset but
+   does nothing to stop us rewriting a member somebody is editing — their
+   later save would silently overwrite ours (or vice-versa).  ISPF/EDIT (and
+   REVIEW) serialise a member with an **exclusive enqueue** on
+   `QNAME=SPFEDIT`, `RNAME = dsname(44) + member(8)` (blank-padded), scope
+   `SYSTEMS`.  We take the **same** enqueue (`mvs_enq` in `src/mvsenq.asm`,
+   `RET=USE` so it *fails fast* instead of waiting — never hanging the
+   single-threaded server) before touching the member.  A conflict means an
+   editor holds it, and we fail the operation.
+
+**Acquire at first write, hold for the slot's lifetime.**  Both the enqueue
+and the allocation are taken together at CREATE / first WRITE by `pww_lock`
+(enqueue first, then allocate; on allocation failure the enqueue is backed
+out), and released together by `pww_unlock` (unallocate, then DEQ).  They are
+held across all the buffered writes *and* the flush *and* the ISPF-stats STOW,
+and are dropped only when the slot is released.  The two `pending_member_t`
+flags (`enq_held`, `allocated`) record exactly what is held; `pww_unlock` is
+flag-driven, so it is correct after a partial acquire and safe to call
+unconditionally.  `pww_slot_release` calls it, so **every** release path — idle
+sweep, pool eviction, shutdown, and REMOVE's discard — frees the enqueue and
+allocation.
+
+Doing this at first write (rather than in the flush, where change history first
+put it) is what makes a locked member fail at WRITE — the operation every
+client issues — instead of at COMMIT, which the Linux client never sends (§4).
+
+**Getting the ddname right.**  `mvs_dynalloc` returns the system-assigned
+ddname via a `DALRTDDN` text unit *on the allocation request itself*, so it is
+guaranteed to be the ddname of the allocation we just made (dsname **+**
+member).  An earlier design fetched it with a separate info retrieval keyed on
+**dataset name alone**, which — once the allocation was held long enough to
+overlap the directory-read allocation of the same PDS — could return a
+different, *memberless* allocation's ddname; `fopen("//DDN:...")` then opened
+the PDS *directory* and failed with `EISDIR`.  Retrieving it from the ALLOC
+removes that ambiguity (and saves an SVC 99 call).
+
+**Stats-only updates serialise too.**  `pww_touch_stats` (from
+`vfs_set_times`, §12.1) rewrites the directory user data, so it holds the same
+`SPFEDIT` enqueue while it does: if a pending slot already holds it, that is
+reused; otherwise it takes its own and drops it after.  If an editor holds the
+member, the stats touch is **skipped** (the editor's own save will set the
+changed date) rather than failing the SETATTR.
+
 ## 8. Memory strategy (the 8 MB address-space constraint)
 
 The MVS 3.8J application address space is ~8 MB for code + data, so we cannot
@@ -264,11 +352,12 @@ assume a whole file fits in memory — a large NFS file could easily exceed it.
 
 ### Phase 1 — in-memory buffers, capped
 
-Start with in-memory buffers and a hard per-member cap (e.g. a tunable
-`PWW_MAX_MEMBER_BYTES`, say 512 KB–1 MB) plus a pool-wide budget.  Most PDS
-members (source, JCL, copybooks) are well under this.  A write that would
-exceed the cap returns `NFS3ERR_FBIG` (or `NFS3ERR_NOSPC`).  Simple, correct,
-and enough to get create/write working end-to-end.
+Start with in-memory buffers and a hard per-member cap (a tunable
+`PWW_MAX_MEMBER_BYTES`) plus a pool-wide budget.  Most PDS members (source,
+JCL, copybooks) are well under this.  A write that would exceed the cap returns
+**`NFS3ERR_NOSPC`** (the pool sets `errno = ENOSPC`; JCC has no `EFBIG`, so
+`NOSPC` is used rather than `FBIG`).  Simple, correct, and enough to get
+create/write working end-to-end.
 
 ### Phase 2 — spill to a temporary dataset
 
@@ -342,12 +431,18 @@ routine appears intended for load-library members, not FB source members.
 
 So the stats are applied by two small **assembler helpers** (prototypes in
 `src/asmutils.h`), called from `pww_flush_slot` **after** `fclose` has stowed
-the member (the member must already exist in the directory):
+the member (the member must already exist in the directory), and while the
+slot's `SPFEDIT` enqueue is still held (§7.2), so the directory rewrite is
+serialised against an editor just like the content STOW:
 
-1. `mvs_dynalloc(ALLOC, FREE=CLOSE, dsname, member, ddname)` (`src/mvsdalc.asm`)
-   — dynamically allocates the PDS `DISP=SHR` via SVC 99 and returns its
-   system-assigned ddname. `FREE=CLOSE` means the allocation is freed when the
-   dataset is closed, so no explicit unallocate is needed.
+1. `mvs_dynalloc(ALLOC, FREE=CLOSE, dsname, NULL, ddname)` (`src/mvsdalc.asm`)
+   — the same SVC 99 `DISP=SHR` allocator used for the member write (§7.2),
+   here called **dataset-level** (member = `NULL`), because `STOW`'s
+   `BLDL`/`FIND` work on the directory. It returns the system-assigned ddname
+   (via a `DALRTDDN` text unit on the allocation itself — §7.2). `FREE=CLOSE`
+   means the allocation is freed when the dataset is closed, so no explicit
+   unallocate is needed (this stats allocation is *separate* from, and
+   short-lived relative to, the member allocation the slot holds).
 2. `mvs_stow(ddname, member, userdata, len)` (`src/mvsstow.asm`) — opens that
    ddname (`DSORG=PO`), does `BLDL` to get the member's `TTR`, **`FIND` by that
    TTR to position the DCB on the existing member**, then `STOW TYPE=REPLACE`
@@ -426,10 +521,10 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 
 | File | Change |
 |------|--------|
-| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all; after flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1) |
-| `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 dynamic allocation (`mvs_dynalloc`) and BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); C prototypes + `MVSDALC`/`MVSSTOW` name aliases in `asmutils.h` |
-| `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible |
-| `src/nfs3.c` | `proc_write` → reply `UNSTABLE`; `proc_commit` → flush the member then reply; `proc_create` unchanged in shape |
+| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1) |
+| `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/mvsenq.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 `DISP=SHR` dynamic allocation returning its ddname via `DALRTDDN` (`mvs_dynalloc`); BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); ENQ/DEQ/TEST on `SPFEDIT`, exclusive, `RET=USE`, scope `SYSTEMS` (`mvs_enq`, §7.2); C prototypes + `MVSDALC`/`MVSSTOW`/`MVSENQ` name aliases in `asmutils.h` |
+| `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible; `vfs_errno_to_nfs3` maps the write path's `EACCES` (member locked → `NFS3ERR_ACCES`) and `EROFS`/`EXDEV` |
+| `src/nfs3.c` | `proc_write` → echo the client's requested stability; `proc_commit` → flush the member then reply; `proc_create` unchanged in shape |
 | `src/nfsd.c` | Call `pww_flush_idle()` after `select()`; flush-all on STOP before shutdown; strengthen the write verifier (JES job id / boot counter) |
 | `src/mvspdir.c` / `.h` | ISPF-stats encode + update helpers (§9.1): `mvs_ispf_count_lines`, `mvs_encode_ispf_stats`, `mvs_build_write_stats` |
 | `nfsd.conf` / README | Note write support + any new tunables (cap, idle timeout) |
@@ -481,7 +576,7 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 1. `mvspww` pool with **in-memory** buffers (Phase 1), place-at-offset, and
    a flush-one that does the record conversion + `fopen("wt")…fclose`.
 2. Wire `vfs_create` / `vfs_pwrite` / `vfs_stat` (pending visibility).
-3. `proc_write` → `UNSTABLE`; `proc_commit` → flush.  End-to-end create +
+3. `proc_write` → echo requested stability (§4); `proc_commit` → flush.  End-to-end create +
    write + commit of a small member; verify with `ls`, `cat`, and a real
    editor save from the Linux client.
 4. Idle-flush sweep in the select loop; flush-all on shutdown.
@@ -506,7 +601,8 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
   buffer as needed; update `high_water` and `last_write_time`.
 - `vfs_stat` → check the pending pool first so an in-progress (not-yet-stowed)
   member is `stat`-able (`ftype=REG`, `size = high_water`).
-- `proc_write` → reply **`UNSTABLE`** (not `FILE_SYNC`).
+- `proc_write` → **echo the client's requested stability** (§4), not a fixed
+  `UNSTABLE`/`FILE_SYNC`.
 - `proc_commit` → flush that member (convert → EBCDIC → `fopen("wt")…fclose`
   = STOW), then reply with the verifier.
 - **SETATTR must succeed** (it is part of the client's open/write/close
@@ -526,14 +622,15 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
 **Deferred to Phase 2 (not in Phase 1):**
 
 - PS scratch-dataset spill.  Consequently Phase 1 has a **hard per-member
-  cap**: a write that would exceed it returns `NFS3ERR_FBIG`.  This is fine
-  for validating the flow with normal-sized members (source, JCL).
+  cap**: a write that would exceed it returns `NFS3ERR_NOSPC` (JCC has no
+  `EFBIG`).  This is fine for validating the flow with normal-sized members
+  (source, JCL).
 
 **Phase 1 parameters:**
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `PWW_MAX_MEMBER_BYTES` | **256 KB** | per-member in-memory cap; over-cap write → `NFS3ERR_FBIG` |
+| `PWW_MAX_MEMBER_BYTES` | **256 KB** | per-member in-memory cap; over-cap write → `NFS3ERR_NOSPC` (`ENOSPC`; JCC has no `EFBIG`) |
 | `PWW_MAX_PENDING`      | **4**      | concurrent pending members in the pool |
 | Idle-flush timeout     | 5–10 s (tunable) | per member, polled each select iteration |
 

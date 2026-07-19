@@ -43,8 +43,96 @@ static uint8_t g_pww_xlate[4096];
    to flush a dirty slot before evicting it. */
 static int pww_flush_slot(pending_member_t *pm);
 
+#ifdef __MVS__
+/* Build the SPFEDIT enqueue RNAME: dsname(44) + member(8), blank-padded --
+   the resource ISPF/EDIT (and REVIEW) hold while a member is being edited. */
+static void pww_spfedit_rname(const char *dsname_ebcdic,
+                              const char *member_name, char *rname_out)
+{
+    sprintf(rname_out, "%-44.44s%-8.8s", dsname_ebcdic, member_name);
+}
+
+/* Acquire serialisation + allocation for a freshly-initialised slot: an
+   EXCLUSIVE SPFEDIT enqueue, then a DISP=SHR allocation of DSN(member).  Both
+   are held for the slot's lifetime (released by pww_unlock) and recorded
+   in the slot's flags, so cleanup is driven by exactly what was acquired.
+   Called at CREATE / first WRITE so the conflict surfaces to the client then
+   -- at WRITE, which every client issues -- not at flush.
+   Returns 0, or -1 (errno set) if the member is being edited elsewhere
+   (EACCES) or cannot be allocated (EIO). */
+static int pww_lock(pending_member_t *pm)
+{
+    char rname[44 + 8 + 1];
+    char ddname[9];
+    int  k;
+
+    /* Exclusive SPFEDIT enqueue.  RET=USE (see mvsenq.asm) fails fast rather
+       than waiting, so a member open in an editor does not hang the
+       single-threaded server. */
+    pww_spfedit_rname(pm->dsname_ebcdic, pm->member_name, rname);
+    if (mvs_enq(MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
+        log_warn("pww_lock: %s(%s) is held (SPFEDIT enqueue) -- refused",
+                 pm->dsname_ebcdic, pm->member_name);
+        errno = EACCES;
+        return -1;
+    }
+    pm->enq_held = 1;
+
+    /* Allocate DSN(member) DISP=SHR (mvs_dynalloc hard-codes SHR); keep the
+       ddname for the flush to open via "//DDN:".  options = 0: no FREE=CLOSE
+       -- pww_unlock unallocates. */
+    ddname[0] = '\0';
+    if (mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
+                     pm->dsname_ebcdic, pm->member_name, ddname) != 0) {
+        log_error("pww_lock: dynalloc %s(%s) failed",
+                  pm->dsname_ebcdic, pm->member_name);
+        (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
+        pm->enq_held = 0;
+        errno = EIO;
+        return -1;
+    }
+    ddname[8] = '\0';   /* 8 blank-padded chars; trim for "//DDN:ddname" */
+    for (k = 8; k > 0 && ddname[k - 1] == ' '; k--)
+        ddname[k - 1] = '\0';
+    strcpy(pm->ddname, ddname);
+    pm->allocated = 1;
+
+    log_debug("pww_lock: %s(%s) enqueued + allocated ddname=%s",
+              pm->dsname_ebcdic, pm->member_name, pm->ddname);
+    return 0;
+}
+
+/* Release whatever pww_lock acquired, driven by the slot's flags so it
+   is safe to call unconditionally and after a partial open.  Unallocate
+   first, then DEQ (DEQ RET=HAVE is safe even if not held). */
+static void pww_unlock(pending_member_t *pm)
+{
+    if (pm->allocated) {
+        char scratch[9];   /* the ddname arg is unused for UNALLOC */
+        if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
+                         pm->dsname_ebcdic, pm->member_name, scratch) != 0)
+            log_warn("pww_unlock: unalloc %s(%s) failed",
+                     pm->dsname_ebcdic, pm->member_name);
+        pm->allocated = 0;
+        pm->ddname[0] = '\0';
+    }
+    if (pm->enq_held) {
+        char rname[44 + 8 + 1];
+        pww_spfedit_rname(pm->dsname_ebcdic, pm->member_name, rname);
+        if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0)
+            log_warn("pww_unlock: DEQ %s(%s) failed",
+                     pm->dsname_ebcdic, pm->member_name);
+        pm->enq_held = 0;
+    }
+}
+#else
+static int  pww_lock(pending_member_t *pm)   { (void)pm; return 0; }
+static void pww_unlock(pending_member_t *pm) { (void)pm; }
+#endif
+
 static void pww_slot_release(pending_member_t *pm)
 {
+    pww_unlock(pm);   /* DEQ + unallocate whatever the slot still holds */
     if (pm->buf != NULL)
         free(pm->buf);
     memset(pm, 0, sizeof(*pm));
@@ -219,13 +307,6 @@ static int pww_flush_slot(pending_member_t *pm)
     uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
     int                 want_stats;
     int32_t             line_count;
-#ifdef __MVS__
-    char     ddname[9];
-    char     rname[44 + 8 + 1];   /* dsname(44) + member(8) + NUL */
-    int      k;
-    int      wrc;
-    int      enqrc;
-#endif
 
     /* Read the member's current directory entry (if any) BEFORE opening it
        for output, so we never have the PDS open for input and output at once.
@@ -239,78 +320,17 @@ static int pww_flush_slot(pending_member_t *pm)
                                        time(NULL));
 
 #ifdef __MVS__
-    /* Step 1: serialise with ISPF/EDIT.  Take an EXCLUSIVE enqueue on the
-       resource an editor uses -- QNAME "SPFEDIT", RNAME = dsname(44) +
-       member(8), blank-padded.  ENQ RET=USE (see mvsenq.asm) fails fast
-       rather than waiting, so a member open in an editor does NOT hang the
-       single-threaded server.
-
-       If we cannot get it, the member is being edited elsewhere: fail the
-       flush -- the same outcome the replaced DISP=OLD open produced when the
-       dataset was held.  (A later change moves the ENQ + allocation to the
-       FIRST WRITE, so the conflict surfaces to the client at WRITE -- which
-       every client issues -- rather than at flush, where a Linux client that
-       never COMMITs would never see it.) */
-
-    log_debug("pww_flush_slot: Constructing SPFEDIT ENQ RNAME");
-    sprintf(rname, "%-44.44s%-8.8s", pm->dsname_ebcdic, pm->member_name);
-    log_debug("pww_flush_slot: SPFEDIT ENQ RNAME=%s (len=%d)", rname, strlen(rname));
-
-    enqrc = mvs_enq(
-        MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, 
-        "SPFEDIT", rname );
-        
-    if ( enqrc != 0) {
-        log_warn("pww_flush_slot: %s(%s) is held (SPFEDIT enqueue) --"
-                 " flush failed", pm->dsname_ebcdic, pm->member_name);
-        errno = EIO;
+    /* The SPFEDIT enqueue and the DSN(member) DISP=SHR allocation were taken at
+       CREATE / first WRITE (pww_lock) and are held for the slot's whole
+       lifetime, so the flush neither enqueues nor allocates -- it simply opens
+       the held allocation by its ddname ("//DDN:ddname") and writes + STOWs
+       through it (fclose STOWs).  The enqueue and allocation are released only
+       when the slot is released (pww_slot_release -> pww_unlock), which
+       also covers the ISPF-stats STOW below. */
+    strcpy(path, "//DDN:");
+    strcat(path, pm->ddname);
+    if (pww_write_member(pm, path) != 0)   /* write + STOW */
         return -1;
-    } else {
-        log_debug("pww_flush_slot: %s(%s) is held (SPFEDIT enqueue)",
-                 pm->dsname_ebcdic, pm->member_name);
-    }
-
-    /* Step 2: allocate DSN(MEMBER) DISP=SHR (mvs_dynalloc hard-codes SHR) and
-       write the member through the returned ddname -- shares the PDS with
-       ISPF/TSO, unlike JCC's "//DSN:" (DISP=OLD).  options = 0: NO FREE=CLOSE,
-       so we unallocate explicitly below. */
-    ddname[0] = '\0';
-    if (mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
-                     pm->dsname_ebcdic, pm->member_name, ddname) != 0) {
-        log_error("pww_flush_slot: dynalloc %s(%s) failed",
-                  pm->dsname_ebcdic, pm->member_name);
-        errno = EIO;
-        wrc   = -1;
-    } else {
-        /* The ddname is 8 blank-padded chars, not NUL-terminated; trim the
-           pad before building "//DDN:ddname" (a trailing blank breaks it). */
-        ddname[8] = '\0';
-        for (k = 8; k > 0 && ddname[k - 1] == ' '; k--)
-            ddname[k - 1] = '\0';
-        strcpy(path, "//DDN:");
-        strcat(path, ddname);
-
-        wrc = pww_write_member(pm, path);   /* steps 3-5: write + STOW */
-
-        /* Step 6: unallocate on success AND failure (no FREE=CLOSE).  The
-           member name MUST be supplied -- unallocating by dataset name alone
-           does not release a DSN(MEMBER) allocation (confirmed via the SYSDSN
-           enqueues in IMON/370). */
-        if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
-                         pm->dsname_ebcdic, pm->member_name, ddname) != 0)
-            log_warn("pww_flush_slot: unalloc %s(%s) failed",
-                     pm->dsname_ebcdic, pm->member_name);
-    }
-
-    if (wrc != 0) {
-        /* Release the enqueue before failing; preserve the write's errno. */
-        int saved_errno = errno;
-        (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
-        errno = saved_errno;
-        return -1;
-    }
-    /* Success: the SPFEDIT enqueue stays held across the stats STOW too and
-       is released at step 8 below. */
 #else
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
     if (pww_write_member(pm, path) != 0)
@@ -365,26 +385,14 @@ static int pww_flush_slot(pending_member_t *pm)
             }
         }
     }
-
-    /* Step 8: release the SPFEDIT enqueue held across the write and stats.
-       DEQ RET=HAVE (see mvsenq.asm) is safe even if we somehow no longer hold
-       it -- it returns non-zero rather than abending. */
-    if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
-        log_warn("pww_flush_slot: DEQ %s(%s) failed",
-                 pm->dsname_ebcdic, pm->member_name);
-    } else {
-        log_debug("pww_flush_slot: DEQ %s(%s) successful",
-                 pm->dsname_ebcdic, pm->member_name);
-
-    } 
-
+    /* No DEQ / unallocate here: both are held until the slot is released. */
 #else
     (void)want_stats;
     (void)new_stats;
     (void)stats_ud;
 #endif
 
-    /* Step 9: the PDS directory just changed: bump its mtime so clients
+    /* The PDS directory just changed: bump its mtime so clients
        invalidate their cached listing, and drop our own cached listing so the
        next readdir re-reads the directory and includes the new member. */
     export_dataset_touch(pm->export_idx, pm->dataset_idx);
@@ -412,10 +420,18 @@ int pww_create(int export_idx, int dataset_idx,
     if (pm->status != PWW_STATUS_USED ||
         strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
         strcmp(pm->member_name, member_name) != 0) {
-        /* Fresh or reused slot: (re)initialise it. */
+        /* Fresh or reused slot: (re)initialise it, then take the SPFEDIT
+           enqueue and allocate the member (held for the slot's lifetime).  If
+           the member is being edited elsewhere, fail the create now. */
         pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pww_lock(pm) != 0) {
+            int saved_errno = errno;
+            pww_slot_release(pm);
+            errno = saved_errno;
+            return -1;              /* errno set (EACCES held / EIO alloc) */
+        }
     } else {
-        /* Re-create over an existing pending member: truncate contents. */
+        /* Re-create over an existing pending member (already open): truncate. */
         pm->high_water = 0;
     }
 
@@ -447,7 +463,17 @@ int pww_write(int export_idx, int dataset_idx,
     if (pm->status != PWW_STATUS_USED ||
         strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
         strcmp(pm->member_name, member_name) != 0) {
+        /* First write to this member: initialise the slot, then take the
+           SPFEDIT enqueue and allocate it (held until the slot is released).
+           A member being edited elsewhere fails the write here -- every
+           client issues WRITE, so the conflict always surfaces. */
         pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pww_lock(pm) != 0) {
+            int saved_errno = errno;
+            pww_slot_release(pm);
+            errno = saved_errno;
+            return -1;              /* errno set (EACCES held / EIO alloc) */
+        }
     }
 
     if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
@@ -496,6 +522,12 @@ int pww_truncate(int export_idx, int dataset_idx,
             return 0;
         pm = pww_slot_acquire(dsname_ebcdic, member_name);
         pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pww_lock(pm) != 0) {     /* enqueue + allocate the new member */
+            int saved_errno = errno;
+            pww_slot_release(pm);
+            errno = saved_errno;
+            return -1;                    /* errno set (EACCES held / EIO alloc) */
+        }
         pm->dirty           = 1;
         pm->last_write_time = time(NULL);
         log_debug("pww_truncate: %s(%s) -> 0 (new empty)",
@@ -608,7 +640,9 @@ int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
     pds_member_entry_t *ep;
     uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
     char                ddname[9];
+    char                rname[44 + 8 + 1];
     int                 rc;
+    int                 own_enq;
 
     /* If content is still pending (dirty), the upcoming flush will set the
        changed date -- skip, or this STOW would just be overwritten. */
@@ -624,6 +658,24 @@ int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
     if (entry.chgdate == (int32_t)new_time)
         return 0;                       /* already that time (1s resolution) */
 
+    /* Serialise with an editor: this STOW rewrites the PDS directory, so hold
+       the same SPFEDIT enqueue used for a write.  If a pending slot for this
+       member already holds it (a non-dirty slot kept after a COMMIT flush),
+       reuse that -- re-enqueuing our own task would report "already held" and
+       a matching DEQ would prematurely drop the slot's enqueue.  Otherwise
+       take our own; if the member is being edited elsewhere, skip the touch --
+       the editor's save will set the changed date anyway. */
+    own_enq = 0;
+    if (pm == NULL || !pm->enq_held) {
+        pww_spfedit_rname(dsname_ebcdic, member_name, rname);
+        if (mvs_enq(MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
+            log_debug("pww_touch_stats: %s(%s) is held -- skipping stats touch",
+                dsname_ebcdic, member_name);
+            return 0;
+        }
+        own_enq = 1;
+    }
+
     entry.chgdate = (int32_t)new_time;  /* update the changed date only */
     mvs_encode_ispf_stats(&entry, stats_ud);
 
@@ -637,6 +689,9 @@ int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
     if (rc != 0)
         log_warn("pww_touch_stats: stats update failed for %s(%s) rc=%d",
             dsname_ebcdic, member_name, rc);
+
+    if (own_enq)
+        (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
     return 0;
 #else
     (void)export_idx; (void)dsname_ebcdic; (void)member_name; (void)new_time;

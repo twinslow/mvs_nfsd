@@ -55,6 +55,17 @@ typedef struct {
     uint32_t  high_water;          /* logical size = highest offset+count  */
     time_t    last_write_time;     /* for the idle-flush sweep             */
     uint8_t   dirty;               /* has data not yet stowed              */
+
+    /*
+     * Serialisation / allocation state, acquired at CREATE or first WRITE and
+     * held until the slot is released (see pww_lock / pww_unlock in
+     * mvspww.c).  Each flag reflects a resource currently held, and drives
+     * exactly what must be cleaned up on release or error.  Written the moment
+     * the resource is acquired or freed, so the flags never lie.
+     */
+    uint8_t   enq_held;            /* 1 = SPFEDIT enqueue is held           */
+    uint8_t   allocated;           /* 1 = the DSN(member) is allocated      */
+    char      ddname[9];           /* ddname of that allocation (NUL-term)  */
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */

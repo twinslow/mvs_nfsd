@@ -167,18 +167,38 @@ void export_dataset_touch(int export_idx, int dataset_idx)
 }
 
 #ifdef __MVS__
-/* mvspww.c references these only under __MVS__ (its real STOW path). */
+/*
+ * Under __MVS__ mvspww.c calls these assembler helpers.  As of the write-path
+ * change that takes the SPFEDIT enqueue + DISP=SHR allocation at CREATE / first
+ * WRITE (pww_lock), they are on the create/write/truncate paths the buffer
+ * tests exercise -- not just the flush path the tests avoid.  So they are
+ * stubbed to SUCCEED (cheaply, with no real ENQ or allocation), keeping
+ * tmvspww hermetic: no real I/O, no console WTOs, and no cross-test enqueue
+ * leak (the tests reuse one member and pww_init() does not DEQ).
+ *
+ * NOTE: because mvs_enq is stubbed here, the RUNALL link must NOT also pull in
+ * the real MVSENQ (INCLUDE SYSLIB(MVSENQ)) -- that would multiply-define it.
+ */
+int mvs_enq(uint8_t request_type, uint8_t options,
+            const char *qname, const char *rname)
+{
+    (void)request_type; (void)options; (void)qname; (void)rname;
+    return 0;
+}
+
 int mvs_dynalloc(uint8_t request_type, uint8_t options,
                  const char *dsname, const char *member, char *ddname)
 {
-    (void)request_type; (void)options; (void)dsname; (void)member; (void)ddname;
-    return -1;
+    (void)options; (void)dsname; (void)member;
+    if (request_type == MVS_DYNALLOC_REQ_ALLOC && ddname != NULL)
+        strcpy(ddname, "SYS00001");   /* a plausible dynalloc ddname */
+    return 0;
 }
 
 int mvs_stow(const char *ddname, const char *member,
              void *userdata, int user_data_length_bytes)
 {
     (void)ddname; (void)member; (void)userdata; (void)user_data_length_bytes;
-    return -1;
+    return 0;
 }
 #endif
