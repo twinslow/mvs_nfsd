@@ -71,6 +71,8 @@ MVSENQ   CSECT
 ***********************************************************************
 ***********************************************************************
 DO@TEST  DS    0H
+*
+         WTO   'MVSENQ: Starting ENQ/TEST request'
          L     R1,PARMLIST
 *
          L     R4,RNAMELEN   Load length of RNAME      
@@ -82,7 +84,7 @@ DO@TEST  DS    0H
 * Execute a shared ENQ                                                *
 *---------------------------------------------------------------------*
 *
-DOTSTSHR DS    0F
+DOTSTSHR DS    0H
          ENQ   (QNAME,RNAME,S,(R4),SYSTEMS),RET=TEST
          B     DOTSTRC 
 *
@@ -92,10 +94,10 @@ DOTSTSHR DS    0F
 *
 * EXCLUSIVE
 *
-DOTSTEXC DS    0F
+DOTSTEXC DS    0H
          ENQ   (QNAME,RNAME,E,(R4),SYSTEMS),RET=TEST
 *
-DOTSTRC  DS    0F           Test return code
+DOTSTRC  DS    0H           Test return code
          LTR   R15,R15      Was RC = 0
          BZ    RETC@0       Yes ... exit
 *---------------------------------------------------------------------*
@@ -117,9 +119,11 @@ DOTSTRC  DS    0F           Test return code
 ***********************************************************************
 ***********************************************************************
 DO@ENQ   DS    0H
-         L     R1,PARMLIST
 *     
+         WTO   'MVSENQ: Starting ENQ request'
+*
          L     R4,RNAMELEN   Load length of RNAME      
+         L     R1,PARMLIST
          L     R2,4(R1)      Get options
          N     R2,=XL4'00000001' And for low bit
          BNZ   DOENQEXC      It was set ... we want exclusive control        
@@ -128,7 +132,8 @@ DO@ENQ   DS    0H
 * Execute a shared ENQ                                                *
 *---------------------------------------------------------------------*
 *
-DOENQSHR DS    0F
+DOENQSHR DS    0H
+         WTO   'MVSENQ: Issuing ENQ/SHR'
          ENQ   (QNAME,RNAME,S,(R4),SYSTEMS),RET=USE
          B     DOENQRC
 *
@@ -138,10 +143,11 @@ DOENQSHR DS    0F
 *
 * EXCLUSIVE
 *
-DOENQEXC DS    0F
+DOENQEXC DS    0H
+         WTO   'MVSENQ: Issuing ENQ/EXCL'
          ENQ   (QNAME,RNAME,E,(R4),SYSTEMS),RET=USE
 *
-DOENQRC  DS    0F           Test return code
+DOENQRC  DS    0H           Test return code
          LTR   R15,R15      Was RC = 0
          BZ    RETC@0       Yes ... exit
 *---------------------------------------------------------------------*
@@ -149,6 +155,7 @@ DOENQRC  DS    0F           Test return code
 *---------------------------------------------------------------------*
 *
          L     R3,0(R15)    Load the return code for the 1st resource
+         WTO   'MVSENQ: ENQ error...'
          N     R3,=XL4'000000FF' - mask out other bytes
          MVC   WTOMSG,=CL45'ENQ failed'
          MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
@@ -164,6 +171,7 @@ DOENQRC  DS    0F           Test return code
 ***********************************************************************
 DO@DEQ   DS    0H
 *
+         WTO   'MVSENQ: Starting DEQ request'
 *---------------------------------------------------------------------*
 * Execute DEQ                                                         *
 *---------------------------------------------------------------------*
@@ -282,7 +290,7 @@ CONVFW2X DS    0H
 PARMLIST DS    F           Address of callers parm list (a full word!)
 *
 QNAME    DS    CL8         QNAME value for ENQ/DEQ/TEST
-RNAME    DS    CL256       RNAME value for ENQ/DEQ/TEST 
+RNAME    DS    CL255       RNAME value for ENQ/DEQ/TEST 
 RNAMELEN DS    F           Length of the rname parameter 
 *
 *---------------------------------------------------------------------*

@@ -124,7 +124,7 @@ static int pww_write_member(pending_member_t *pm, const char *open_target)
 }
 
 /* Write the buffered member out in one pass and STOW it.
-   Returns 0 on success, -1 on failure (errno set by stdio). */
+   Returns 0 on success, -1 on failure (errno set). */
 static int pww_flush_slot(pending_member_t *pm)
 {
     char     path[6 + 44 + 1 + 8 + 1 + 1];
@@ -137,8 +137,10 @@ static int pww_flush_slot(pending_member_t *pm)
     int32_t             line_count;
 #ifdef __MVS__
     char     ddname[9];
+    char     rname[44 + 8 + 1];   /* dsname(44) + member(8) + NUL */
     int      k;
     int      wrc;
+    int      enqrc;
 #endif
 
     /* Read the member's current directory entry (if any) BEFORE opening it
@@ -153,48 +155,78 @@ static int pww_flush_slot(pending_member_t *pm)
                                        time(NULL));
 
 #ifdef __MVS__
-    /* Allocate DSN(MEMBER) with DISP=SHR (mvs_dynalloc hard-codes SHR) and let
-       JCC write the member through the returned ddname.  This shares the PDS
-       with ISPF/TSO; JCC's "//DSN:" open instead allocates DISP=OLD, which
-       fails whenever anyone else has the dataset -- and would lock them out.
-       options = 0: NO FREE=CLOSE, so we MUST unallocate explicitly on every
-       path below, or the allocation (and its SYSDSN enqueue) leaks.
+    /* Step 1: serialise with ISPF/EDIT.  Take an EXCLUSIVE enqueue on the
+       resource an editor uses -- QNAME "SPFEDIT", RNAME = dsname(44) +
+       member(8), blank-padded.  ENQ RET=USE (see mvsenq.asm) fails fast
+       rather than waiting, so a member open in an editor does NOT hang the
+       single-threaded server.
 
-       NOTE: serialisation against a concurrent updater (e.g. an ISPF save of
-       the same member) is a SEPARATE, later change.  On its own this widens
-       the already-unserialised STOW window -- the stats STOW below is already
-       DISP=SHR today. */
+       If we cannot get it, the member is being edited elsewhere: fail the
+       flush -- the same outcome the replaced DISP=OLD open produced when the
+       dataset was held.  (A later change moves the ENQ + allocation to the
+       FIRST WRITE, so the conflict surfaces to the client at WRITE -- which
+       every client issues -- rather than at flush, where a Linux client that
+       never COMMITs would never see it.) */
+
+    log_debug("pww_flush_slot: Constructing SPFEDIT ENQ RNAME");
+    sprintf(rname, "%-44.44s%-8.8s", pm->dsname_ebcdic, pm->member_name);
+    log_debug("pww_flush_slot: SPFEDIT ENQ RNAME=%s (len=%d)", rname, strlen(rname));
+
+    enqrc = mvs_enq(
+        MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, 
+        "SPFEDIT", rname );
+        
+    if ( enqrc != 0) {
+        log_warn("pww_flush_slot: %s(%s) is held (SPFEDIT enqueue) --"
+                 " flush failed", pm->dsname_ebcdic, pm->member_name);
+        errno = EIO;
+        return -1;
+    } else {
+        log_debug("pww_flush_slot: %s(%s) is held (SPFEDIT enqueue)",
+                 pm->dsname_ebcdic, pm->member_name);
+    }
+
+    /* Step 2: allocate DSN(MEMBER) DISP=SHR (mvs_dynalloc hard-codes SHR) and
+       write the member through the returned ddname -- shares the PDS with
+       ISPF/TSO, unlike JCC's "//DSN:" (DISP=OLD).  options = 0: NO FREE=CLOSE,
+       so we unallocate explicitly below. */
     ddname[0] = '\0';
     if (mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
                      pm->dsname_ebcdic, pm->member_name, ddname) != 0) {
         log_error("pww_flush_slot: dynalloc %s(%s) failed",
                   pm->dsname_ebcdic, pm->member_name);
-        return -1;    /* nothing allocated -> nothing to free */
+        errno = EIO;
+        wrc   = -1;
+    } else {
+        /* The ddname is 8 blank-padded chars, not NUL-terminated; trim the
+           pad before building "//DDN:ddname" (a trailing blank breaks it). */
+        ddname[8] = '\0';
+        for (k = 8; k > 0 && ddname[k - 1] == ' '; k--)
+            ddname[k - 1] = '\0';
+        strcpy(path, "//DDN:");
+        strcat(path, ddname);
+
+        wrc = pww_write_member(pm, path);   /* steps 3-5: write + STOW */
+
+        /* Step 6: unallocate on success AND failure (no FREE=CLOSE).  The
+           member name MUST be supplied -- unallocating by dataset name alone
+           does not release a DSN(MEMBER) allocation (confirmed via the SYSDSN
+           enqueues in IMON/370). */
+        if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
+                         pm->dsname_ebcdic, pm->member_name, ddname) != 0)
+            log_warn("pww_flush_slot: unalloc %s(%s) failed",
+                     pm->dsname_ebcdic, pm->member_name);
     }
 
-    /* The ddname is 8 blank-padded chars, not NUL-terminated; trim the pad
-       before building "//DDN:ddname" (a trailing blank would break the open). */
-    ddname[8] = '\0';
-    for (k = 8; k > 0 && ddname[k - 1] == ' '; k--)
-        ddname[k - 1] = '\0';
-    strcpy(path, "//DDN:");
-    strcat(path, ddname);
-
-    wrc = pww_write_member(pm, path);
-
-    /* Unallocate on success AND failure (we did not use FREE=CLOSE).  The
-       member name MUST be supplied: the allocation is DSN(MEMBER), and
-       unallocating by dataset name alone does not release it (confirmed on
-       MVS via the SYSDSN enqueues in IMON/370).  The server is single-
-       threaded, so this dataset is not otherwise allocated in our address
-       space here. */
-    if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
-                     pm->dsname_ebcdic, pm->member_name, ddname) != 0)
-        log_warn("pww_flush_slot: unalloc %s(%s) failed",
-                 pm->dsname_ebcdic, pm->member_name);
-
-    if (wrc != 0)
+    if (wrc != 0) {
+        /* Release the enqueue before failing; preserve the write's errno. */
+        int saved_errno = errno;
+        (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
+        errno = saved_errno;
         return -1;
+    }
+    /* Success: the SPFEDIT enqueue stays held across the stats STOW too and
+       is released at step 8 below. */
 #else
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
     if (pww_write_member(pm, path) != 0)
@@ -249,15 +281,28 @@ static int pww_flush_slot(pending_member_t *pm)
             }
         }
     }
+
+    /* Step 8: release the SPFEDIT enqueue held across the write and stats.
+       DEQ RET=HAVE (see mvsenq.asm) is safe even if we somehow no longer hold
+       it -- it returns non-zero rather than abending. */
+    if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
+        log_warn("pww_flush_slot: DEQ %s(%s) failed",
+                 pm->dsname_ebcdic, pm->member_name);
+    } else {
+        log_debug("pww_flush_slot: DEQ %s(%s) successful",
+                 pm->dsname_ebcdic, pm->member_name);
+
+    } 
+
 #else
     (void)want_stats;
     (void)new_stats;
     (void)stats_ud;
 #endif
 
-    /* The PDS directory just changed: bump its mtime so clients invalidate
-       their cached listing, and drop our own cached listing so the next
-       readdir re-reads the directory and includes the new/replaced member. */
+    /* Step 9: the PDS directory just changed: bump its mtime so clients
+       invalidate their cached listing, and drop our own cached listing so the
+       next readdir re-reads the directory and includes the new member. */
     export_dataset_touch(pm->export_idx, pm->dataset_idx);
     dir_openlist_invalidate(pm->dsname_ebcdic);
 

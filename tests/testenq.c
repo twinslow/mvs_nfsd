@@ -15,7 +15,7 @@ int test(int enqcnt) {
     sprintf(rname, "TESTING.MCTEST(N%03d)", enqcnt);
 
     rc = mvs_enq(
-        MVS_ENQ_REQ_ENQTEST, MVS_ENQ_OPT_SHR, 
+        MVS_ENQ_REQ_ENQTEST, MVS_ENQ_OPT_EXC, 
         qname, rname);
 
     fprintf(stderr, "TESTENQ-SHR Q=%-8.8s R=%-55.55s RC=%d\n",
@@ -28,11 +28,11 @@ int enq(int enqcnt) {
     char    *qname = "TESTENQ";
     char     rname[55]; /* DSN + (member) + \0 */
     int      rc;
-
+    
     sprintf(rname, "TESTING.MCTEST(N%03d)", enqcnt);
 
     rc = mvs_enq(
-        MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_SHR, 
+        MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, 
         qname, rname);
 
     fprintf(stderr, "ENQ-SHR     Q=%-8.8s R=%-55.55s RC=%d\n",
