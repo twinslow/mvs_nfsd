@@ -198,12 +198,18 @@ int mvs_get_pds_dsn_and_member(
     strncpy(file_name, last_slash + 1, MAX_NAME - 1);
     file_name[MAX_NAME - 1] = '\0';
 
-    /* Split off the file extension (if any). */
-    last_dot = strrchr(file_name, '.');
-    if (last_dot) {
-        strncpy(file_ext, last_dot + 1, MAX_FILE_EXT_LEN - 1);
-        file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
-        *last_dot = '\0';
+    /* Split off the file extension -- but only for a dataset that uses one.
+       A dataset with no extension (the 'nofileext' keyword, or a single-
+       qualifier dsname) takes the WHOLE leaf as the member name, so a name
+       containing '.' is rejected by mvs_member_name_valid below rather than
+       silently truncated at the dot. */
+    if (ds->file_ext[0] != '\0') {
+        last_dot = strrchr(file_name, '.');
+        if (last_dot) {
+            strncpy(file_ext, last_dot + 1, MAX_FILE_EXT_LEN - 1);
+            file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
+            *last_dot = '\0';
+        }
     }
 
     /* The leaf (extension stripped) becomes the member name.  Upper-case it,

@@ -208,7 +208,10 @@ mountpoint two directories will be shown -- the lower case versions of the datas
 names.
 
 The member file extension is derived from the dataset's last qualifier,
-lower-cased (members of `TEMP.TESTPROJ.CNTL` appear as `*.cntl`).
+lower-cased (members of `TEMP.TESTPROJ.CNTL` appear as `*.cntl`), unless
+overridden with the `fileext=` export keyword (e.g. `fileext=jcl` to present a
+`.CNTL` PDS as `*.jcl`) or suppressed entirely with `nofileext` (members shown
+by their bare name) — see `doc/readme_config.md`.
 
 ## Running on MVS
 
@@ -625,8 +628,9 @@ on every LOOKUP and READDIRPLUS call.
 - No locking (`nolock` mount option recommended).
 - No authentication and no per-client access control: access is a property
   of the *export*, not the client.  An export (or a single dataset) can be
-  marked read-only with the `ro` keyword, and the reported permission bits
-  are configurable (`dirperm` / `memperm` / `rootperm`) — see
+  marked read-only with the `ro` keyword, the reported permission bits
+  are configurable (`dirperm` / `memperm` / `rootperm`), and the member file
+  extension can be overridden (`fileext`) or suppressed (`nofileext`) — see
   [doc/readme_config.md](doc/readme_config.md).  Read-only is enforced for
   every client including one mounting as root.
 - RENAME works only **within a single PDS** — a member cannot be moved to a

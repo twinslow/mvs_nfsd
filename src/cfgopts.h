@@ -41,6 +41,14 @@
 #define CFG_PERM_ROOT_DEFAULT  0555
 
 /*
+ * Maximum stored file-extension length (including the NUL).  This MUST equal
+ * MAX_FILE_EXT_LEN in nfsd.h; exports.c enforces it with a compile-time check.
+ * Duplicated here so cfgopts stays self-contained (and unit-testable without
+ * pulling in nfsd.h and the exports table).
+ */
+#define CFG_FILEEXT_MAX  16
+
+/*
  * Parsed keyword set.  has_* records whether the keyword was PRESENT (needed
  * for inheritance and level checks); a value field is meaningful only when
  * its matching has_* is set.
@@ -54,6 +62,9 @@ typedef struct {
     uint16_t memperm;
     int      has_rootperm;
     uint16_t rootperm;
+    int      has_fileext;
+    char     fileext[CFG_FILEEXT_MAX];  /* alternate member extension, lower-case */
+    int      has_nofileext;             /* 1 = suppress the extension entirely    */
 } cfg_opts_t;
 
 /*
@@ -80,13 +91,21 @@ int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
 
 /*
  * Fold export-level defaults and dataset-level overrides into the resolved
- * readonly / dirperm / memperm outputs.  exp_opts may be NULL (the flat form
- * has no export-level keywords).  Returns 0, or -1 for the one semantic
- * error: 'rw' on a dataset inside an 'ro' export (ro is a ceiling, not a
- * default -- design §2.4).
+ * readonly / dirperm / memperm / fileext outputs.  exp_opts may be NULL (the
+ * flat form has no export-level keywords).
+ *
+ * fileext_out is IN/OUT: on entry it holds the caller's default (the extension
+ * derived from the dsname); it is overwritten only if a 'fileext' or
+ * 'nofileext' keyword was given (dataset level overrides export level), so an
+ * absent keyword leaves the derived default untouched.  'nofileext' resolves it
+ * to the empty string (members carry no extension).
+ *
+ * Returns 0, or -1 for the one semantic error: 'rw' on a dataset inside an
+ * 'ro' export (ro is a ceiling, not a default -- design §2.4).
  */
 int cfg_resolve_opts(const cfg_opts_t *exp_opts, const cfg_opts_t *ds_opts,
                      uint8_t *readonly_out, uint16_t *dirperm_out,
-                     uint16_t *memperm_out, const char *ctx);
+                     uint16_t *memperm_out, char *fileext_out,
+                     const char *ctx);
 
 #endif /* CFGOPTS_H_INCLUDED */

@@ -255,10 +255,19 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
     ext_ascii[len] = '\0';
 
     /* The format string holds ONLY conversion specifiers: a literal '.' or
-       '/' in it would be EBCDIC on MVS and corrupt the ASCII path. */
-    snprintf(abspath, maxlen, "%s%c%s%c%s%c%s",
-             exp->export_path, slash, ds->dirname_ascii, slash,
-             member_lc, dot, ext_ascii);
+       '/' in it would be EBCDIC on MVS and corrupt the ASCII path.  A dataset
+       with no extension (nofileext) appends neither the '.' nor the ext, so
+       the path re-parses to the bare member name -- matching what readdir
+       (generate_file_name) and the input parser produce. */
+    if (ext_ascii[0] != '\0') {
+        snprintf(abspath, maxlen, "%s%c%s%c%s%c%s",
+                 exp->export_path, slash, ds->dirname_ascii, slash,
+                 member_lc, dot, ext_ascii);
+    } else {
+        snprintf(abspath, maxlen, "%s%c%s%c%s",
+                 exp->export_path, slash, ds->dirname_ascii, slash,
+                 member_lc);
+    }
     return 0;
 }
 

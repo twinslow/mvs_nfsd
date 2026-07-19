@@ -44,7 +44,9 @@ static void *setup_c_export(const MunitParameter params[], void *user_data)
     return NULL;
 }
 
-/* Export "/dinonfs/data" -> dataset TEMP.DINONFS.DATA, no extension restriction */
+/* Export "/dinonfs/data" -> dataset TEMP.DINONFS.DATA with an empty file_ext
+   (the 'nofileext' case): members have no extension, so the whole leaf name is
+   the member and a name containing '.' is not a valid member. */
 static void *setup_no_ext(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
@@ -314,7 +316,11 @@ static MunitResult test_extension_case_insensitive(const MunitParameter params[]
     return MUNIT_OK;
 }
 
-static MunitResult test_no_ext_restriction_accepts_any(const MunitParameter params[], void *data)
+/* A no-extension (nofileext, or single-qualifier) dataset takes the WHOLE leaf
+   as the member name -- so a filename containing '.' is rejected, NOT silently
+   truncated at the dot (which would map both "report.txt" and "report.dat" to
+   member REPORT).  Member names cannot contain a dot. */
+static MunitResult test_no_ext_dotted_name_rejected(const MunitParameter params[], void *data)
 {
     char dsname[MAX_PATH];
     char member[9];
@@ -322,11 +328,12 @@ static MunitResult test_no_ext_restriction_accepts_any(const MunitParameter para
     (void)params; (void)data;
 
     dsname[0] = '\0'; member[0] = '\0';
+    errno = 0;
     result = mvs_get_pds_dsn_and_member(
                  "/dinonfs/data/temp.dinonfs.data/report.txt", dsname, member, 0);
 
-    munit_assert_int(result, ==, 0);
-    munit_assert_string_equal(member, "REPORT");
+    munit_assert_int(result, ==, -1);
+    munit_assert_int(errno,  ==, ENAMETOOLONG);   /* coarsened for the client */
     return MUNIT_OK;
 }
 
@@ -413,7 +420,7 @@ static MunitTest extension_tests[] = {
     { "/matching_extension_ok",       test_matching_extension_ok,       setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/wrong_extension_error",       test_wrong_extension_error,       setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/extension_case_insensitive",  test_extension_case_insensitive,  setup_c_export, NULL, MUNIT_TEST_OPTION_NONE, NULL },
-    { "/no_ext_restriction_any",      test_no_ext_restriction_accepts_any, setup_no_ext, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/no_ext_dotted_name_rejected", test_no_ext_dotted_name_rejected, setup_no_ext, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 

@@ -164,6 +164,50 @@ static MunitResult test_kw_bad_value(
     return MUNIT_OK;
 }
 
+/* fileext=<ext>: stored lower-case, valid at either level; empty or
+   over-long is rejected. */
+static MunitResult test_kw_fileext(
+    const MunitParameter params[], void *data)
+{
+    cfg_opts_t o;
+    char *ok[]      = { "FileExt=JCL" };
+    char *empty[]   = { "fileext=" };
+    char *toolong[] = { "fileext=0123456789abcdef" };  /* 16 chars > 15 max */
+    char *dotted[]  = { "fileext=tar.gz" };             /* '.' breaks parsing */
+    (void)params; (void)data;
+
+    munit_assert_int(cfg_parse_keywords(ok, 1, &o, CFG_LEVEL_DATASET, "x"), ==, 0);
+    munit_assert_int(o.has_fileext, ==, 1);
+    munit_assert_string_equal(o.fileext, "jcl");   /* lower-cased */
+
+    /* Also valid at export level (unlike rootperm). */
+    munit_assert_int(cfg_parse_keywords(ok, 1, &o, CFG_LEVEL_EXPORT, "x"), ==, 0);
+    munit_assert_int(o.has_fileext, ==, 1);
+
+    munit_assert_int(cfg_parse_keywords(empty, 1, &o, CFG_LEVEL_DATASET, "x"), ==, -1);
+    munit_assert_int(cfg_parse_keywords(toolong, 1, &o, CFG_LEVEL_DATASET, "x"), ==, -1);
+    munit_assert_int(cfg_parse_keywords(dotted, 1, &o, CFG_LEVEL_DATASET, "x"), ==, -1);
+    return MUNIT_OK;
+}
+
+/* nofileext: bare boolean; mutually exclusive with fileext= on one line. */
+static MunitResult test_kw_nofileext(
+    const MunitParameter params[], void *data)
+{
+    cfg_opts_t o;
+    char *ok[]   = { "NoFileExt" };
+    char *both[] = { "fileext=jcl", "nofileext" };
+    (void)params; (void)data;
+
+    munit_assert_int(cfg_parse_keywords(ok, 1, &o, CFG_LEVEL_DATASET, "x"), ==, 0);
+    munit_assert_int(o.has_nofileext, ==, 1);
+    munit_assert_int(o.has_fileext,   ==, 0);
+
+    /* fileext= and nofileext together is contradictory. */
+    munit_assert_int(cfg_parse_keywords(both, 2, &o, CFG_LEVEL_DATASET, "x"), ==, -1);
+    return MUNIT_OK;
+}
+
 /* No keywords -> success, nothing set. */
 static MunitResult test_kw_empty(
     const MunitParameter params[], void *data)
@@ -173,10 +217,12 @@ static MunitResult test_kw_empty(
     (void)params; (void)data;
 
     munit_assert_int(cfg_parse_keywords(toks, 0, &o, CFG_LEVEL_DATASET, "x"), ==, 0);
-    munit_assert_int(o.has_readonly, ==, 0);
-    munit_assert_int(o.has_dirperm,  ==, 0);
-    munit_assert_int(o.has_memperm,  ==, 0);
-    munit_assert_int(o.has_rootperm, ==, 0);
+    munit_assert_int(o.has_readonly,  ==, 0);
+    munit_assert_int(o.has_dirperm,   ==, 0);
+    munit_assert_int(o.has_memperm,   ==, 0);
+    munit_assert_int(o.has_rootperm,  ==, 0);
+    munit_assert_int(o.has_fileext,   ==, 0);
+    munit_assert_int(o.has_nofileext, ==, 0);
     return MUNIT_OK;
 }
 
@@ -187,6 +233,8 @@ static MunitTest keyword_tests[] = {
     { "/rootperm_level", test_kw_rootperm_level, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/unknown",       test_kw_unknown,        NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/bad_value",     test_kw_bad_value,      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/fileext",       test_kw_fileext,        NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/nofileext",     test_kw_nofileext,      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/empty",         test_kw_empty,          NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
@@ -205,13 +253,16 @@ static MunitResult test_resolve_defaults(
     cfg_opts_t ds;
     uint8_t  ro;
     uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
     (void)params; (void)data;
 
     opts_clear(&ds);
-    munit_assert_int(cfg_resolve_opts(NULL, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    strcpy(ext, "cbl");   /* the dsname-derived default, passed in */
+    munit_assert_int(cfg_resolve_opts(NULL, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)ro,  ==, 0);
     munit_assert_int((int)dir, ==, 0777);
     munit_assert_int((int)mem, ==, 0777);
+    munit_assert_string_equal(ext, "cbl");   /* no keyword -> default kept */
     return MUNIT_OK;
 }
 
@@ -222,6 +273,7 @@ static MunitResult test_resolve_inherit_and_override(
     cfg_opts_t exp, ds;
     uint8_t  ro;
     uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
     (void)params; (void)data;
 
     opts_clear(&exp);
@@ -230,14 +282,15 @@ static MunitResult test_resolve_inherit_and_override(
 
     /* Dataset inherits both. */
     opts_clear(&ds);
-    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    ext[0] = '\0';
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)dir, ==, 0555);
     munit_assert_int((int)mem, ==, 0444);
 
     /* Dataset overrides dirperm, still inherits memperm. */
     opts_clear(&ds);
     ds.has_dirperm = 1; ds.dirperm = 0700;
-    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)dir, ==, 0700);
     munit_assert_int((int)mem, ==, 0444);
     return MUNIT_OK;
@@ -250,13 +303,15 @@ static MunitResult test_resolve_ro_ceiling(
     cfg_opts_t exp, ds;
     uint8_t  ro;
     uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
     (void)params; (void)data;
 
     opts_clear(&exp);
     exp.has_readonly = 1; exp.readonly = 1;
 
     opts_clear(&ds);
-    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    ext[0] = '\0';
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)ro, ==, 1);
     return MUNIT_OK;
 }
@@ -268,11 +323,13 @@ static MunitResult test_resolve_dataset_ro(
     cfg_opts_t ds;
     uint8_t  ro;
     uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
     (void)params; (void)data;
 
     opts_clear(&ds);
     ds.has_readonly = 1; ds.readonly = 1;
-    munit_assert_int(cfg_resolve_opts(NULL, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    ext[0] = '\0';
+    munit_assert_int(cfg_resolve_opts(NULL, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)ro, ==, 1);
     return MUNIT_OK;
 }
@@ -285,6 +342,7 @@ static MunitResult test_resolve_rw_in_ro_is_error(
     cfg_opts_t exp, ds;
     uint8_t  ro;
     uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
     (void)params; (void)data;
 
     opts_clear(&exp);
@@ -292,12 +350,94 @@ static MunitResult test_resolve_rw_in_ro_is_error(
     opts_clear(&ds);
     ds.has_readonly = 1; ds.readonly = 0;   /* rw */
 
-    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, "x"), ==, -1);
+    ext[0] = '\0';
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, -1);
 
     /* Same rw dataset, but inside a read-write export -> allowed. */
     opts_clear(&exp);
-    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, "x"), ==, 0);
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
     munit_assert_int((int)ro, ==, 0);
+    return MUNIT_OK;
+}
+
+/* fileext: dsname-derived default kept when absent; export sets a default;
+   dataset overrides the export default. */
+static MunitResult test_resolve_fileext(
+    const MunitParameter params[], void *data)
+{
+    cfg_opts_t exp, ds;
+    uint8_t  ro;
+    uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
+    (void)params; (void)data;
+
+    /* Export-level fileext becomes the default for a dataset with none. */
+    opts_clear(&exp);
+    exp.has_fileext = 1; strcpy(exp.fileext, "jcl");
+    opts_clear(&ds);
+    strcpy(ext, "cntl");   /* derived default -- overridden by the export */
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "jcl");
+
+    /* Dataset-level fileext overrides the export default. */
+    opts_clear(&ds);
+    ds.has_fileext = 1; strcpy(ds.fileext, "asm");
+    strcpy(ext, "cntl");
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "asm");
+
+    /* Neither set -> the derived default passed in is kept. */
+    opts_clear(&exp);
+    opts_clear(&ds);
+    strcpy(ext, "cntl");
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "cntl");
+    return MUNIT_OK;
+}
+
+/* nofileext clears the extension; dataset level wins over export level, and
+   overrides an export fileext= (and vice-versa). */
+static MunitResult test_resolve_nofileext(
+    const MunitParameter params[], void *data)
+{
+    cfg_opts_t exp, ds;
+    uint8_t  ro;
+    uint16_t dir, mem;
+    char     ext[CFG_FILEEXT_MAX];
+    (void)params; (void)data;
+
+    /* Dataset nofileext clears the dsname-derived default. */
+    opts_clear(&ds);
+    ds.has_nofileext = 1;
+    strcpy(ext, "samplib");
+    munit_assert_int(cfg_resolve_opts(NULL, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "");
+
+    /* Export nofileext, dataset silent -> cleared. */
+    opts_clear(&exp);
+    exp.has_nofileext = 1;
+    opts_clear(&ds);
+    strcpy(ext, "samplib");
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "");
+
+    /* Export fileext=jcl, dataset nofileext -> dataset wins (cleared). */
+    opts_clear(&exp);
+    exp.has_fileext = 1; strcpy(exp.fileext, "jcl");
+    opts_clear(&ds);
+    ds.has_nofileext = 1;
+    strcpy(ext, "samplib");
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "");
+
+    /* Export nofileext, dataset fileext=asm -> dataset wins (asm). */
+    opts_clear(&exp);
+    exp.has_nofileext = 1;
+    opts_clear(&ds);
+    ds.has_fileext = 1; strcpy(ds.fileext, "asm");
+    strcpy(ext, "samplib");
+    munit_assert_int(cfg_resolve_opts(&exp, &ds, &ro, &dir, &mem, ext, "x"), ==, 0);
+    munit_assert_string_equal(ext, "asm");
     return MUNIT_OK;
 }
 
@@ -307,6 +447,8 @@ static MunitTest resolve_tests[] = {
     { "/ro_ceiling",          test_resolve_ro_ceiling,          NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/dataset_ro",          test_resolve_dataset_ro,          NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/rw_in_ro_is_error",   test_resolve_rw_in_ro_is_error,   NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/fileext",             test_resolve_fileext,             NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/nofileext",           test_resolve_nofileext,           NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
 

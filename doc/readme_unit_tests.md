@@ -225,8 +225,7 @@ a known export index.
 | `/dsname_trunc` | `pds_dsname` is truncated to 44 characters when `host_path` is longer |
 | `/dataset_path` | Path equal to `export_path` produces an empty member name |
 | `/member` | Uppercasing, 8-character truncation, filename with no extension |
-| `/extension` | Matching, mismatching, and case-insensitive extension checks |
-| `/no_ext` | Exports with no extension restriction accept any filename |
+| `/extension` | Matching, mismatching, case-insensitive extension checks, and — for a `nofileext` (empty-extension) dataset — that a dotted filename is rejected (the whole leaf is the member name) |
 | `/export_idx` | Correct `host_path` is used for each `export_idx` value |
 
 ### tcfgopts.c — export keyword options (`cfgopts.c`)
@@ -239,8 +238,8 @@ replaces).
 | Sub-suite | What is tested |
 |---|---|
 | `/octal` | `cfg_parse_octal`: valid values, leading zero, and rejection of non-octal digits, trailing junk, empty, and values > 0777 |
-| `/keywords` | `cfg_parse_keywords`: `ro`/`rw`, perm values, case-insensitivity, order-independence, `rootperm` level check, unknown keyword, bad value |
-| `/resolve` | `cfg_resolve_opts`: defaults, export→dataset inheritance and override, the `ro` ceiling, and `rw`-inside-`ro` rejected |
+| `/keywords` | `cfg_parse_keywords`: `ro`/`rw`, perm values, case-insensitivity, order-independence, `rootperm` level check, `fileext` (lower-casing, both levels, empty/over-long rejected), `nofileext` (and its mutual exclusion with `fileext`), unknown keyword, bad value |
+| `/resolve` | `cfg_resolve_opts`: defaults, export→dataset inheritance and override, the `ro` ceiling, `rw`-inside-`ro` rejected, and `fileext`/`nofileext` default/override |
 
 > Note: this list is not exhaustive — several later modules (`tmvspdir`,
 > `tmvsprw`, `tmvspww`, `tlogger`, `tcfgopts`) are registered in `runall.c`

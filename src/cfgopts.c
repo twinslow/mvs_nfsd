@@ -119,17 +119,52 @@ int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
                 return -1;
             }
             out->has_rootperm = 1;
+        } else if (cfg_kw_match(t, "FILEEXT", &val)) {
+            int j;
+            if (val[0] == '\0') {
+                log_error("exports_load: %s: 'fileext' needs a value"
+                          " (e.g. fileext=jcl)", ctx);
+                return -1;
+            }
+            if ((int)strlen(val) > CFG_FILEEXT_MAX - 1) {
+                log_error("exports_load: %s: fileext '%s' too long"
+                          " (max %d chars)", ctx, val, CFG_FILEEXT_MAX - 1);
+                return -1;
+            }
+            /* A '.' or '/' breaks member-name parsing (the extension is the
+               text after the LAST dot), so reject it rather than fail silently.
+               Store lower-case, matching the dsname-derived default. */
+            for (j = 0; val[j] != '\0'; j++) {
+                if (val[j] == '.' || val[j] == '/') {
+                    log_error("exports_load: %s: fileext '%s' must not contain"
+                              " '.' or '/'", ctx, val);
+                    return -1;
+                }
+                out->fileext[j] = (char)tolower((unsigned char)val[j]);
+            }
+            out->fileext[j]  = '\0';
+            out->has_fileext = 1;
+        } else if (cfg_stricmp(t, "NOFILEEXT") == 0) {
+            out->has_nofileext = 1;
         } else {
             log_error("exports_load: %s: unknown keyword '%s'", ctx, t);
             return -1;
         }
+    }
+
+    /* 'fileext=' and 'nofileext' on the same line are contradictory. */
+    if (out->has_fileext && out->has_nofileext) {
+        log_error("exports_load: %s: 'fileext' and 'nofileext' are mutually"
+                  " exclusive", ctx);
+        return -1;
     }
     return 0;
 }
 
 int cfg_resolve_opts(const cfg_opts_t *exp_opts, const cfg_opts_t *ds_opts,
                      uint8_t *readonly_out, uint16_t *dirperm_out,
-                     uint16_t *memperm_out, const char *ctx)
+                     uint16_t *memperm_out, char *fileext_out,
+                     const char *ctx)
 {
     int      readonly = 0;
     uint16_t dirperm  = CFG_PERM_DIR_DEFAULT;
@@ -155,6 +190,26 @@ int cfg_resolve_opts(const cfg_opts_t *exp_opts, const cfg_opts_t *ds_opts,
         } else {
             readonly = 1;
         }
+    }
+
+    /* Extension: export-level default then dataset-level override (dataset
+       wins).  'fileext=' sets an explicit extension, 'nofileext' clears it to
+       empty; within one level the two are mutually exclusive (rejected at
+       parse).  If neither keyword appears at either level, fileext_out keeps
+       the caller's dsname-derived default. */
+    if (exp_opts != NULL) {
+        if (exp_opts->has_fileext) {
+            strncpy(fileext_out, exp_opts->fileext, CFG_FILEEXT_MAX - 1);
+            fileext_out[CFG_FILEEXT_MAX - 1] = '\0';
+        } else if (exp_opts->has_nofileext) {
+            fileext_out[0] = '\0';
+        }
+    }
+    if (ds_opts->has_fileext) {
+        strncpy(fileext_out, ds_opts->fileext, CFG_FILEEXT_MAX - 1);
+        fileext_out[CFG_FILEEXT_MAX - 1] = '\0';
+    } else if (ds_opts->has_nofileext) {
+        fileext_out[0] = '\0';
     }
 
     *readonly_out = (uint8_t)readonly;

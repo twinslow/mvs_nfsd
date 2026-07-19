@@ -94,20 +94,33 @@ a (pathological) dataset name.
 | `dirperm=<octal>` | export, dataset | Mode reported for a PDS directory | `777` |
 | `memperm=<octal>` | export, dataset | Mode reported for its members | `777` |
 | `rootperm=<octal>` | **export only** | Mode reported for the export root | `555` (§4.4) |
+| `fileext=<ext>` | export, dataset | Member file extension, overriding the dsname-derived one | *(last qualifier, lower-cased)* |
+| `nofileext` | export, dataset | Suppress the extension entirely | *(off)* |
 
-Values are **octal** — `755` means `0755`, not decimal 755. A leading zero
-(`0755`) is accepted. Keywords are case-insensitive and order-independent.
+Values for the `perm` keywords are **octal** — `755` means `0755`, not decimal
+755. A leading zero (`0755`) is accepted. Keywords are case-insensitive and
+order-independent.
 
 `rootperm` is export-only because the export root belongs to the export, not
 to any dataset. Using it on a dataset line is an error (§10.1).
+
+`fileext=` overrides the extension a PDS's members are shown with (default: the
+dsname's last qualifier, lower-cased — §readme_config). The value is a bare
+extension without a dot, stored lower-cased, 1–15 characters; empty or
+over-long is a fail-closed error (§10.1). `nofileext` is its counterpart —
+members carry no extension at all. The two are mutually exclusive on one line
+(§10.1); across levels a dataset's choice overrides the export's. Both resolve
+like `dirperm`/`memperm` (export default, dataset override) into the same
+`file_ext` field — `nofileext` simply resolves it to the empty string (§3).
 
 ### 2.4 Inheritance rules
 
 Export-level keywords apply to every dataset in the block. Dataset-level
 keywords then refine them, with one asymmetry:
 
-- **`dirperm` / `memperm` are defaults** — a dataset may override them in
-  either direction. They are advisory reporting, not a safety boundary.
+- **`dirperm` / `memperm` and the extension (`fileext` / `nofileext`) are
+  defaults** — a dataset may override them in either direction. They are
+  advisory reporting, not a safety boundary.
 - **`ro` is a ceiling, not a default** — a dataset may *narrow* to `ro`
   inside a read-write export, but `rw` on a dataset inside an `ro` export is
   an **error** (fail closed, §10.1). Allowing a writable dataset inside an
@@ -126,6 +139,24 @@ uint8_t  readonly;   /* 1 = ro: every mutating operation fails       */
 uint16_t dirperm;    /* mode reported for the PDS directory (0777)   */
 uint16_t memperm;    /* mode reported for its members       (0777)   */
 ```
+
+`fileext=` / `nofileext` need no new field: they resolve into the **existing**
+`pds_dataset_t.file_ext` (the dsname-derived default), which `dataset_init`
+pre-fills and `cfg_resolve_opts` overwrites only when a keyword is present —
+`fileext=` to the given value, `nofileext` to the empty string. `cfg_opts_t`
+gains `has_fileext` + a `fileext[CFG_FILEEXT_MAX]` buffer (`CFG_FILEEXT_MAX`
+must equal `MAX_FILE_EXT_LEN`; a compile-time check in `exports.c` enforces it)
+and a `has_nofileext` flag.
+
+**An empty `file_ext` is the single "no extension" signal** — the same state a
+single-qualifier dsname already produced. All three runtime sites key off it:
+`generate_file_name` (readdir) appends nothing; `fh_resolve` (handle→path)
+omits the `.`+ext, so a member re-parses as its bare name; and
+`mvs_get_pds_dsn_and_member` (path→member) takes the whole leaf as the member
+name (no dot-strip, no extension check), so a name containing `.` is rejected
+rather than silently truncated. There is deliberately no separate
+"nofileext-was-requested" flag: an explicit `nofileext` and a naturally-empty
+extension want identical behaviour.
 
 Add to `export_t` — the export-level values:
 

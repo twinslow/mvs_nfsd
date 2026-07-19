@@ -114,7 +114,8 @@ gives clients:
 The **file extension** for members is derived automatically from the
 dataset's last qualifier, lower-cased — members of `TEMP.TESTPROJ.CNTL` are
 seen as `*.cntl`. A file whose extension does not match is not a valid
-member name in that PDS.
+member name in that PDS. The `fileext=` keyword (§3.1) overrides this default
+— e.g. presenting a `.CNTL` or `.JCLLIB` PDS as `*.jcl`.
 
 Limits: up to `MAX_EXPORTS` (16) export paths, each with up to
 `MAX_PDS_PER_EXPORT` (32) datasets.
@@ -131,9 +132,24 @@ They are case-insensitive and order-independent.
 | `dirperm=<octal>` | export, dataset | Mode reported for a PDS directory | `777` |
 | `memperm=<octal>` | export, dataset | Mode reported for its members | `777` |
 | `rootperm=<octal>` | **export only** | Mode reported for the export root | `555` |
+| `fileext=<ext>` | export, dataset | File extension shown for members, overriding the dsname-derived one | *(last qualifier, lower-cased)* |
+| `nofileext` | export, dataset | Show members with **no** extension at all | *(off)* |
 
-Values are **octal** (`755` = `0755`); a leading zero is accepted; the range
-is `0`–`777` (no setuid/setgid/sticky bits).
+Values for the `perm` keywords are **octal** (`755` = `0755`); a leading zero
+is accepted; the range is `0`–`777` (no setuid/setgid/sticky bits).
+
+`fileext=` takes a bare extension without a dot (e.g. `fileext=jcl`, shown as
+`member.jcl`); it is stored lower-cased and must be 1–15 characters. It is
+useful when the dataset's last qualifier is not the extension you want clients
+to see — for example presenting a `.CNTL` PDS as `*.jcl` so Windows opens its
+members with a JCL-aware editor.
+
+`nofileext` suppresses the extension entirely, so members appear (and are
+created/renamed) by their bare name — e.g. members of a `nofileext`
+`SYS1.SAMPLIB` show as `iefbr14`, not `iefbr14.samplib`. It is the counterpart
+to `fileext=`, and the two cannot both appear on one line. With no extension, a
+filename containing a `.` is not a valid member name and is rejected (member
+names can't contain a dot).
 
 `ro` never advertises write: the reported directory/member mode has its write
 bits stripped, so `ls -l` and the NFS `ACCESS` check agree with reality. Read-
@@ -151,11 +167,15 @@ Append keywords after the dataset name; they apply to that **dataset**:
 
 ```ini
 [Exports]
-/pub      SYS1.PROCLIB      ro
-/exports  TEMP.TESTPROJ.C   dirperm=755 memperm=644
+/pub      SYS1.PROCLIB                    ro
+/exports  TEMP.TESTPROJ.C                 dirperm=755 memperm=644
+/exports  TEMP.TESTPROJ.CNTL   fileext=jcl dirperm=777 memperm=666
+/exports  SYS2.JCLLIB          fileext=jcl ro
+/exports  SYS1.SAMPLIB         nofileext   ro
 ```
 
-One mount can mix read-only and read-write datasets this way.
+One mount can mix read-only and read-write datasets this way, and give each
+its own file extension (or none).
 
 ### 3.3 Block form (per-export)
 
@@ -174,7 +194,9 @@ them:
 
 Inheritance:
 
-- `dirperm` / `memperm` are **defaults** a dataset may override either way.
+- `dirperm` / `memperm` and the extension (`fileext` / `nofileext`) are
+  **defaults** a dataset may override — a dataset's `fileext=`/`nofileext`
+  overrides an export-level one either way.
 - `ro` is a **ceiling**: a dataset may narrow to `ro` inside a read-write
   export, but `rw` on a dataset inside an `ro` export is an error.
 

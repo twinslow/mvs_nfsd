@@ -51,6 +51,14 @@
 #include "mvsio.h"
 #include "cfgopts.h"   /* cfg_opts_t + keyword parsing (pure, unit-tested) */
 
+/*
+ * cfgopts carries the resolved 'fileext' in a CFG_FILEEXT_MAX buffer and hands
+ * it back into ds->file_ext (MAX_FILE_EXT_LEN).  The two must be the same size;
+ * this negative-width typedef is a C89 compile-time assertion of that.
+ */
+typedef char cfg_fileext_size_check[
+    (CFG_FILEEXT_MAX == MAX_FILE_EXT_LEN) ? 1 : -1];
+
 static export_t  g_exports[MAX_EXPORTS];
 static int       g_nexports = 0;
 
@@ -301,8 +309,10 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
     ds = &exp->datasets[exp->ndatasets];
     dataset_init(ds, dsname);
 
+    /* ds->file_ext already holds the dsname-derived default (dataset_init);
+       cfg_resolve_opts overrides it only if a 'fileext' keyword was given. */
     if (cfg_resolve_opts(exp_opts, ds_opts, &ds->readonly, &ds->dirperm,
-                         &ds->memperm, ds->dsname_ebcdic) < 0) {
+                         &ds->memperm, ds->file_ext, ds->dsname_ebcdic) < 0) {
         cfg_fail_export(exp_idx);   /* diagnostic already logged */
         return;
     }
