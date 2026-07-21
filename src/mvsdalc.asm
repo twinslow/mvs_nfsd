@@ -114,12 +114,12 @@ DUNFCLOS DS   0H
 *
          BAL   R6,SETRBALC  Setup the request block for allocate
 *
-         LA    R3,REQBLK    Load address of the request block
-         USING S99RB,R3     
-         L     R2,S99TXTPP  Load the address of the TU list 
-         DROP  R3           using the request block 
-         MVC   WTOMSG,=CL45'Allocate TU list at '
-         BAL   R6,DUMPTULS  Dump the list of text units
+*        LA    R3,REQBLK    Load address of the request block
+*        USING S99RB,R3     
+*        L     R2,S99TXTPP  Load the address of the TU list 
+*        DROP  R3           using the request block 
+*        MVC   WTOMSG,=CL45'Allocate TU list at '
+*        BAL   R6,DUMPTULS  Dump the list of text units
 * 
          LA    R1,REQBLKA   Load ptr location
          DYNALLOC           Do the SVC99
@@ -212,12 +212,12 @@ DONEMEM2 DS    0H
 *
          BAL   R6,SETRBUNA  Setup the request block for unallocate
 *
-         LA    R3,REQBLK    Load address of the request block
-         USING S99RB,R3     
-         L     R2,S99TXTPP  Load the address of the TU list 
-         DROP  R3           using the request block 
-         MVC   WTOMSG,=CL45'Unallocate TU list at '
-         BAL   R6,DUMPTULS  Dump the list of text units
+*        LA    R3,REQBLK    Load address of the request block
+*        USING S99RB,R3     
+*        L     R2,S99TXTPP  Load the address of the TU list 
+*        DROP  R3           using the request block 
+*        MVC   WTOMSG,=CL45'Unallocate TU list at '
+*        BAL   R6,DUMPTULS  Dump the list of text units
 *
          LA    R1,REQBLKA   Load ptr location
          DYNALLOC           Do the SVC99

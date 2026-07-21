@@ -242,8 +242,18 @@ replaces).
 | `/resolve` | `cfg_resolve_opts`: defaults, export→dataset inheritance and override, the `ro` ceiling, `rw`-inside-`ro` rejected, and `fileext`/`nofileext` default/override |
 
 > Note: this list is not exhaustive — several later modules (`tmvspdir`,
-> `tmvsprw`, `tmvspww`, `tlogger`, `tcfgopts`) are registered in `runall.c`
-> and `testrun.jcl` but not all detailed here.
+> `tmvsprw`, `tmvspww`, `tmvsspl`, `tlogger`, `tcfgopts`) are registered in
+> `runall.c` and `testrun.jcl` but not all detailed here.
+>
+> `tmvsspl` (the write-spill store) is worth calling out: it drives
+> `spill_open`/`write`/`read`/`close` against a **reference model** — every
+> write is applied to both the spill file and an in-memory array, then the whole
+> spill is read back and compared byte-for-byte.  Cases include block-aligned and
+> odd-sized sequential writes (the FB/80 copy pattern), holes, mid-block and
+> multi-block overwrites, out-of-order writes, zero-extend, block-boundary seams,
+> interleaved read/write with backward seeks, scratch reuse/truncate, large
+> (>buffer, multi-track) sizes, and a several-hundred-op fuzz driven by a
+> fixed-seed LCG (so every run is identical and any failure is deterministic).
 
 ---
 

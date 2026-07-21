@@ -72,7 +72,7 @@ MVSENQ   CSECT
 ***********************************************************************
 DO@TEST  DS    0H
 *
-         WTO   'MVSENQ: Starting ENQ/TEST request'
+*        WTO   'MVSENQ: Starting ENQ/TEST request'
          L     R1,PARMLIST
 *
          L     R4,RNAMELEN   Load length of RNAME      
@@ -108,7 +108,7 @@ DOTSTRC  DS    0H           Test return code
          N     R3,=XL4'000000FF' - mask out other bytes
          MVC   WTOMSG,=CL45'Test ENQ failed'
          MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
-         BAL   R7,DEBUGWTO
+*        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
          B     RETURN       Return error code to caller         
@@ -120,7 +120,7 @@ DOTSTRC  DS    0H           Test return code
 ***********************************************************************
 DO@ENQ   DS    0H
 *     
-         WTO   'MVSENQ: Starting ENQ request'
+*        WTO   'MVSENQ: Starting ENQ request'
 *
          L     R4,RNAMELEN   Load length of RNAME      
          L     R1,PARMLIST
@@ -133,7 +133,7 @@ DO@ENQ   DS    0H
 *---------------------------------------------------------------------*
 *
 DOENQSHR DS    0H
-         WTO   'MVSENQ: Issuing ENQ/SHR'
+*        WTO   'MVSENQ: Issuing ENQ/SHR'
          ENQ   (QNAME,RNAME,S,(R4),SYSTEMS),RET=USE
          B     DOENQRC
 *
@@ -144,7 +144,7 @@ DOENQSHR DS    0H
 * EXCLUSIVE
 *
 DOENQEXC DS    0H
-         WTO   'MVSENQ: Issuing ENQ/EXCL'
+*        WTO   'MVSENQ: Issuing ENQ/EXCL'
          ENQ   (QNAME,RNAME,E,(R4),SYSTEMS),RET=USE
 *
 DOENQRC  DS    0H           Test return code
@@ -155,11 +155,11 @@ DOENQRC  DS    0H           Test return code
 *---------------------------------------------------------------------*
 *
          L     R3,0(R15)    Load the return code for the 1st resource
-         WTO   'MVSENQ: ENQ error...'
-         N     R3,=XL4'000000FF' - mask out other bytes
-         MVC   WTOMSG,=CL45'ENQ failed'
-         MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
-         BAL   R7,DEBUGWTO
+*        WTO   'MVSENQ: ENQ error...'
+*        N     R3,=XL4'000000FF' - mask out other bytes
+*        MVC   WTOMSG,=CL45'ENQ failed'
+*        MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
+*        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
          B     RETURN       Return error code to caller         
@@ -171,7 +171,7 @@ DOENQRC  DS    0H           Test return code
 ***********************************************************************
 DO@DEQ   DS    0H
 *
-         WTO   'MVSENQ: Starting DEQ request'
+*        WTO   'MVSENQ: Starting DEQ request'
 *---------------------------------------------------------------------*
 * Execute DEQ                                                         *
 *---------------------------------------------------------------------*
@@ -184,10 +184,10 @@ DO@DEQ   DS    0H
 *---------------------------------------------------------------------*
 *
          L     R3,0(R15)    Load the return code for the 1st resource
-         N     R3,=XL4'000000FF' - mask out other bytes
-         MVC   WTOMSG,=CL45'DEQ failed'
-         MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
-         BAL   R7,DEBUGWTO
+*        N     R3,=XL4'000000FF' - mask out other bytes
+*        MVC   WTOMSG,=CL45'DEQ failed'
+*        MVC   WTOREG,=CL3'RC'     ENQ RC value is now in R3
+*        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
          B     RETURN       Return error code to caller         

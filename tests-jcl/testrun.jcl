@@ -120,7 +120,8 @@
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
-//*                                                                   
+//MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
+//*
 //********************************************************************
 //*                                                                   
 //* Compile unit test modules                                         
@@ -137,7 +138,8 @@
 //TMVSPRW  EXEC JCCCTST,MODNAME=TMVSPRW
 //TMVSPRF  EXEC JCCCTST,MODNAME=TMVSPRF
 //TMVSPWW  EXEC JCCCTST,MODNAME=TMVSPWW
-//*                                                                   
+//TMVSSPL  EXEC JCCCTST,MODNAME=TMVSSPL
+//*
 //********************************************************************
 //*                                                                   
 //* Compile RUNALL, then link and run tests                           
@@ -160,6 +162,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             
@@ -170,6 +173,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPWW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSSPL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TLOGGER)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TCFGOPTS)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)

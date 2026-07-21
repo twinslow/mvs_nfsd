@@ -13,6 +13,11 @@
  * a "just-flushed" (clean) slot it clears pm->dirty directly through the
  * pending_member_t pointer that pww_find() returns.
  *
+ * Exception: /write/grows_buffer crosses PWW_SPILL_THRESHOLD and so exercises
+ * the Phase 2 spill (mvsspl.c) -- a real temp file (tmpfile() on the dev host,
+ * a &&-temp dataset on MVS).  It reads the content back through
+ * pww_read_range() and discards the member at the end to close the scratch.
+ *
  * pww_init() memset()s the pool without freeing buffers, so a test that
  * re-inits leaks any prior malloc'd buffer -- acceptable for a short-lived
  * test process (same pattern as the mvs_rcache tests).
@@ -171,20 +176,72 @@ static MunitResult test_write_overwrite(const MunitParameter p[], void *d)
 
 static MunitResult test_write_grows_buffer(const MunitParameter p[], void *d)
 {
-    uint8_t b = 0xAB;
+    uint8_t           b = 0xAB;
+    uint8_t           rb[1];
     pending_member_t *pm;
     (void)p; (void)d;
 
-    /* One byte at a high offset forces the buffer past its 64 KB initial cap
-       (and zero-fills the hole) without needing a huge source array. */
+    /* One byte at a high offset (70000 > PWW_SPILL_THRESHOLD) forces the member
+       to SPILL to the temp dataset, zero-filling the hole on disk, without a
+       huge source array. */
     pww_init();
     munit_assert_int(pww_write(0, 0, DS, MEM, &b, 1, 69999), ==, 0);
 
     pm = pww_find(DS, MEM);
-    munit_assert_int(pm->high_water, ==, 70000);
-    munit_assert_int((int)(pm->buf_cap >= 70000), ==, 1);
-    munit_assert_int(pm->buf[69999], ==, 0xAB);
-    munit_assert_int(pm->buf[0],     ==, 0);
+    munit_assert_ptr_not_null(pm);
+    munit_assert_int(pm->high_water,   ==, 70000);
+    munit_assert_ptr_not_null(pm->spill_fp);   /* spilled to disk        */
+    munit_assert_ptr_null(pm->buf);            /* in-memory buffer freed */
+
+    /* Read the content back through the accessor: the written byte, and a
+       zero from the hole the spill zero-filled. */
+    munit_assert_int(pww_read_range(pm, 69999, rb, 1), ==, 0);
+    munit_assert_int(rb[0], ==, 0xAB);
+    munit_assert_int(pww_read_range(pm, 0, rb, 1), ==, 0);
+    munit_assert_int(rb[0], ==, 0);
+
+    pww_discard(DS, MEM);   /* close + release the scratch dataset */
+    return MUNIT_OK;
+}
+
+/* Spilled member: a large first write (spills immediately), then an overwrite
+   within it, then an append past a hole -- all read back via pww_read_range,
+   exercising spill_write's overwrite / zero-fill / extend paths. */
+static MunitResult test_write_spill_segments(const MunitParameter p[], void *d)
+{
+    static const uint8_t a[4] = { 'A', 'A', 'A', 'A' };
+    static const uint8_t z[4] = { 'Z', 'Z', 'Z', 'Z' };
+    static uint8_t   big[20000];
+    uint8_t          rb[4];
+    pending_member_t *pm;
+    int               i;
+    (void)p; (void)d;
+
+    pww_init();
+
+    for (i = 0; i < (int)sizeof(big); i++)
+        big[i] = (uint8_t)i;
+    /* 20000 > PWW_SPILL_THRESHOLD -> spills on this first write. */
+    munit_assert_int(pww_write(0, 0, DS, MEM, big, sizeof(big), 0), ==, 0);
+    pm = pww_find(DS, MEM);
+    munit_assert_ptr_not_null(pm->spill_fp);
+
+    /* Overwrite 4 bytes within, and append 4 bytes past a 100-byte hole. */
+    munit_assert_int(pww_write(0, 0, DS, MEM, a, 4, 50),    ==, 0);
+    munit_assert_int(pww_write(0, 0, DS, MEM, z, 4, 20100), ==, 0);
+    pm = pww_find(DS, MEM);
+    munit_assert_int(pm->high_water, ==, 20104);
+
+    munit_assert_int(pww_read_range(pm, 50, rb, 4), ==, 0);   /* overwrite   */
+    munit_assert_memory_equal(4, rb, a);
+    munit_assert_int(pww_read_range(pm, 10, rb, 1), ==, 0);   /* original    */
+    munit_assert_int(rb[0], ==, (uint8_t)10);
+    munit_assert_int(pww_read_range(pm, 20050, rb, 1), ==, 0);/* hole = zero */
+    munit_assert_int(rb[0], ==, 0);
+    munit_assert_int(pww_read_range(pm, 20100, rb, 4), ==, 0);/* appended    */
+    munit_assert_memory_equal(4, rb, z);
+
+    pww_discard(DS, MEM);
     return MUNIT_OK;
 }
 
@@ -208,6 +265,7 @@ static MunitTest write_tests[] = {
     { "/offset_gap",  test_write_offset_gap,   NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/overwrite",   test_write_overwrite,    NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/grows_buffer",test_write_grows_buffer, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/spill_segments", test_write_spill_segments, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/over_cap",    test_write_over_cap,     NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };

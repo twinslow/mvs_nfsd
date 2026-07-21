@@ -70,7 +70,8 @@ other important datasets that could prevent an IPL from completing.
 |---|---|
 | `mvsio.c/h` | Path classification (`mvs_path_type`), member-name validation, DCB info retrieval |
 | `mvspdir.c/h` | PDS directory block parsing; ISPF statistics decode **and** encode |
-| `mvspww.c/h` | Pending-member write pool — buffers WRITEs, STOWs on COMMIT, applies ISPF stats |
+| `mvspww.c/h` | Pending-member write pool — buffers WRITEs, STOWs on COMMIT, applies ISPF stats; spills to `mvsspl` past the in-memory threshold |
+| `mvsspl.c/h` | Write-spill store — backs a large pending member with a temporary PS dataset (random `fseek` write/read) so memory use per member stays bounded |
 | `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
 | `mvsprw.c/h` | PDS member read with sequential-read position cache |
 | `mvsprf.c/h` | Performance stats tracking |
@@ -85,7 +86,7 @@ other important datasets that could prevent an IPL from completing.
 |---|---|
 | `logger.c/h` | Levelled logging (`log_debug/info/warn/error/fatal`); MVS WTO support |
 | `hexdump.c/h` | Hex dump helper for debug output |
-| `ressock.c` | Reserved-port socket helper |
+| `ressock.c` | Reset-port socket helper -- an extended util of Jason Winters RESET that allows specific port numbers to be specified. This allows sockets to be reset without harming other apps such as FTPD |
 | `asmutils.h` | C prototypes + name aliases for the MVS assembler helpers (`getcib`, `mvs_dynalloc`, `mvs_stow`, `mvs_enq`) |
 | `getcib.asm` | CIB (Console Information Block) reader (`getcib`) — MVS assembler module |
 | `mvsdalc.asm` | SVC 99 dynamic allocation (`mvs_dynalloc`), `DISP=SHR`, returns its ddname via `DALRTDDN` — MVS assembler |
@@ -115,6 +116,7 @@ other important datasets that could prevent an IPL from completing.
 | `tests/tmvsfsz.c` | Tests for the file-size cache (`mvsfsz.c`) |
 | `tests/tmvsprf.c` | Tests for the performance stats tracking (`mvsprf.c`) |
 | `tests/tmvspww.c` | Tests for `mvspww.c` — the pending-member write pool (in-memory buffer management) |
+| `tests/tmvsspl.c` | Tests for `mvsspl.c` — the write-spill store, driven with a reference-model verifier (odd offsets, holes, overwrites, reuse, large sizes, fuzz) |
 | `tests/tcfgopts.c` | Tests for `cfgopts.c` — export keyword parsing and option resolution |
 | `tests/tlogger.c` | Tests for `logger.c` — log-level and per-procedure level handling |
 
@@ -360,7 +362,7 @@ sudo journalctl -kf
 | GETATTR | ✓ |
 | SETATTR (size truncate; atime/mtime → ISPF changed date) | ✓ |
 | LOOKUP | ✓ |
-| ACCESS | ✓ (grants all) |
+| ACCESS | ✓ |
 | READ | ✓ |
 | WRITE (echoes the client's requested stability) | ✓ |
 | CREATE (UNCHECKED / GUARDED) | ✓ |

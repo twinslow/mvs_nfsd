@@ -16,6 +16,7 @@
 #ifndef MVSPWW_H_INCLUDED
 #define MVSPWW_H_INCLUDED
 
+#include <stdio.h>   /* FILE (the spill scratch handle in pending_member_t) */
 #include <time.h>
 #include "types.h"
 
@@ -34,9 +35,22 @@
 /* -------------------------------------------------------------------- */
 /* Phase 1 parameters                                                    */
 /* -------------------------------------------------------------------- */
-#define PWW_MAX_PENDING            4                 /* concurrent pending members */
-#define PWW_MAX_MEMBER_BYTES       (256 * 1024)      /* per-member in-memory cap   */
-#define PWW_IDLE_TIMEOUT_SECONDS   8                 /* flush after this idle time  */
+#define PWW_MAX_PENDING            8                 /* concurrent pending members */
+#define PWW_SPILL_THRESHOLD        (16 * 1024)      /* in-memory prefix; a member
+                                                        larger than this spills to 
+                                                        a temp dataset (mvsspl.c).*/
+#define PWW_SPILL_DS_SPACE_PARMS   "pri=15,sec=15,rlse,unit=sysda"   /* This string
+                                                        will be concatenated into
+                                                        the file open for the spill
+                                                        temporary dataset at 
+                                                        compile time              */
+#define PWW_MAX_MEMBER_BYTES       (1024 * 1024)     /* absolute per-member cap;
+                                                        disk-backed past the
+                                                        spill threshold           */
+#define PWW_IDLE_TIMEOUT_SECONDS   3                 /* flush + release the slot
+                                                        (dropping the SPFEDIT
+                                                        enqueue) this long after
+                                                        the last write/commit    */
 
 #define PWW_STATUS_FREE            0
 #define PWW_STATUS_USED            1
@@ -66,6 +80,16 @@ typedef struct {
     uint8_t   enq_held;            /* 1 = SPFEDIT enqueue is held           */
     uint8_t   allocated;           /* 1 = the DSN(member) is allocated      */
     char      ddname[9];           /* ddname of that allocation (NUL-term)  */
+
+    /*
+     * Phase 2 spill (mvsspl.c): once the byte stream passes
+     * PWW_SPILL_THRESHOLD the content lives in a temporary dataset and buf is
+     * freed.  spill_fp != NULL is the "this member is spilled" flag.
+     */
+    FILE     *spill_fp;            /* open scratch dataset, or NULL         */
+    uint32_t  spill_size;          /* bytes on disk (== high_water spilled) */
+    int       spill_slot;          /* slot index -> &&PWWSP<nn>, for reopen */
+    uint8_t   spill_dirty;         /* writes pending since the last commit  */
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */
@@ -97,6 +121,13 @@ int  pww_truncate(int export_idx, int dataset_idx,
 /* Find a pending member, or NULL.  Used by vfs_stat so an in-progress
  * (not-yet-stowed) member is visible with its current size. */
 pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name);
+
+/* Read len bytes at off from a pending member's content -- from its in-memory
+ * buffer, or transparently from the spill dataset once spilled.  off+len must
+ * be <= high_water.  Returns 0, or -1 on a spill read error (errno set).  Lets
+ * vfs_pread serve a not-yet-stowed member regardless of where it is backed. */
+int  pww_read_range(pending_member_t *pm, uint32_t off,
+                    uint8_t *dst, uint32_t len);
 
 /* Discard any pending (buffered) write for a member WITHOUT flushing it.
  * Used by REMOVE so a delete cannot be undone by a later flush re-STOWing the

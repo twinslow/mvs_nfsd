@@ -11,9 +11,10 @@ a **`DISP=SHR` dynamic allocation** (not JCC's `DISP=OLD` `//DSN:` open) and
 serialised against ISPF/EDIT with the **`SPFEDIT` enqueue**, both taken at
 CREATE / first WRITE and held for the slot's lifetime (§7.2) — so a member open
 in an editor fails the write cleanly rather than corrupting or blocking. Phase 1
-keeps write buffers **in memory** with a per-member cap; disk-backed spill (§8)
-remains a future phase. The sections below record the design and rationale; §3
-is the original pre-implementation baseline and is retained for context only.
+keeps write buffers **in memory** with a per-member cap; disk-backed spill to a
+temporary dataset (§8, Phase 2) is **designed but not yet built**. The sections
+below record the design and rationale; §3 is the original pre-implementation
+baseline and is retained for context only.
 
 ## 1. Goal
 
@@ -141,7 +142,14 @@ typedef struct {
     uint8_t   enq_held;            /* 1 = SPFEDIT enqueue is held         */
     uint8_t   allocated;           /* 1 = the DSN(member) is allocated    */
     char      ddname[9];           /* ddname of that allocation           */
-    /* (Phase 2) scratch-dataset handle / name for disk spill            */
+
+    /* Phase 2 spill (§8.1): once the byte stream passes PWW_SPILL_THRESHOLD it
+       lives in a temporary dataset and buf is freed.  spill_fp != NULL is the
+       "this member is spilled" flag. */
+    FILE     *spill_fp;            /* open scratch dataset, or NULL       */
+    uint32_t  spill_size;          /* bytes on disk (== high_water spilled)*/
+    int       spill_slot;          /* slot index -> &&PWWSP<nn>, to reopen */
+    uint8_t   spill_dirty;         /* writes pending since last commit     */
 } pending_member_t;
 ```
 
@@ -361,33 +369,203 @@ create/write working end-to-end.
 
 ### Phase 2 — spill to a temporary dataset
 
-To lift the size limit, back the buffer with a **temporary sequential (PS)
-dataset** instead of (or in addition to) memory:
+> **Status: designed, not yet implemented.**  Phase 1 keeps the whole member in
+> memory (`PWW_MAX_MEMBER_BYTES`).  Phase 2 keeps only a small prefix in memory
+> and moves the byte stream to a **temporary PS dataset** once it grows past a
+> threshold, so member size is bounded by scratch DASD, not by the 8 MB address
+> space.  Feasibility is proven by §11.1 test 1 (random `fseek` read/write on a
+> RECFM=F BLKSIZE=4096 PS dataset).  It stays entirely behind the `pww` API — the
+> VFS/NFS layers do not change.
 
-- Two candidate schemes:
-  - **Random-access scratch (now proven — §11.1):** a PS RECFM=F dataset
-    opened for update, into which incoming chunks are written at their offset
-    by `fseek`.  Confirmed working (`jcl/t#seqrw1.jcl`: random seeks before
-    reads *and* writes on a RECFM=F, BLKSIZE=4096 PS dataset).  This is the
-    clean way to lift the size limit — the buffer lives on disk, memory use
-    per pending member is just a small block, and the offset-addressed writes
-    map directly onto `fseek`+`fwrite`.
-  - **Streaming contiguous prefix:** the earlier alternative (append the
-    contiguous prefix to a scratch PS via QSAM, keep only gaps in memory).
-    No longer needed now that random-access PS scratch works, but noted for
-    completeness.
-- On COMMIT/timeout, read the scratch dataset back and write the real member
-  in one pass; then delete the scratch dataset.
-- Scratch datasets need dynamic allocation (SVC 99 / `//DSN:&&TEMP`-style)
-  and cleanup on flush and on shutdown — the remaining real work for Phase 2.
+#### 8.1 Threshold and transition
 
-Phase 2 is kept behind the `mvspww` API so the memory vs. disk backing can
-change without touching the VFS/NFS layers.  **Given the 8 MB address-space
-limit and that random-access PS scratch is now proven, consider moving to the
-disk-backed buffer sooner** — arguably even as the primary backing — rather
-than treating it as a distant future phase.  A reasonable middle path: keep
-small members in memory (fast) and spill to a scratch PS only once a member
-exceeds the in-memory cap.
+A slot starts in memory exactly as today.  As soon as a WRITE would take the
+member's logical size (`high_water`) past `PWW_SPILL_THRESHOLD` (**16 KB**), the
+slot *spills*:
+
+1. open the slot's temporary dataset (`spill_open`);
+2. copy the in-memory buffer `[0 .. high_water]` to it at offset 0
+   (`spill_write`);
+3. `free()` the in-memory buffer and mark the slot spilled (`spill_fp != NULL`).
+
+From then on every WRITE for that member goes straight to disk — the server
+never holds more than ~16 KB of member data in memory, whatever the member's
+final size.  (A large *first* WRITE — e.g. a 32 KB `wsize` chunk at offset 0 —
+crosses the threshold immediately and is written straight through, never
+buffered in full.)
+
+#### 8.2 The temporary dataset
+
+One PS dataset per slot: `DSORG=PS RECFM=FB LRECL=4096 BLKSIZE=4096`, opened in
+**binary** mode.  The 4 KB fixed block lets JCC map any byte offset to a single
+block, so an `fseek` to an arbitrary offset costs one block's I/O.  JCC's
+`&&`-prefixed name is a temporary dataset, created on first open and
+auto-deleted when the server task ends.
+
+A single `"w+b"` + full-DCB open does everything the slot needs — it **creates**
+(or, on slot reuse, **truncates**) the dataset and then serves the random-access
+phase the slot holds for the member's life, all on one handle (proven on MVS,
+§8.7):
+
+```c
+/* slot index n -> its own reusable scratch dataset */
+sprintf(name, "//DSN:&&PWWSP%02d", slot_index);
+fp = fopen(name, "w+b,pri=15,sec=15,rlse,unit=sysda,"
+                 "dsorg=ps,recfm=fb,blksize=4096,lrecl=4096");
+```
+
+- **binary** (`b`): the stream is stored untranslated — ASCII→EBCDIC conversion
+  happens only at flush (§9).  JCC zero-pads the trailing partial 4 KB block,
+  which is harmless: the slot tracks the logical length (`spill_size`) itself
+  and never reads past it.
+- `"w+b"` is create/truncate **and** read/write: the full DCB is required to
+  create (`dsorg`/`recfm`/`blksize`/`lrecl`, `unit=sysda`, and `pri`/`sec` TRK
+  space with `rlse`); on slot reuse the same open truncates the previous
+  member's content.  The handle serves the write phase (`fseek`+`fwrite`); to
+  read the content back reliably it is closed and reopened `"r+b"` first (§8.3)
+  — reopening by the same `&&PWWSP<nn>` name, which is why the slot index is
+  kept in the slot.
+
+#### 8.3 Writing a segment — full-block read/modify/write
+
+The obvious implementation — `fseek` to the offset and `fwrite` the bytes — does
+**not** work on JCC for a *partial-block* write.  A few bytes written into the
+middle of a 4 KB block are lost once the handle seeks to another block and back:
+the read returns the OLD block content (confirmed on MVS by an early
+`tmvspww` spill test).  JCC keeps only whole-block modifications durable — which
+is exactly what `t#seqrw2`'s full-block random write/read proved works.
+
+So `spill_write` does its own **full-block read/modify/write**: for every 4 KB
+block the write touches, it loads the block (reading it if it already exists,
+else a zero block), overlays the bytes that fall in that block, and writes the
+**complete** block back.  JCC therefore only ever sees full-block writes at
+block-aligned offsets.
+
+```
+spill_write(pm, off, data, len):                 /* len==0 = zero-extend to off */
+    new_size = max(spill_size, off+len or off)
+    for each 4 KB block b that the write or the fill-to-new_size touches:
+        load block b            /* fread if b already on disk, else zero-fill */
+        overlay data bytes that land in block b
+        store block b           /* full 4096-byte fwrite */
+    spill_size = new_size
+```
+
+Two useful consequences fall out for free:
+
+- **Holes are zeros.** A block that never held data is loaded as zeros, and any
+  bytes of an in-extent block past the logical end were written as zero padding,
+  so a gap left by an out-of-order WRITE reads back as zeros (§5.2) with no
+  special case.
+- **No `fseek` past EOF.** Blocks are written in increasing order up to the new
+  extent, so each store `fseek`s at most *to* EOF (a new block appended at the
+  end), never beyond it — the one thing JCC would reject.
+
+Reads stay byte-granular (`fseek` + `fread`); only writes need the block RMW.
+
+**Committing before a read (the hard-won part).** On JCC the *readable* EOF of an
+open, still-extending temp dataset does **not** advance past ~one track
+(12 × 4096 = 49 152 bytes) until the dataset is **closed** — a block written
+beyond that reads back as `0`, even after `fflush`.  (First seen as a ~146 KB
+copy corrupting where a smaller one didn't; then caught deterministically by
+`tmvsspl`'s reference model, which failed with a zero-length read at exactly
+byte 49 152.)  So before a read that could reach committed-but-beyond-EOF data,
+`spill_sync()` **closes and reopens** the scratch `"r+b"` (no truncate) to commit
+the EOF.  It runs **lazily** — a `spill_dirty` flag, set by every block write and
+cleared by the reopen — so a run of consecutive reads (the flush's read pass)
+pays a single reopen, and the sequential-append RMW of just the tail block
+(still buffer-resident, so it reads fine after a plain `fflush`) pays none.  On
+the dev host `tmpfile()` is anonymous and cannot be reopened, and reads see
+writes after `fflush`, so there `spill_sync()` is just an `fflush`.
+
+A `SETATTR` truncate (§12.1) on a spilled member needs no special file surgery:
+growing it zero-extends through the same `spill_write` path, and shrinking it
+just lowers `high_water` — the flush reads only `[0 .. high_water]`, so bytes
+beyond it on disk are ignored (and overwritten if the member grows again).
+
+#### 8.4 Reading it back — pending reads and the flush
+
+Two paths read a pending member: `vfs_pread` (a member is readable from the
+buffer *before* it is STOWed, §5.1) and the flush itself (§7).  Both must work
+whether the member is in memory or spilled, so `pww` grows one accessor:
+
+```
+pww_read_range(pm, off, dst, len)   /* from pm->buf, or spill_read() if spilled */
+```
+
+`vfs_pread` and `pww_flush_slot` call it instead of touching `pm->buf`
+directly.  At flush the member is streamed in 4 KB blocks — read block →
+ASCII→EBCDIC → `fwrite` to the text-mode member (§9).  Because the text-mode
+runtime forms a record at each EBCDIC newline regardless of how the bytes are
+`fwrite`n, block-at-a-time streaming produces exactly the same records as the
+current one-pass write.
+
+The flush reads the content **once**: `pww_write_member` counts the ISPF records
+(one per LF, plus a trailing partial line — §9.1) off each ASCII chunk as it
+goes, so there is no separate line-counting read pass over the spill.  (An early
+version read the spill twice — count then write — which not only doubled the I/O
+but interleaved a second full read pass with a backward seek on the open stream,
+a fragile pattern on JCC.)
+
+#### 8.5 Lifecycle — one scratch dataset per slot, reused
+
+JCC deletes `&&` datasets only at program termination and allows at most 1000
+per run, so we must **not** mint a fresh one per member on a long-running
+server.  Instead each **pool slot** owns one scratch dataset named from its
+index (`&&PWWSP00`…): when a slot spills, the `"w+b"` open (§8.2) truncates any
+leftover content from the slot's previous member.  The scratch file is closed
+(`spill_close`) when the slot is released — the flush/idle/evict/discard/
+shutdown paths that already free the buffer and drop the enqueue + allocation
+(§7.2).
+
+So at most `PWW_MAX_PENDING` (4) scratch datasets ever exist: created lazily,
+reused for the life of the server (the `"w+b"` open truncates the previous
+member's content — confirmed on MVS, §8.7), and cleaned up by JCC at shutdown.
+No explicit delete is needed and the 1000/256 JCC limits are never approached.
+
+#### 8.6 New module and naming
+
+The temp-file mechanics live in their own module, `src/mvsspl.c` / `mvsspl.h`,
+with a distinct `spill_` prefix so they are never confused with the
+member-write path (`pww_write` / `pww_write_member`, which write the *real* PDS
+member):
+
+| Function | Role |
+|---|---|
+| `spill_open(pm)` | Create/truncate + open the slot's scratch dataset in one `"w+b"`+DCB `fopen`; set `spill_fp`, `spill_size = 0` |
+| `spill_write(pm, off, data, len)` | Place a segment at `off`, zero-extending past EOF first (§8.3) |
+| `spill_read(pm, off, dst, len)` | Read `len` bytes from `off` (for `pww_read_range` and the flush) |
+| `spill_close(pm)` | `fclose` the scratch dataset; clear `spill_fp` / `spill_size` |
+
+`mvspww.c` calls these when a slot is (or is becoming) spilled.  The two new
+`pending_member_t` fields it needs — `FILE *spill_fp` and `uint32_t spill_size`
+(§5) — mean `mvspww.h` gains `#include <stdio.h>`; the scratch *name* is derived
+from the slot index at `spill_open` time and need not be stored.
+
+#### 8.7 Parameters and open items
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `PWW_SPILL_THRESHOLD` | **16 KB** | in-memory prefix; a write past this spills the slot |
+| Scratch DCB | `DSORG=PS RECFM=FB LRECL=4096 BLKSIZE=4096`, `unit=sysda` | 4 KB block = one-block `fseek` granularity |
+| Scratch space | `pri=15,sec=15` TRK, `rlse` | raise `sec` if large members are common |
+| Scratch name | `&&PWWSP<nn>` | `nn` = slot index; one per pool slot, reused |
+| `PWW_MAX_MEMBER_BYTES` | *(raised)* | absolute member cap, now bounded by scratch space not memory; an over-cap WRITE still returns `NFS3ERR_NOSPC` |
+
+**Confirmed on MVS** (`jcl/t#seqrw2.jcl`, and the earlier `"wb"` truncate test):
+
+- A single `"w+b"`+DCB open (`unit=sysda`, `pri=15`/`sec=15` TRK,
+  `dsorg=ps recfm=fb blksize=4096 lrecl=4096`) **creates** the scratch dataset
+  and then supports random `fseek`/`fwrite`/`fread` — including byte-granular
+  (non-block-aligned) offsets — on that one handle.
+- Re-opening a live `&&` scratch with the `"w+b"` open **truncates** it cleanly
+  (the `"w"` truncate semantics), so a pool slot reuses its scratch dataset for
+  successive members (§8.5) — no `_unlink`/re-create dance is needed.
+
+Still to confirm during implementation:
+
+- `pri=15`/`sec=15` TRK is enough headroom for the member sizes you expect
+  (bump `sec=` otherwise).
 
 ## 9. Record conversion (inverse of the read path)
 
@@ -494,10 +672,13 @@ both the EBCDIC target and the little-endian test host.
 - **Existing member with no ISPF stats:** left as-is — no stats are fabricated
   (the member is stowed without user data).
 
-**Line count** (`mvs_ispf_count_lines`) is the number of records the member
-will have: one per LF, plus a final record for a trailing partial line. It is
-counted on the **ASCII** pending buffer, so it tests for `0x0A` — not `'\n'`,
-which is the EBCDIC newline under JCC.
+**Line count** is the number of records the member will have: one per LF, plus a
+final record for a trailing partial line.  The flush accumulates it in
+`pww_write_member` as it streams the content through its single read pass (§8.4)
+— for both in-memory and spilled members — rather than making a separate pass.
+It tests for `0x0A` — not `'\n'`, which is the EBCDIC newline under JCC.  (The
+standalone `mvs_ispf_count_lines` in `mvspdir.c`, and its unit tests, remain as
+the reference for the same rule.)
 
 **Decisions (confirmed):**
 
@@ -521,7 +702,8 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 
 | File | Change |
 |------|--------|
-| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1) |
+| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1). **Phase 2 (§8):** spills to a temp dataset past `PWW_SPILL_THRESHOLD`; adds `pww_read_range()` and calls into `mvsspl` |
+| `src/mvsspl.c` / `.h` (new — **Phase 2**, §8) | Temp-dataset spill store: `spill_open` / `spill_write` (zero-extending past EOF) / `spill_read` / `spill_close`, over one reusable `&&PWWSP<nn>` scratch PS per pool slot (`DSORG=PS RECFM=FB BLKSIZE=4096`, binary; one `"w+b"` open per spill). Distinct `spill_` prefix keeps it separate from the member-write path |
 | `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/mvsenq.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 `DISP=SHR` dynamic allocation returning its ddname via `DALRTDDN` (`mvs_dynalloc`); BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); ENQ/DEQ/TEST on `SPFEDIT`, exclusive, `RET=USE`, scope `SYSTEMS` (`mvs_enq`, §7.2); C prototypes + `MVSDALC`/`MVSSTOW`/`MVSENQ` name aliases in `asmutils.h` |
 | `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible; `vfs_errno_to_nfs3` maps the write path's `EACCES` (member locked → `NFS3ERR_ACCES`) and `EROFS`/`EXDEV` |
 | `src/nfs3.c` | `proc_write` → echo the client's requested stability; `proc_commit` → flush the member then reply; `proc_create` unchanged in shape |
@@ -632,7 +814,7 @@ visibility, record conversion, STOW) before adding disk-backed buffers.
 |-----------|-------|-------|
 | `PWW_MAX_MEMBER_BYTES` | **256 KB** | per-member in-memory cap; over-cap write → `NFS3ERR_NOSPC` (`ENOSPC`; JCC has no `EFBIG`) |
 | `PWW_MAX_PENDING`      | **4**      | concurrent pending members in the pool |
-| Idle-flush timeout     | 5–10 s (tunable) | per member, polled each select iteration |
+| `PWW_IDLE_TIMEOUT_SECONDS` | **3 s** (tunable) | per member, polled each select iteration; flushes any uncommitted writes and **releases the slot** — dropping the SPFEDIT enqueue + allocation (§7.2) — this long after the last write/commit |
 
 **Acceptance check (both clients — we test on both):**
 

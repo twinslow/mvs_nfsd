@@ -15,6 +15,7 @@
 
 #include "nfsd.h"
 #include "mvspww.h"
+#include "mvsspl.h"      /* spill store: spill_open/write/read/close (Phase 2) */
 #include "mvspdir.h"
 #include "mvsdol.h"
 #include "ebcdic.h"
@@ -132,7 +133,8 @@ static void pww_unlock(pending_member_t *pm) { (void)pm; }
 
 static void pww_slot_release(pending_member_t *pm)
 {
-    pww_unlock(pm);   /* DEQ + unallocate whatever the slot still holds */
+    pww_unlock(pm);        /* DEQ + unallocate whatever the slot still holds */
+    spill_close(pm);       /* close the scratch dataset if the member spilled */
     if (pm->buf != NULL)
         free(pm->buf);
     memset(pm, 0, sizeof(*pm));
@@ -204,24 +206,27 @@ static void pww_slot_init(pending_member_t *pm, int export_idx, int dataset_idx,
     pm->last_write_time = time(NULL);
 }
 
-/* Ensure pm->buf has capacity for at least 'need' bytes (<= cap limit). */
+/* Ensure the in-memory pm->buf has capacity for at least 'need' bytes.  The
+   in-memory buffer is capped at PWW_SPILL_THRESHOLD -- past that a member is
+   moved to disk (pww_spill_transition), so callers must have kept 'need' within
+   the threshold before calling. */
 static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
 {
     uint32_t new_cap;
     uint8_t *new_buf;
 
-    if (need > (uint32_t)PWW_MAX_MEMBER_BYTES) {
-        errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
+    if (need > (uint32_t)PWW_SPILL_THRESHOLD) {
+        errno = ENOSPC;   /* should not happen: caller spills past the threshold */
         return -1;
     }
     if (need <= pm->buf_cap)
         return 0;
 
-    new_cap = (pm->buf_cap != 0) ? pm->buf_cap : 65536u;
+    new_cap = (pm->buf_cap != 0) ? pm->buf_cap : 4096u;
     while (new_cap < need)
         new_cap *= 2u;
-    if (new_cap > (uint32_t)PWW_MAX_MEMBER_BYTES)
-        new_cap = (uint32_t)PWW_MAX_MEMBER_BYTES;
+    if (new_cap > (uint32_t)PWW_SPILL_THRESHOLD)
+        new_cap = (uint32_t)PWW_SPILL_THRESHOLD;
 
     new_buf = (uint8_t *)realloc(pm->buf, (size_t)new_cap);
     if (new_buf == NULL) {
@@ -231,6 +236,37 @@ static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
     }
     pm->buf     = new_buf;
     pm->buf_cap = new_cap;
+    return 0;
+}
+
+/* Move an in-memory slot to disk: open its scratch dataset, copy the current
+   buffer into it at offset 0, and free the buffer.  On any failure the slot is
+   rolled back to in-memory (buffer intact, scratch closed) and -1 is returned
+   with errno set, so the caller can fail the write and the slot stays coherent.
+   Caller must have checked pm->spill_fp == NULL. */
+static int pww_spill_transition(pending_member_t *pm)
+{
+    int slot = (int)(pm - g_pww_pool);
+
+    if (spill_open(pm, slot) != 0)
+        return -1;                          /* still fully in memory */
+
+    if (pm->high_water > 0 && pm->buf != NULL) {
+        if (spill_write(pm, 0, pm->buf, pm->high_water) != 0) {
+            int saved = errno;
+            spill_close(pm);                /* roll back to in-memory */
+            errno = saved;
+            return -1;
+        }
+    }
+
+    if (pm->buf != NULL) {
+        free(pm->buf);
+        pm->buf     = NULL;
+        pm->buf_cap = 0;
+    }
+    log_debug("pww_spill_transition: %s(%s) now on disk (%u bytes)",
+        pm->dsname_ebcdic, pm->member_name, pm->high_water);
     return 0;
 }
 
@@ -253,18 +289,39 @@ static void pww_member_path(char *out, const char *dsname_ebcdic,
 }
 #endif
 
+/* Read len bytes at off from a pending member's content into dst, from the
+   in-memory buffer or the spill dataset -- the single accessor the flush and
+   vfs_pread both use so neither cares where the member is backed. */
+int pww_read_range(pending_member_t *pm, uint32_t off,
+                   uint8_t *dst, uint32_t len)
+{
+    if (len == 0)
+        return 0;
+    if (pm->spill_fp == NULL) {
+        memcpy(dst, pm->buf + off, (size_t)len);
+        return 0;
+    }
+    return spill_read(pm, off, dst, len);   /* -1 with errno on read error */
+}
+
 /* Open 'open_target' ("//DDN:ddname" on MVS, "//DSN:dsname(member)"
-   elsewhere), write the pending member's buffer as text records, and STOW it
-   at close.  The ASCII buffer is left intact (translated via g_pww_xlate in
-   chunks).  Returns 0 on success, -1 on failure (errno set by stdio).
-   The caller owns any dynamic allocation and frees it regardless of the
-   result -- keeping that cleanup in one place is why this is split out. */
-static int pww_write_member(pending_member_t *pm, const char *open_target)
+   elsewhere), write the pending member's byte stream as text records, and STOW
+   it at close.  The content is read in chunks via pww_read_range (memory or
+   spill) into g_pww_xlate and translated ASCII->EBCDIC in place, so neither the
+   in-memory buffer nor the spill file is disturbed.  Returns 0 on success, -1
+   on failure (errno set).  The caller owns any dynamic allocation and frees it
+   regardless of the result -- keeping that cleanup in one place is why this is
+   split out. */
+static int pww_write_member(pending_member_t *pm, const char *open_target,
+                            int32_t *lines_out)
 {
     FILE    *fh;
     uint32_t off;
     uint32_t n;
+    uint32_t i;
     size_t   w;
+    int32_t  lines = 0;
+    uint8_t  last  = 0;
 
     fh = fopen(open_target, "wt");    /* text mode: record per '\n', STOW on close */
     if (fh == NULL) {
@@ -273,11 +330,25 @@ static int pww_write_member(pending_member_t *pm, const char *open_target)
         return -1;
     }
 
+    /* One read pass: read a chunk, count records off the ASCII (one per LF, plus
+       a trailing partial line), then translate ASCII->EBCDIC in place and write.
+       Counting here avoids a second full read pass over the (possibly spilled)
+       content just to compute the ISPF line count. */
     for (off = 0; off < pm->high_water; off += n) {
         n = pm->high_water - off;
         if (n > sizeof(g_pww_xlate))
             n = sizeof(g_pww_xlate);
-        ascii_to_ebcdic(g_pww_xlate, pm->buf + off, (size_t)n);
+        if (pww_read_range(pm, off, g_pww_xlate, n) != 0) {
+            log_error("pww_flush_slot: read-back failed on %s at %u",
+                      open_target, off);
+            fclose(fh);
+            return -1;
+        }
+        for (i = 0; i < n; i++)
+            if (g_pww_xlate[i] == 0x0A)   /* ASCII LF -- the stream is ASCII */
+                lines++;
+        last = g_pww_xlate[n - 1];
+        ascii_to_ebcdic(g_pww_xlate, g_pww_xlate, (size_t)n);   /* in place */
         w = fwrite(g_pww_xlate, 1, (size_t)n, fh);
         if (w != (size_t)n) {
             log_error("pww_flush_slot: short write on %s (%u of %u)",
@@ -286,6 +357,10 @@ static int pww_write_member(pending_member_t *pm, const char *open_target)
             return -1;
         }
     }
+
+    if (pm->high_water > 0 && last != 0x0A)   /* trailing partial line is a record */
+        lines++;
+    *lines_out = lines;
 
     if (fclose(fh) != 0) {            /* STOW happens here */
         log_error("pww_flush_slot: fclose(STOW) %s failed: %s",
@@ -314,11 +389,6 @@ static int pww_flush_slot(pending_member_t *pm)
     existing = mvs_pds_get_member_entry(pm->dsname_ebcdic, pm->member_name,
                                         pm->export_idx, &existing_ent);
 
-    /* Decide the ISPF stats to STOW (count records from the ASCII buffer). */
-    line_count = mvs_ispf_count_lines(pm->buf, pm->high_water);
-    want_stats = mvs_build_write_stats(&new_stats, existing, line_count,
-                                       time(NULL));
-
 #ifdef __MVS__
     /* The SPFEDIT enqueue and the DSN(member) DISP=SHR allocation were taken at
        CREATE / first WRITE (pww_lock) and are held for the slot's whole
@@ -326,14 +396,15 @@ static int pww_flush_slot(pending_member_t *pm)
        the held allocation by its ddname ("//DDN:ddname") and writes + STOWs
        through it (fclose STOWs).  The enqueue and allocation are released only
        when the slot is released (pww_slot_release -> pww_unlock), which
-       also covers the ISPF-stats STOW below. */
+       also covers the ISPF-stats STOW below.  pww_write_member also returns the
+       record count (single read pass) for the ISPF stats applied afterwards. */
     strcpy(path, "//DDN:");
     strcat(path, pm->ddname);
-    if (pww_write_member(pm, path) != 0)   /* write + STOW */
+    if (pww_write_member(pm, path, &line_count) != 0)   /* write + STOW */
         return -1;
 #else
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
-    if (pww_write_member(pm, path) != 0)
+    if (pww_write_member(pm, path, &line_count) != 0)
         return -1;
 #endif
 
@@ -356,6 +427,8 @@ static int pww_flush_slot(pending_member_t *pm)
        The allocation is dataset-level -- member is passed as NULL so the PDS is
        allocated without a member qualifier (BLDL/FIND/STOW work on the
        directory; mvs_stow() gets the member name for the BLDL separately). */
+    want_stats = mvs_build_write_stats(&new_stats, existing, line_count,
+                                       time(NULL));
     if (want_stats) {
         char ddname[9];
         int  rc;
@@ -387,6 +460,8 @@ static int pww_flush_slot(pending_member_t *pm)
     }
     /* No DEQ / unallocate here: both are held until the slot is released. */
 #else
+    (void)existing;
+    (void)line_count;
     (void)want_stats;
     (void)new_stats;
     (void)stats_ud;
@@ -476,16 +551,31 @@ int pww_write(int export_idx, int dataset_idx,
         }
     }
 
-    if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
-        return -1;    /* errno set (ENOSPC/ENOMEM) */
+    /* In memory while the member stays under the spill threshold; once it (or
+       this write) would exceed it, move to a temp dataset and keep it there.
+       Either way memory use per pending member is bounded by the threshold. */
+    if (pm->spill_fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
+        if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
+            return -1;    /* errno set (ENOSPC/ENOMEM) */
 
-    /* Zero-fill any gap between the current end and this write's offset. */
-    if (offset > (uint64_t)pm->high_water)
-        memset(pm->buf + pm->high_water, 0,
-               (size_t)(offset - (uint64_t)pm->high_water));
+        /* Zero-fill any gap between the current end and this write's offset. */
+        if (offset > (uint64_t)pm->high_water)
+            memset(pm->buf + pm->high_water, 0,
+                   (size_t)(offset - (uint64_t)pm->high_water));
 
-    if (count > 0)
-        memcpy(pm->buf + offset, data, (size_t)count);
+        if (count > 0)
+            memcpy(pm->buf + offset, data, (size_t)count);
+    } else {
+        /* Spill path: transition on the write that first crosses the threshold,
+           then place this segment in the scratch dataset (spill_write handles
+           the hole zero-fill and the "cannot fseek past EOF" extension). */
+        if (pm->spill_fp == NULL) {
+            if (pww_spill_transition(pm) != 0)
+                return -1;    /* errno set; slot rolled back to in-memory */
+        }
+        if (spill_write(pm, (uint32_t)offset, data, count) != 0)
+            return -1;        /* errno set (EIO) */
+    }
 
     if (end > (uint64_t)pm->high_water)
         pm->high_water = (uint32_t)end;
@@ -543,13 +633,36 @@ int pww_truncate(int export_idx, int dataset_idx,
     if (size == pm->high_water)
         return 0;
 
-    /* Adjust the existing pending member to exactly 'size' bytes. */
-    if (size > pm->buf_cap) {
-        if (pww_slot_ensure_cap(pm, size) < 0)
+    /* Adjust the existing pending member to exactly 'size' bytes, spilling if
+       the new size crosses the in-memory threshold. */
+    if (pm->spill_fp != NULL) {
+        /* Already spilled: grow by zero-extending the scratch; shrink just
+           lowers the logical extent so a later write into the freed region
+           zero-fills again (the flush reads only [0..high_water]). */
+        if (size > pm->high_water) {
+            if (spill_write(pm, size, NULL, 0) != 0)
+                return -1;               /* errno set (EIO) */
+        } else {
+            pm->spill_size = size;
+        }
+    } else if (size <= (uint32_t)PWW_SPILL_THRESHOLD) {
+        /* Stays in memory. */
+        if (size > pm->buf_cap) {
+            if (pww_slot_ensure_cap(pm, size) < 0)
+                return -1;
+        }
+        if (size > pm->high_water)
+            memset(pm->buf + pm->high_water, 0,
+                   (size_t)(size - pm->high_water));
+    } else {
+        /* In memory but growing past the threshold: spill, then zero-extend the
+           scratch to 'size' (an in-memory member is <= threshold < size, so
+           this is necessarily a grow). */
+        if (pww_spill_transition(pm) != 0)
+            return -1;
+        if (spill_write(pm, size, NULL, 0) != 0)
             return -1;
     }
-    if (size > pm->high_water)
-        memset(pm->buf + pm->high_water, 0, (size_t)(size - pm->high_water));
 
     pm->high_water      = size;
     pm->dirty           = 1;

@@ -6,10 +6,10 @@
  *      tests/runall.c tests/tstubs.c \
  *      tests/tmvsio.c tests/tmvsio2.c tests/tmvspdir.c tests/tmvsprw.c \
  *      tests/tmvsdol.c tests/tmvsfsz.c tests/tmvsprf.c tests/tmvspww.c \
- *      tests/tlogger.c tests/tcfgopts.c \
+ *      tests/tmvsspl.c tests/tlogger.c tests/tcfgopts.c \
  *      src/mvsio.c src/mvsdol.c src/mvsfsz.c src/mvspdir.c src/mvsprw.c \
- *      src/mvspww.c src/ebcdic.c src/mvsprf.c src/logger.c src/cfgopts.c \
- *      tests/munit.c \
+ *      src/mvspww.c src/mvsspl.c src/ebcdic.c src/mvsprf.c src/logger.c \
+ *      src/cfgopts.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
@@ -37,6 +37,7 @@ extern MunitSuite tmvsdol_suite;
 extern MunitSuite tmvsfsz_suite;
 extern MunitSuite tmvsprf_suite;
 extern MunitSuite tmvspww_suite;
+extern MunitSuite tmvsspl_suite;
 extern MunitSuite tlogger_suite;
 extern MunitSuite tcfgopts_suite;
 
@@ -44,7 +45,7 @@ extern MunitSuite tcfgopts_suite;
  * NUM_SUITES: count of module suites (excluding the NULL terminator).
  * Increment this by one each time a new extern suite is added.
  */
-#define NUM_SUITES 10
+#define NUM_SUITES 11
 
 /* -----------------------------------------------------------------------
  * main: build the root suite from all module suites and run it.
@@ -68,8 +69,9 @@ int main(int argc, char *argv[])
     all_suites[5] = tmvsfsz_suite;
     all_suites[6] = tmvsprf_suite;
     all_suites[7] = tmvspww_suite;
-    all_suites[8] = tlogger_suite;
-    all_suites[9] = tcfgopts_suite;
+    all_suites[8] = tmvsspl_suite;
+    all_suites[9] = tlogger_suite;
+    all_suites[10] = tcfgopts_suite;
 
     /* NULL terminator entry */
     memset(&all_suites[NUM_SUITES], 0, sizeof(MunitSuite));

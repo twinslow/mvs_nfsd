@@ -529,8 +529,9 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         return -1;    /* errno set (ENOENT for wrong extension / bad name) */
 
     /* If the member is being written (buffered, not yet stowed), serve the
-       read from the pending buffer so the not-yet-stowed data is visible.
-       The buffer already holds ASCII, so no EBCDIC translation is needed. */
+       read from the pending content so the not-yet-stowed data is visible.
+       pww_read_range fetches from the in-memory buffer or the spill dataset as
+       appropriate; the content is already ASCII, so no EBCDIC translation. */
     {
         pending_member_t *pm = pww_find(pds_dsname, pds_member_name);
         if (pm != NULL) {
@@ -540,11 +541,13 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
             } else {
                 uint32_t avail = pm->high_water - (uint32_t)offset;
                 uint32_t n     = (count < avail) ? count : avail;
-                memcpy(buf, pm->buf + (uint32_t)offset, (size_t)n);
+                if (pww_read_range(pm, (uint32_t)offset,
+                                   (uint8_t *)buf, n) != 0)
+                    return -1;    /* errno set (EIO on a spill read error) */
                 *nread = n;
                 *eof   = ((uint32_t)offset + n >= pm->high_water);
             }
-            log_debug("vfs_pread: served %u bytes from pending buffer %s(%s)",
+            log_debug("vfs_pread: served %u bytes from pending %s(%s)",
                 *nread, pds_dsname, pds_member_name);
             return 0;
         }

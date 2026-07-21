@@ -114,8 +114,9 @@
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
-//*                                                                   
-//* This is a mock VFS module that returns fixed files and contents.  
+//MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
+//*
+//* This is a mock VFS module that returns fixed files and contents.
 //MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS                               
 //*                                                                   
 //* This is the real VFS module that is reading PDS dir and content   
@@ -149,6 +150,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)             
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)                 
