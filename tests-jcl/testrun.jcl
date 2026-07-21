@@ -121,6 +121,7 @@
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
 //MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
+//MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL
 //*
 //********************************************************************
 //*                                                                   
@@ -163,6 +164,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             

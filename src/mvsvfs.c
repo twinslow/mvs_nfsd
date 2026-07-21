@@ -916,7 +916,9 @@ int vfs_set_times(const char *path,
 
     (void)atime_nsec; (void)mtime_nsec;   /* ISPF resolution is one second */
 
-    /* Which requested time drives the ISPF changed date?  Prefer mtime. */
+    /* Which requested time drives the ISPF changed date?  Prefer mtime.
+       Both a client-supplied time and time() are UTC epoch; the local-time
+       conversion happens later when the stats are encoded. */
     if (set_mtime == (int)SET_TO_CLIENT_TIME)
         new_time = (time_t)mtime_sec;
     else if (set_mtime == (int)SET_TO_SERVER_TIME)

@@ -32,7 +32,7 @@ int get_int_cvt_val(int cvt_offset)
 /*
  * This functions rounds to the qtr hour, if it is just 1 second off
  */
-int round_to_qtr_hour(int n) {
+static int round_to_qtr_hour(int n) {
     int r = n % 900;
     if (r < 0) r += 900;   /* C's % is truncating, not floor-mod */
     if (r == 1)    return n - 1;

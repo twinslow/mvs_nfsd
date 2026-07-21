@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "mvsutl.h"
 
@@ -89,5 +90,38 @@ int get_tz_offset()
     fprintf(stderr, "seconds=%d\n", seconds);
     // Round to half hour if it within 1 second
     return round_to_qtr_hour(seconds);
+}
+
+/* -------------------------------------------------------------------- */
+/* Timezone offset cache + LOCAL<->UTC epoch conversion.  See mvsutl.h.  */
+/* -------------------------------------------------------------------- */
+
+/* local - GMT, in seconds.  0 until mvs_tz_init() runs, and always 0 on a
+   non-MVS build, so every conversion is the identity there. */
+static int g_tz_offset = 0;
+
+void mvs_tz_init(void)
+{
+#ifdef __MVS__
+    /* CVTLDTO only changes across an IPL, so reading it once is enough. */
+    g_tz_offset = get_tz_offset();
+#else
+    g_tz_offset = 0;
+#endif
+}
+
+int mvs_tz_offset(void)
+{
+    return g_tz_offset;
+}
+
+time_t mvs_local_epoch_to_utc(time_t local_epoch)
+{
+    return local_epoch - (time_t)g_tz_offset;
+}
+
+time_t mvs_utc_to_local_epoch(time_t utc_epoch)
+{
+    return utc_epoch + (time_t)g_tz_offset;
 }
 

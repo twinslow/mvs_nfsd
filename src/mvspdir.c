@@ -9,6 +9,7 @@
 #include "nfsd.h"
 #include "mvsio.h"
 #include "mvspdir.h"
+#include "mvsutl.h"    /* mvs_local_epoch_to_utc / mvs_utc_to_local_epoch */
 #include "logger.h"
 
 /* -------------------------------------------------------------------- */
@@ -300,12 +301,14 @@ time_t convert_ispf_datetime(
         mins = bcd_byte_to_int(hhmmf[1]);
     }
 
-    // Usage of the following function is an alternate to using the 
+    // Usage of the following function is an alternate to using the
     // library function mktime, which is giving an OC4 error.
     retval = ispf_tm_to_timet(
                  year, month, day_of_mon,
                  hour, mins, (int) seconds);
-    return retval;
+
+    /* The ISPF fields are LOCAL wall-clock; NFS wants UTC epoch. */
+    return mvs_local_epoch_to_utc(retval);
 }
 
 
@@ -453,8 +456,10 @@ int mvs_encode_ispf_stats(const pds_member_entry_t *entry, uint8_t *userdata)
     /* Flags: non-extended stats (clear the extended-stats bit). */
     userdata[2] = (uint8_t)(entry->ispf_flags & ~MVS_PDSDIR_ISPF_EXT_STATS);
 
+    /* crdate/chgdate are UTC epoch; ISPF stats store LOCAL wall-clock, so
+       shift to the local-time domain before breaking either one down. */
     /* Decompose the change time once (need seconds [3] and time [12..13]). */
-    t    = (time_t)entry->chgdate;
+    t    = mvs_utc_to_local_epoch((time_t)entry->chgdate);
     tm_p = gmtime(&t);
     chg_hour = tm_p->tm_hour;
     chg_min  = tm_p->tm_min;
@@ -462,10 +467,10 @@ int mvs_encode_ispf_stats(const pds_member_entry_t *entry, uint8_t *userdata)
     userdata[3] = int_to_bcd(chg_sec);
 
     /* Creation date [4..7] (date only) -- calls gmtime() again. */
-    ispf_pack_date((time_t)entry->crdate, &userdata[4]);
+    ispf_pack_date(mvs_utc_to_local_epoch((time_t)entry->crdate), &userdata[4]);
 
     /* Change date [8..11] and time [12..13]. */
-    ispf_pack_date((time_t)entry->chgdate, &userdata[8]);
+    ispf_pack_date(mvs_utc_to_local_epoch((time_t)entry->chgdate), &userdata[8]);
     userdata[12] = int_to_bcd(chg_hour);
     userdata[13] = int_to_bcd(chg_min);
 

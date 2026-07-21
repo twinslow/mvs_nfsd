@@ -327,6 +327,13 @@ int main(int argc, char *argv[])
     pww_init();
     mvsfsz_init();
     mvsprf_init();
+
+    /* Cache the MVS local-time offset (CVTLDTO) once at startup: used to
+       convert ISPF member stats (stored in local time) to/from UTC epoch.
+       time()/gettimeofday() already return UTC, so they need no correction. */
+    mvs_tz_init();
+    log_info("nfsd: MVS local-time offset = %d seconds (0 = no offset)",
+             mvs_tz_offset());
     
     //mvsfsz_load("//DDN:FILESIZE");
     
