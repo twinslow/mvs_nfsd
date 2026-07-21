@@ -28,14 +28,14 @@ static void *fetch_ptr(ADDR31 addr)
  *   JSCB + X'13C'       -> SSIB            (JSCBSSIB)
  *   SSIB + X'0C', 8 bytes -> job id, e.g. "JOB01234"
  *
- * Returns a static char output buffer pointer, or 
+ * Returns a static char output buffer pointer, or
  * NULL if any pointer in the chain is null.
  */
 char *get_jes2_jobid()
 {
     static char out_jobid[9];
     BYTE *tcb, *jscb, *ssib;
-    
+
     tcb = fetch_ptr(540);
     if (tcb == NULL) return NULL;
 
@@ -49,5 +49,45 @@ char *get_jes2_jobid()
     out_jobid[8] = '\0';
 
     return &out_jobid[0];
+}
+
+int get_int_cvt_val(int cvt_offset)
+{
+    void **pcvt = (void **)0x00000010;
+    unsigned char *cvt = *(unsigned char **)pcvt;
+    int val;
+
+    //val = *(int *)( cvt + 0x0130 );
+    val = *(int *)( cvt + cvt_offset );
+    fprintf(stderr, "cvt at 0x%08X, offset 0x%08X = %d\n",
+        cvt, cvt_offset, val);
+    return val;
+}
+
+/*
+ * This functions rounds to the qtr hour, if it is just 1 second off
+ */
+static int round_to_qtr_hour(int n) {
+    int r = n % 900;
+    if (r < 0) r += 900;   /* C's % is truncating, not floor-mod */
+    if (r == 1)    return n - 1;
+    if (r == 899) return n + 1;
+    return n;
+}
+
+int get_tz_offset()
+{
+    int seconds;
+    long long offset;
+
+    offset = get_int_cvt_val(0x0130);
+
+    fprintf(stderr, "offset (tod ticks) %d\n",offset);
+
+    seconds = (int) (1048567LL * offset / 1000000LL);
+
+    fprintf(stderr, "seconds=%d\n", seconds);
+    // Round to half hour if it within 1 second
+    return round_to_qtr_hour(seconds);
 }
 
