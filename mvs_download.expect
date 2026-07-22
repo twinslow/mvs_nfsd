@@ -48,6 +48,10 @@ if {[llength $argv] > 0} {
     set dest_dir [file join $script_dir src]
 }
 
+# Raw FTP client/server dialogue is written here (not echoed to the screen)
+# so it is available for diagnosis if a transfer fails.
+set ftp_log [file join $script_dir .mvs_download_ftp.log]
+
 # Seconds to wait for each FTP response before declaring a timeout
 set timeout 60
 
@@ -165,6 +169,7 @@ send_user "\n"
 send_user "MVS source download\n"
 send_user "===================\n"
 send_user "FTP target       : $ftp_host:$ftp_port\n"
+send_user "FTP log          : $ftp_log\n"
 send_user "C   PDS          : $pds_c\n"
 send_user "H   PDS          : $pds_h\n"
 send_user "JCL PDS          : $pds_cntl\n"
@@ -189,6 +194,26 @@ expect_user -re "(.*)\n"
 set password $expect_out(1,string)
 stty echo
 send_user "\n\n"
+
+# -----------------------------------------------------------------------
+# Quiet the FTP dialogue
+#
+# The raw FTP conversation is noisy, so keep it OFF the screen (log_user 0)
+# and record it in a log file instead.  Only this script's own progress and
+# error messages (send_user, unaffected by log_user) still appear on screen;
+# the log file is there for post-mortem diagnosis when a transfer fails.
+# The password is sent to the FTP client, which suppresses its echo, so it is
+# not captured in the log.
+# -----------------------------------------------------------------------
+# -a       : log the dialogue even though log_user 0 hides it from the screen
+#            (without -a, log_file records nothing while log_user is 0).
+# -noappend: truncate, so the log reflects only the current run.
+log_user 0
+if {[catch {log_file -a -noappend $ftp_log} _err]} {
+    send_user "Warning: cannot open FTP log $ftp_log ($_err) -- continuing.\n"
+} else {
+    send_log "===== FTP download session [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] =====\n"
+}
 
 # -----------------------------------------------------------------------
 # Spawn FTP  (-p = passive mode,  host  port)
@@ -220,8 +245,8 @@ send "$password\r"
 # Check login outcome
 expect {
     "230 " { send_user "Logged in as $userid.\n\n" }
-    "530 " { send_user "Error: login failed -- check userid and password.\n"; exit 1 }
-    timeout { send_user "Error: timeout waiting for login confirmation.\n";   exit 1 }
+    "530 " { send_user "Error: login failed -- check userid and password (see $ftp_log).\n"; exit 1 }
+    timeout { send_user "Error: timeout waiting for login confirmation (see $ftp_log).\n";   exit 1 }
 }
 
 # -----------------------------------------------------------------------
@@ -346,6 +371,7 @@ send_user "Download complete.\n"
 send_user "  Succeeded : $total_ok file(s)\n"
 if {$total_err > 0} {
     send_user "  Failed    : $total_err file(s)\n"
+    send_user "  FTP log   : $ftp_log (full dialogue for diagnosis)\n"
 }
 send_user "  Location  : $dest_dir\n"
 send_user "\n"

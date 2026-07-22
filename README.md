@@ -21,7 +21,7 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 **WARNING:** This is early release code. You shouldn't assume that this code won't trash
 a mounted dataset. I'm sure there are plenty of bugs at this time, even we are fixing
 them as we find them. I wouldn't go exporting/mounting `SYS1.PROCLIB` or `SYS1.PARMLIB`, or
-other important datasets that could prevent an IPL from completing. 
+other important datasets that could prevent an IPL from completing.
 
 ### **Please have a recovery mechanism in place if things go badly wrong.**
 
@@ -77,7 +77,7 @@ other important datasets that could prevent an IPL from completing.
 | `mvsprf.c/h` | Performance stats tracking |
 | `mvsfsz.c/h` | File-size cache — stores true text-mode sizes of PDS members |
 | `mvsfid.c/h` | Stable 64-bit file ID generation from dataset + member name |
-| `mvsutl.c/h` | JES2 job-id lookup (PSA→TCB→JSCB→SSIB) — seeds the write verifier |
+| `mvsutl.c/h` | JES2 job-id lookup (PSA→TCB→JSCB→SSIB) for seeding write verifier; function to get timezone offset from CVT |
 | `ebcdic.c/h` | EBCDIC ↔ ASCII translation tables |
 
 ### Utilities
@@ -172,9 +172,9 @@ PARM='-I//DDN:JCCINCL //DDN:SYSIN -o -LIST=//DDN:SYSPRINT -D__MVS__'
 
 ### MVS unit tests
 
-You can run the unit tests on MVS. They use a ported version of `munit`. 
+You can run the unit tests on MVS. They use a ported version of `munit`.
 Running the job `tests-jcl/testrun.jcl` compiles the modules under test
-along with the main test harness and executes the tests. 
+along with the main test harness and executes the tests.
 
 ## Config file
 
@@ -232,7 +232,7 @@ by their bare name) — see `doc/readme_config.md`.
 
 ## Running on MVS
 
-Once the started task JCL procedure is available to JES2, then it can be 
+Once the started task JCL procedure is available to JES2, then it can be
 started with `S NFSD`. Running NFSD as a started task has the benefit of allow
 it to be stopped by the MVS STOP (P) comamdn `P NFSD`.
 
@@ -262,7 +262,7 @@ Mount from a client:
 Note that from Linux, the readirplus operations perform much better
 than a readdir operation. Also, the server does not implement
 Sun's ACL sideband protocol and this should be disabled to avoid
-many getacl operations from being sent to the server following a 
+many getacl operations from being sent to the server following a
 directory read.
 
 Use the following options (tested on Ubuntu 26.04)
@@ -629,11 +629,9 @@ on every LOOKUP and READDIRPLUS call.
 
 ## Known limitations
 
-- File handle path cache (512 entries) can evict entries under heavy load;
-  stale file handles return `NFS3ERR_STALE`.
 - File size cache (`mvsfsz`) holds a maximum of 16 entries; members that cycle
   out lose their cached size and will require a full re-read to repopulate.
-  An LRU eviction policy is planned.
+  Entries are evicted on a LRU basis.
 - Read cache (`mvsprw`) holds 20 entries; entries time out after 5 seconds of
   inactivity.
 - SETATTR handles `size` (truncate) and `atime`/`mtime` (mapped onto the ISPF
@@ -642,7 +640,8 @@ on every LOOKUP and READDIRPLUS call.
   256 KB) and a small pool (`PWW_MAX_PENDING`, 4); a write beyond the cap
   returns `NFS3ERR_NOSPC`.  Disk-backed spill for larger members is a future
   phase (see the design doc).
-- No locking (`nolock` mount option recommended).
+- No locking (`nolock` mount option recommended). The server uses ISPF style
+  SPFEDIT ENQ resources for prevent corruption with ISPF/REVIEW etc.
 - No authentication and no per-client access control: access is a property
   of the *export*, not the client.  An export (or a single dataset) can be
   marked read-only with the `ro` keyword, the reported permission bits
@@ -652,7 +651,7 @@ on every LOOKUP and READDIRPLUS call.
   every client including one mounting as root.
 - RENAME works only **within a single PDS** — a member cannot be moved to a
   different dataset (different directory).  A cross-PDS request returns
-  `NFS3ERR_XDEV`, which prompts the client to fall back to copy+delete.
+  `NFS3ERR_XDEV`, which *may* prompt the client to fall back to copy+delete.
   RENAME uses JCC's `rename()` on the member (as REMOVE uses `_unlink()`).
 
 ## Contributing

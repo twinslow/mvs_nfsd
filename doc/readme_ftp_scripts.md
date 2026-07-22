@@ -85,11 +85,28 @@ Run from the project root directory.
 3. Prints a banner showing mode, last-run time (incremental only), and
    per-job file counts.
 4. Prompts for credentials (or reads from environment variables).
-5. Connects to the FTP server, logs in, and sets ASCII mode.
+5. Connects to the FTP server, logs in, and sets ASCII mode.  The raw FTP
+   dialogue is **not** shown on screen — it is written to
+   `.mvs_upload_ftp.log` (see [FTP dialogue log](#ftp-dialogue-log)).
 6. For each upload job: CDs to the target PDS, then uploads each file.
 7. Saves the run timestamp to `.mvs_upload_lastrun` for future incremental
    runs.
 8. Prints a summary and exits 0 on success, 1 if any transfer failed.
+
+### FTP dialogue log
+
+Only the script's own progress and error lines appear on screen; the noisy
+FTP client/server conversation is suppressed (`log_user 0`) and captured to a
+log file instead:
+
+- Upload writes `.mvs_upload_ftp.log`; download writes `.mvs_download_ftp.log`.
+- The log is overwritten on each run and prefixed with a timestamped header.
+- When a transfer fails, the summary points at the log so the full dialogue is
+  available for diagnosis.
+- The password is entered through the FTP client (which suppresses its echo),
+  so it is not written to the log.
+- Both logs are listed in `.gitignore` — they are machine-local and should not
+  be committed.
 
 ### Incremental mode
 
@@ -160,6 +177,7 @@ are needed:
 MVS source upload
 =================
 FTP target : localhost:2121
+FTP log    : /home/tony/dino_nfs/.mvs_upload_ftp.log
 Mode       : incremental
 Last run   : 2026-05-20 14:32:07
 Jobs       :
@@ -216,7 +234,9 @@ overwriting the working source tree:
 2. Creates the destination directory if it does not exist.
 3. Prints a banner showing the FTP target, PDS names, and destination.
 4. Prompts for TSO userid and password.
-5. Connects to the FTP server, logs in, and sets ASCII mode.
+5. Connects to the FTP server, logs in, and sets ASCII mode.  The raw FTP
+   dialogue is **not** shown on screen — it is written to
+   `.mvs_download_ftp.log` (see [FTP dialogue log](#ftp-dialogue-log)).
 6. For each configured PDS: CDs to it, runs `ls` to get the member list,
    then downloads each member to a local file.
 7. Prints a summary and exits 0 on success, 1 if any download failed.
@@ -257,6 +277,7 @@ either begin with a digit (response codes) or contain lowercase letters.
 MVS source download
 ===================
 FTP target       : localhost:2121
+FTP log          : /home/tony/dino_nfs/.mvs_download_ftp.log
 C   PDS          : /TONYW.DINONFS.C
 H   PDS          : /TONYW.DINONFS.H
 JCL PDS          : /TONYW.DINONFS.CNTL

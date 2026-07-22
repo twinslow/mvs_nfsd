@@ -60,6 +60,10 @@ set jcl_dir        [file join $script_dir jcl]
 set tests_dir      [file join $script_dir tests]
 set tests_jcl_dir  [file join $script_dir tests-jcl]
 
+# Raw FTP client/server dialogue is written here (not echoed to the screen)
+# so it is available for diagnosis if a transfer fails.
+set ftp_log        [file join $script_dir .mvs_upload_ftp.log]
+
 #
 # Upload job list.  Each entry is a three-element list:
 #   1. Local source directory (absolute path)
@@ -348,6 +352,7 @@ send_user "\n"
 send_user "MVS source upload\n"
 send_user "=================\n"
 send_user "FTP target : $ftp_host:$ftp_port\n"
+send_user "FTP log    : $ftp_log\n"
 if {$g_incremental} {
     send_user "Mode       : incremental\n"
     if {$g_last_run_time > 0} {
@@ -411,6 +416,26 @@ if {[info exists env(MVS_PASSWORD)] && $env(MVS_PASSWORD) ne ""} {
 send_user "\n"
 
 # -----------------------------------------------------------------------
+# Quiet the FTP dialogue
+#
+# The raw FTP conversation is noisy, so keep it OFF the screen (log_user 0)
+# and record it in a log file instead.  Only this script's own progress and
+# error messages (send_user, unaffected by log_user) still appear on screen;
+# the log file is there for post-mortem diagnosis when a transfer fails.
+# The password is sent to the FTP client, which suppresses its echo, so it is
+# not captured in the log.
+# -----------------------------------------------------------------------
+# -a       : log the dialogue even though log_user 0 hides it from the screen
+#            (without -a, log_file records nothing while log_user is 0).
+# -noappend: truncate, so the log reflects only the current run.
+log_user 0
+if {[catch {log_file -a -noappend $ftp_log} _err]} {
+    send_user "Warning: cannot open FTP log $ftp_log ($_err) -- continuing.\n"
+} else {
+    send_log "===== FTP upload session [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] =====\n"
+}
+
+# -----------------------------------------------------------------------
 # Spawn FTP  (-p = passive mode,  host  port)
 # -----------------------------------------------------------------------
 send_user "Connecting to $ftp_host port $ftp_port ...\n"
@@ -437,8 +462,8 @@ send "$password\r"
 
 expect {
     "230 " { send_user "Logged in as $userid.\n\n" }
-    "530 " { send_user "Error: login failed -- check userid and password.\n"; exit 1 }
-    timeout { send_user "Error: timeout waiting for login confirmation.\n";   exit 1 }
+    "530 " { send_user "Error: login failed -- check userid and password (see $ftp_log).\n"; exit 1 }
+    timeout { send_user "Error: timeout waiting for login confirmation (see $ftp_log).\n";   exit 1 }
 }
 
 # -----------------------------------------------------------------------
@@ -485,6 +510,7 @@ send_user "Upload complete.\n"
 send_user "  Succeeded : $total_ok file(s)\n"
 if {$total_err > 0} {
     send_user "  Failed    : $total_err file(s)\n"
+    send_user "  FTP log   : $ftp_log (full dialogue for diagnosis)\n"
 }
 send_user "\n"
 
