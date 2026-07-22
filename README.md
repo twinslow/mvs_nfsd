@@ -77,7 +77,7 @@ other important datasets that could prevent an IPL from completing.
 | `mvsprf.c/h` | Performance stats tracking |
 | `mvsfsz.c/h` | File-size cache — stores true text-mode sizes of PDS members |
 | `mvsfid.c/h` | Stable 64-bit file ID generation from dataset + member name |
-| `mvsutl.c/h` | JES2 job-id lookup (PSA→TCB→JSCB→SSIB) for seeding write verifier; function to get timezone offset from CVT |
+| `mvsutl.c/h` | JES2 job-id lookup (PSA→TCB→JSCB→SSIB) for seeding write verifier; CVT timezone-offset read and LOCAL ↔ UTC epoch conversions for ISPF stat times |
 | `ebcdic.c/h` | EBCDIC ↔ ASCII translation tables |
 
 ### Utilities
@@ -119,6 +119,16 @@ other important datasets that could prevent an IPL from completing.
 | `tests/tmvsspl.c` | Tests for `mvsspl.c` — the write-spill store, driven with a reference-model verifier (odd offsets, holes, overwrites, reuse, large sizes, fuzz) |
 | `tests/tcfgopts.c` | Tests for `cfgopts.c` — export keyword parsing and option resolution |
 | `tests/tlogger.c` | Tests for `logger.c` — log-level and per-procedure level handling |
+| `tests/txdr.c` | Tests for `xdr.c` — XDR encode/decode primitives (byte layout, uint64 word order, opaque/string padding, bounds checks and error latching, handle framing) |
+| `tests/trpc.c` | Tests for `rpc.c` — RPC CALL header parsing (AUTH_NULL / AUTH_UNIX) and the reply-header writers |
+| `tests/tfhandle.c` | Tests for `fhandle.c` — file-handle wire format `fh_encode` / `fh_decode` (round-trip, magic/length rejection, pad-trim, field boundaries) |
+| `tests/tmvsfid.c` | Tests for `mvsfid.c` — FNV-1a fileid hashing (determinism, distinctness, NUL domain separation, length clamps, ino32 fold) |
+| `tests/tebcdic.c` | Tests for `ebcdic.c` — CP037 translation tables both ways, unmapped fallbacks, buffer translators, `ebcdic_member_to_name` |
+| `tests/tmvsutl.c` | Tests for `mvsutl.c` — LOCAL ↔ UTC epoch conversions (sign, inverse property) via the offset test seam |
+
+> Coverage summary: see the **test coverage matrix** in
+> [doc/readme_unit_tests.md](doc/readme_unit_tests.md), which maps every
+> production module to its test module with a low/medium/high rating.
 
 Standalone diagnostic programs (each has its own `main()` and is run
 individually — not part of the `runall` munit suite):
