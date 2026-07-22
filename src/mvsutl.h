@@ -30,6 +30,12 @@ void   mvs_tz_init(void);
 /* Cached local-minus-GMT offset in seconds (negative west of GMT). */
 int    mvs_tz_offset(void);
 
+/* Override the cached offset directly, bypassing the CVT read.  Provided so
+   the pure conversions below can be exercised with a known offset (and as a
+   hook for any future non-CVT offset source).  Normal startup uses
+   mvs_tz_init() instead. */
+void   mvs_tz_set_offset(int seconds);
+
 /* Convert a decoded ISPF LOCAL wall-clock epoch (a value whose gmtime()
    yields the local wall clock) to true UTC epoch seconds. */
 time_t mvs_local_epoch_to_utc(time_t local_epoch);

@@ -124,6 +124,18 @@ export_t *exports_get(int idx)
     return &s_exports[idx];
 }
 
+/* exports_get_id: index of 'exp' in the stub table, or -1 (mirrors exports.c).
+   Referenced by fhandle.c's fh_resolve, so it must resolve when fhandle.o is
+   linked -- even though the fh encode/decode tests never call it. */
+int exports_get_id(const export_t *exp)
+{
+    int i;
+    for (i = 0; i < s_nexports; i++) {
+        if (&s_exports[i] == exp) return i;
+    }
+    return -1;
+}
+
 /* -----------------------------------------------------------------------
  * Dataset provider stubs (in place of exports.c).
  * ----------------------------------------------------------------------- */

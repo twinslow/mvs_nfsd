@@ -17,5 +17,7 @@ zapp.yaml
 *.so
 *.exe
 
-# Upload script runtime state
+# Upload/download script runtime state and FTP dialogue logs
 .mvs_upload_lastrun
+.mvs_upload_ftp.log
+.mvs_download_ftp.log

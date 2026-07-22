@@ -115,6 +115,11 @@ int mvs_tz_offset(void)
     return g_tz_offset;
 }
 
+void mvs_tz_set_offset(int seconds)
+{
+    g_tz_offset = seconds;
+}
+
 time_t mvs_local_epoch_to_utc(time_t local_epoch)
 {
     return local_epoch - (time_t)g_tz_offset;

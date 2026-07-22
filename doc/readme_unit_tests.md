@@ -242,8 +242,9 @@ replaces).
 | `/resolve` | `cfg_resolve_opts`: defaults, export→dataset inheritance and override, the `ro` ceiling, `rw`-inside-`ro` rejected, and `fileext`/`nofileext` default/override |
 
 > Note: this list is not exhaustive — several later modules (`tmvspdir`,
-> `tmvsprw`, `tmvspww`, `tmvsspl`, `tlogger`, `tcfgopts`) are registered in
-> `runall.c` and `testrun.jcl` but not all detailed here.
+> `tmvsprw`, `tmvspww`, `tmvsspl`, `tlogger`, `tcfgopts`, `txdr`, `trpc`,
+> `tfhandle`, `tmvsfid`, `tebcdic`, `tmvsutl`) are registered in `runall.c` and
+> `testrun.jcl` but not all detailed here.
 >
 > `tmvsspl` (the write-spill store) is worth calling out: it drives
 > `spill_open`/`write`/`read`/`close` against a **reference model** — every
@@ -254,6 +255,116 @@ replaces).
 > interleaved read/write with backward seeks, scratch reuse/truncate, large
 > (>buffer, multi-track) sizes, and a several-hundred-op fuzz driven by a
 > fixed-seed LCG (so every run is identical and any failure is deterministic).
+
+---
+
+## Test coverage matrix
+
+This table maps every MVS application (production) module — the set compiled and
+linked by `jcl/makejcc.jcl` — to the unit-test module(s) that exercise it, with a
+coarse coverage rating.  It is the baseline for an ongoing effort to raise
+coverage, so the ratings are deliberately blunt.
+
+**Rating key**
+
+| Rating | Meaning |
+|---|---|
+| **High** | A dedicated test module drives essentially the whole testable public API, including edge cases. |
+| **Medium** | A dedicated test module covers the core pure logic well, but a meaningful part of the module — typically the MVS-runtime I/O paths that cannot run off-platform — is unverified. |
+| **Low** | No dedicated test module, but the code is exercised **indirectly** by another module's tests, or by a standalone (non-munit) driver. |
+| **None** | Not exercised by any test at all. |
+
+Notes: "testable surface" excludes code that can only run against live MVS
+services (BSAM/BPAM I/O, STOW, SVC 99, ENQ, sockets) — those are validated by
+on-system integration runs, not munit.  `mockvfs.c` is a test mock (compiled but
+not linked into the server, per `makejcc.jcl`).  `vfs.c` and `ressock.c` are part
+of the non-MVS reference build only and are not in the MVS application.
+
+### Core RPC / NFS / server plumbing
+
+| Source module | Role | Unit test module(s) | Coverage |
+|---|---|---|---|
+| `xdr.c` | XDR encode/decode primitives | `txdr.c` | **High** |
+| `rpc.c` | RPC/ONC message header parse & build | `trpc.c` | **Medium** |
+| `portmap.c` | PORTMAP/rpcbind responder | *(none)* | **None** |
+| `mount3.c` | MOUNT v3 protocol handler | *(none)* | **None** |
+| `nfs3.c` | NFSv3 procedure handlers (`proc_*`) | *(none)* | **None** |
+| `nfsd.c` | `main()`, arg parsing, `select()` loop | *(none)* | **None** |
+
+### VFS layer
+
+| Source module | Role | Unit test module(s) | Coverage |
+|---|---|---|---|
+| `mvsvfs.c` | VFS orchestration over the MVS PDS store | *(none — `mockvfs` replaces it, does not test it)* | **None** |
+
+### MVS I/O and caching helpers
+
+| Source module | Role | Unit test module(s) | Coverage |
+|---|---|---|---|
+| `mvsio.c` | Path ↔ dataset/member resolution | `tmvsio.c`, `tmvsio2.c` | **High** |
+| `mvspdir.c` | PDS directory + ISPF-stats encode/decode | `tmvspdir.c` | **Medium** |
+| `mvsspl.c` | Write-spill scratch-dataset store | `tmvsspl.c` | **High** |
+| `mvspww.c` | Pending-member write pool | `tmvspww.c` | **Medium** |
+| `mvsprw.c` | PDS member read cache | `tmvsprw.c` | **Medium** |
+| `mvsfsz.c` | Member file-size cache | `tmvsfsz.c` | **High** |
+| `mvsdol.c` | Directory open-list pool | `tmvsdol.c` | **High** |
+| `mvsprf.c` | Performance-statistics counters | `tmvsprf.c` | **High** |
+| `mvsfid.c` | fileid / inode hashing | `tmvsfid.c` | **High** |
+| `mvsutl.c` | Job id, CVT reads, TZ epoch conversion | `tmvsutl.c` | **Medium** |
+
+### Configuration and exports
+
+| Source module | Role | Unit test module(s) | Coverage |
+|---|---|---|---|
+| `cfgopts.c` | Export keyword option parsing (pure) | `tcfgopts.c` | **High** |
+| `exports.c` | Exports file load + export/dataset tables | *(none — replaced by `tstubs.c` in tests)* | **None** |
+
+### Utilities
+
+| Source module | Role | Unit test module(s) | Coverage |
+|---|---|---|---|
+| `logger.c` | Log levels, per-proc table, `SET LOGLVL` parser | `tlogger.c` | **Medium** |
+| `ebcdic.c` | ASCII ↔ EBCDIC translation | `tebcdic.c` | **High** |
+| `fhandle.c` | NFS file-handle build / resolve / hash | `tfhandle.c` | **Medium** |
+| `hexdump.c` | Debug hex dump helper | *(none)* | **None** |
+
+### Assembler modules
+
+| Source module | Role | Test driver | Coverage |
+|---|---|---|---|
+| `getcib.asm` | MODIFY command interface block fetch | `testcib.c` *(standalone driver, not munit)* | **Low** |
+| `mvsenq.asm` | ENQ/DEQ (SPFEDIT serialisation) | `testenq.c` *(standalone driver, not munit)* | **Low** |
+| `mvsdalc.asm` | SVC 99 dynamic allocation | *(none)* | **None** |
+| `mvsstow.asm` | BLDL / FIND / STOW helper | *(none)* | **None** |
+
+### Priority gaps (first candidates to raise)
+
+These are **pure, platform-independent** modules that currently rate **None**
+(except `mvsutl`, which is only exercised indirectly) yet are directly
+unit-testable with no MVS runtime dependency — the cheapest, highest value
+coverage to add next:
+
+- ~~`xdr.c`~~ — **done**: `txdr.c` drives every primitive (byte layout, uint64
+  word order, opaque/string padding, bounds checks and error latching, handle
+  framing).  Was the first target for exactly the reasons below.
+- ~~`rpc.c`~~ — **done** (Medium): `trpc.c` covers `rpc_parse_call` (AUTH_NULL /
+  AUTH_UNIX / extra gids / bad msg-type / bad rpcvers / truncated) and the reply
+  writers.  Still open: `rpc_recv` / `rpc_send` TCP record-marking (needs a
+  socket, so an integration test).
+- `fhandle.c` — **partly done** (Medium): `tfhandle.c` covers the wire format
+  `fh_encode` / `fh_decode` (round-trip, magic/length rejection, pad/trim, field
+  boundaries).  Still open: `fh_from_path` / `fh_resolve`, which need genuine
+  ASCII inputs built by hand under JCC's EBCDIC-native literals plus a populated
+  export table — a later integration pass.
+- ~~`mvsutl.c`~~ — **done** (Medium): `tmvsutl.c` pins the LOCAL↔UTC epoch
+  conversions (sign, inverse property, live-offset) via `mvs_tz_set_offset`.
+  Open: the CVT/low-storage reads (`get_tz_offset` etc.), which only run on MVS.
+- ~~`mvsfid.c`~~ — **done**: `tmvsfid.c` pins determinism, non-zero output,
+  distinctness, the NUL domain-separation invariant, the length clamps, and the
+  ino32 XOR-fold (all relational, since the byte-wise hash differs by charset).
+- ~~`ebcdic.c`~~ — **done**: `tebcdic.c` pins the CP037 tables both ways,
+  unmapped fallbacks, the alnum round-trip, the buffer translators, and
+  `ebcdic_member_to_name` (numeric byte assertions, so charset-independent).
 
 ---
 
