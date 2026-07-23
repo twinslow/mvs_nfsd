@@ -1,0 +1,38 @@
+{
+  "_comment": "MVS mode: verify NFS results over MVS FTP. Copy to config.json and edit. Field notes are in README.md.",
+
+  "mode": "mvs",
+
+  "nfs": {
+    "_mount_point_note": "The location where the NFS export is mounted, and the ONLY place the tests operate. On Linux a directory path (e.g. /mnt/dinonfs); on Windows the NFS drive letter (e.g. \"Z:\\\\\").",
+    "mount_point": "/mnt/dinonfs",
+    "export": "192.0.2.10:/exports",
+    "windows_export": "\\\\192.0.2.10\\exports",
+    "auto_mount": false,
+    "use_sudo": false,
+    "mount_options_linux": "vers=3,proto=tcp,nolock,soft,timeo=30,retrans=2",
+    "mount_options_windows": "anon,nolock,mtype=soft"
+  },
+
+  "ftp": {
+    "host": "192.0.2.10",
+    "port": 2121,
+    "user": null,
+    "password": null
+  },
+  "_ftp_note": "Leave user/password null and set the MVS_USERID and MVS_PASSWORD environment variables instead (do not put credentials in this file).",
+
+  "datasets": {
+    "fb":    { "nfs_dir": "temp.itest.fb",      "dsname": "TEMP.ITEST.FB",      "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb":    { "nfs_dir": "temp.itest.vb",      "dsname": "TEMP.ITEST.VB",      "ext": "txt", "recfm": "VB", "lrecl": 255 },
+    "fb2":   { "nfs_dir": "temp.itest.fb2",     "dsname": "TEMP.ITEST.FB2",     "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb2":   { "nfs_dir": "temp.itest.vb2",     "dsname": "TEMP.ITEST.VB2",     "ext": "txt", "recfm": "VB", "lrecl": 255 },
+    "small": { "nfs_dir": "temp.itest.fbsmall", "dsname": "TEMP.ITEST.FBSMALL", "ext": "txt", "recfm": "FB", "lrecl": 80 }
+  },
+
+  "options": {
+    "large_lines": 1500,
+    "line_width": 72,
+    "mtime_tolerance_sec": 120
+  }
+}

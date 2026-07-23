@@ -1,0 +1,27 @@
+{
+  "_comment": "Plain mode: prove the harness on a standard NFS server (e.g. Windows client -> Linux NFS export). No FTP, no MVS. Verification reads members back through the mount. MVS-only tests auto-skip.",
+
+  "mode": "plain",
+
+  "nfs": {
+    "mount_point": "Z:\\",
+    "windows_export": "\\\\192.0.2.20\\srv\\nfs\\dinotest",
+    "export": "192.0.2.20:/srv/nfs/dinotest",
+    "auto_mount": false,
+    "mount_options_windows": "anon,nolock,mtype=soft",
+    "mount_options_linux": "vers=3,proto=tcp,nolock,soft"
+  },
+
+  "datasets": {
+    "fb":  { "nfs_dir": "fb",  "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb":  { "nfs_dir": "vb",  "ext": "txt", "recfm": "VB", "lrecl": 255 },
+    "fb2": { "nfs_dir": "fb2", "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb2": { "nfs_dir": "vb2", "ext": "txt", "recfm": "VB", "lrecl": 255 }
+  },
+
+  "options": {
+    "large_lines": 1500,
+    "line_width": 72,
+    "mtime_tolerance_sec": 5
+  }
+}
