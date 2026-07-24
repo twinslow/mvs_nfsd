@@ -443,6 +443,20 @@ int main(int argc, char *argv[])
             log_info("MVS STOP command received, shutting down");
             break;
         }
+#endif
+
+        /* ---- Fatal abend in the write path? (design_nfs_write.md Sec 7.3) --
+         * The flush traps out-of-space abends and keeps serving, but anything
+         * else is a probable program error: it has been reported loudly and we
+         * now shut down rather than carry on from state we no longer trust.
+         * Ending the task also lets MVS reclaim any allocation or SPFEDIT
+         * enqueue the cleanup could not release. */
+        if (pww_fatal_abend()) {
+            log_error("unrecoverable abend in the write path -- shutting down");
+            break;
+        }
+
+#ifdef __MVS__
         if (cib_rc == 1) {
             /* MODIFY (F) command received.  Hand the operand text to the
              * logger, which claims "SET LOGLVL ..." commands; anything it

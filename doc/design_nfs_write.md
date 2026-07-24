@@ -483,14 +483,27 @@ than silent:
    `pww_write_member`, keep it in a module-scope `static FILE *g_flush_fp` (the
    server is single-threaded and flushes one slot at a time), set on open and
    cleared on close or recovery.
-3. **Unallocate the member and DEQ the enqueue — mandatory.**  Release the
-   `DISP=SHR` PDS/member allocation (the ddname) and DEQ the `SPFEDIT`
-   resource, then free the buffer / `spill_close` (§7.2).  Neither may be
-   skipped: a retained allocation leaks a ddname for the life of the task, and
-   a retained enqueue locks the member against ISPF **indefinitely** — the
-   worst possible residue, because it outlives the failed request and blocks a
-   human.  Each step runs under a **nested** STAE so a secondary abend during
-   cleanup cannot escape either (establish/cancel still balance, LIFO).
+3. **Unallocate the member and DEQ the enqueue — mandatory, and in that
+   order.**  `pww_lock` takes the `SPFEDIT` enqueue **first** and then
+   allocates, so release must run in the **exact reverse**: unallocate, then
+   DEQ.  Releasing in the same order as acquiring risks a **deadly embrace**
+   with another task doing the same thing, so this order must not be "tidied".
+
+   Neither step may be skipped: a retained allocation leaks a ddname for the
+   life of the task, and a retained enqueue locks the member against ISPF
+   **indefinitely** — the worst residue, because it outlives the failed request
+   and blocks a human.  Critically, each step therefore runs under its **own**
+   STAE rather than sharing one: after a `B14` the dataset's DCB has just been
+   closed badly, making the unallocate the likeliest thing to fail, and with a
+   shared guard its failure would unwind past the DEQ and strand the enqueue.
+   Separate guards mean both are always attempted; if either abends it is
+   reported and the fatal flag is set, so the task ends and MVS reclaims what
+   we could not.
+
+   Release is issued by the **caller** (`pww_flush_idle` / `pww_flush_all` /
+   the eviction path), not by the flush: an earlier version released inside
+   `pww_flush_slot`, which zeroed the slot underneath the caller — it then
+   logged an empty `flush failed for ()` and released a second time.
 4. **Mark the slot clean and free** so neither the idle sweep nor a later
    COMMIT retries it.  Retrying an out-of-space write only abends again; the
    buffered data is discarded and the client has been told.
@@ -502,7 +515,27 @@ than silent:
 |---|---|---|---|
 | `B14` | Member CLOSE/STOW failed — **in practice the visible face of an out-of-space `D37`** (see above), and also what a directory-full STOW surfaces as | `ENOSPC` | `NFS3ERR_NOSPC` |
 | `B37`, `D37`, `E37` | Out of space / no extents, if ever surfaced directly | `ENOSPC` | `NFS3ERR_NOSPC` |
-| anything else | Unexpected failure | `EIO` | `NFS3ERR_IO` |
+| anything else | **Not recovered** — probable program error; loud message + shutdown | `EIO` | `NFS3ERR_IO` |
+
+**Only the out-of-space family is recovered — deliberately.**  The guard spans
+more than the PDS writes (it also covers the spill read-back and the in-place
+ASCII→EBCDIC translation), so it *can* intercept abends that have nothing to do
+with running out of space.  Recovering from those would be actively harmful: an
+`S0C4` from a bad pointer or a buffer overrun would be dressed up as a soft
+"I/O error", repeated silently, and the underlying bug hidden — the exact
+opposite of what you want while chasing a corruption bug.
+
+So `pww_abend_recoverable()` whitelists `B14`/`B37`/`D37`/`E37` and nothing
+else.  Anything outside that set is reported with unmistakably different wording
+("UNEXPECTED abend ... probable PROGRAM ERROR") and sets a **fatal flag**
+(`pww_fatal_abend()`).  The main `select()` loop polls it alongside the operator
+STOP check and shuts the server down cleanly.  Continuing would mean serving
+from state we no longer trust; ending the task also makes MVS reclaim any
+allocation or enqueue the cleanup could not release.  The narrower alternative —
+hoisting the read/translate out of the guarded region so only `fwrite`/`fclose`
+are covered — was considered and rejected: it costs a STAE per 4 KB chunk, and
+a real bug in that code will surface as an `S0C4` or as plainly wrong output
+anyway.
 
 `vfs_errno_to_nfs3` already maps both, so `proc_commit` returns a proper error
 and the client reports "no space left on device" — exactly the right diagnosis.
@@ -562,9 +595,24 @@ for the first cut; the ways out, in rough order of value:
    the entry.  Clients nearly always touch the file again (a final GETATTR at
    close is near-universal), so this converts most silent losses into a reported
    one for the cost of a few table entries.  It composes with (1).
-3. **Fail fast on the next write.**  A cheaper subset of (2): mark the member
-   poisoned so any later WRITE fails at once.  Helps a client still streaming a
-   large file; does nothing when the failed flush was the last one.
+3. **Fail fast on the next write — IMPLEMENTED.**  Testing turned this from a
+   nice-to-have into a necessity.  A full PDS abends on *every* flush, and each
+   abend is expensive (D37 + B14 + STAE recovery + console messages): a client
+   copying 300 files into a full dataset produced ~600 abends and minutes of
+   console spam, with the server merely surviving each one.  So `mvspww` now
+   **remembers the dataset**: an out-of-space abend records the dsname, and
+   `pww_create` / `pww_write` refuse writes to it up front with `ENOSPC`.
+
+   That collapses the abend storm to a single abend, and — because CREATE and
+   WRITE are **synchronous** — it also closes the reporting gap *for this case*:
+   the client genuinely sees the error on every subsequent file instead of
+   losing them silently.  Only the very first member is lost quietly.
+
+   The memory expires (`PWW_FULL_EXPIRY_SEC`, 60s) so the server recovers on its
+   own once an operator adds space, and any successful flush to that dataset
+   clears it immediately.  A small fixed table (`PWW_FULL_REMEMBER`) holds the
+   recent offenders; nothing marks a dataset full off-MVS, so the check is
+   inert there.
 4. **Check space before accepting.**  Consult the dataset's free extents at
    CREATE / first write and refuse early with `ENOSPC` on the (synchronous)
    WRITE.  Preventative rather than reactive, and it cannot know the eventual
@@ -581,11 +629,18 @@ as a separate, explicit revisit of §4.
 - A **partially written member** remains in the PDS after an out-of-space abend
   (proven by the prototype) until the optional TTR-restore follow-on above is
   implemented.  The WTO is what stops that being silent.
-- The recovery path's own unallocate / DEQ could themselves fail; the nested
-  STAE contains such a failure but cannot undo it.  A leaked ddname is
-  survivable, but a **leaked `SPFEDIT` enqueue is not benign** — it blocks ISPF
-  on that member for the life of the task, so a failure there must be logged at
-  ERROR and WTO'd, not swallowed.
+- The release steps themselves can abend.  Each has its own STAE so one cannot
+  skip the other, but a step that abends genuinely does strand its resource — a
+  leaked ddname is survivable, a **stranded `SPFEDIT` enqueue is not** (it
+  blocks ISPF on that member for the life of the task).  That is why such a
+  failure sets the fatal flag: **the task shuts down and MVS reclaims both the
+  allocation and the enqueue at address-space termination.**
+
+  *Decision (agreed):* no orphan-retry table.  An earlier proposal was to record
+  unreleased resources and retry them on each idle sweep.  It is not worth the
+  complexity — MVS reclamation at task end already covers the case completely,
+  and it only fails for a task that is hung rather than ended, which is exactly
+  what the fatal flag prevents.
 - A STAE cannot recover from every failure mode (e.g. a system-forced
   termination); this reduces the blast radius, it does not make NFSD
   unkillable.
@@ -593,17 +648,19 @@ as a separate, explicit revisit of §4.
   be extended to the PDS **directory read** and **member read** paths, which
   can also abend on a damaged dataset.
 
-**Testing hook.**  The automated integration suite already drives this: test
+**Testing hook.**  The automated integration suite drives this: test
 **1.3 `upload_full_dataset`** writes members into a deliberately tiny PDS
-(`TEMP.ITEST.FBSMALL`, 1 track) until a write fails.  Before this change that
-test kills the server.  After it, the primary assertion must be that **the
-server survives and still answers the remaining tests in the run** — not that
-the client necessarily sees an error.  Per the reporting gap above, a
-`FILE_SYNC` client whose flush lands on the idle sweep may see every write
-succeed; the failure is then only in the log/WTO.  The test as first written
-asserts that a write fails, so it will need adjusting to match: pass = "server
-alive and serving", with a reported `ENOSPC` as a bonus that becomes reliable
-once (1) or (2) above is in place.
+(`TEMP.ITEST.FBSMALL`, 1 track).  Before this change that test killed the
+server.  The assertion is deliberately **not** "a write failed" — per the
+reporting gap, a flush landing on the idle sweep has no request in flight to
+fail — but "**the server survived**", proven by writing and verifying a member
+in a healthy dataset afterwards.
+
+The first run taught two lessons, both now folded in: the original 300 attempts
+cost ~600 real abends and minutes of console spam for no extra signal (the
+attempt count is now 12), and the abend storm itself motivated the fast-fail in
+(3) above.  With that in place the expected shape is: **one** abend for the
+first member, then every later attempt refused synchronously with `ENOSPC`.
 
 ## 8. Memory strategy (the 8 MB address-space constraint)
 

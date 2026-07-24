@@ -946,7 +946,8 @@ int vfs_set_times(const char *path,
                                    pds_member_name, export_idx) < 0)
         return 0;                         /* unresolvable -- accept, no change */
 
-    return pww_touch_stats(export_idx, pds_dsname, pds_member_name, new_time);
+    return pww_touch_stats(export_idx, dataset_idx,
+                           pds_dsname, pds_member_name, new_time);
 }
  
 /* -------------------------------------------------------------------- */

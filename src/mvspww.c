@@ -37,6 +37,83 @@ static pending_member_t g_pww_pool[PWW_MAX_PENDING];
    in case the client writes more before the slot is released. */
 static uint8_t g_pww_xlate[4096];
 
+/* -------------------------------------------------------------------- */
+/* "Dataset is out of space" memory (design_nfs_write.md Sec 7.3)        */
+/*                                                                       */
+/* A full PDS abends on EVERY flush, and each abend is expensive: D37 +  */
+/* B14 + STAE recovery + several console messages.  Without this, one    */
+/* client copying a directory into a full dataset produces one abend per */
+/* file (measured: 300 files -> ~600 abends, minutes of console spam).   */
+/*                                                                       */
+/* So once a flush has abended out-of-space we remember that dataset and */
+/* refuse further writes to it up front.  That also closes the reporting */
+/* gap for this case: CREATE and WRITE are SYNCHRONOUS, so the client    */
+/* actually sees the ENOSPC instead of losing data silently the way an   */
+/* idle-sweep flush failure does.                                        */
+/*                                                                       */
+/* The memory expires so the server recovers by itself once an operator  */
+/* adds space, and any successful flush clears it immediately.  Nothing  */
+/* marks a dataset full off-MVS (no abends there), so pww_is_full() is   */
+/* simply always false and the check costs a few compares.               */
+/* -------------------------------------------------------------------- */
+#define PWW_FULL_REMEMBER    4     /* datasets remembered as full       */
+#define PWW_FULL_EXPIRY_SEC  60    /* forget after this many seconds    */
+
+static struct {
+    char   dsname[MAX_DSNAME_LEN];
+    time_t when;                   /* 0 = entry unused */
+} g_pww_full[PWW_FULL_REMEMBER];
+
+/* Remember that 'dsname' is out of space (refresh if already known; else take
+   the oldest / an unused entry). */
+static void pww_mark_full(const char *dsname, time_t now)
+{
+    int i;
+    int oldest = 0;
+
+    for (i = 0; i < PWW_FULL_REMEMBER; i++) {
+        if (g_pww_full[i].when != 0 &&
+            strcmp(g_pww_full[i].dsname, dsname) == 0) {
+            g_pww_full[i].when = now;
+            return;
+        }
+        if (g_pww_full[i].when < g_pww_full[oldest].when)
+            oldest = i;
+    }
+    strncpy(g_pww_full[oldest].dsname, dsname, MAX_DSNAME_LEN - 1);
+    g_pww_full[oldest].dsname[MAX_DSNAME_LEN - 1] = '\0';
+    g_pww_full[oldest].when = now;
+}
+
+/* Forget 'dsname' -- a flush to it has just succeeded, so it has room again. */
+static void pww_clear_full(const char *dsname)
+{
+    int i;
+    for (i = 0; i < PWW_FULL_REMEMBER; i++) {
+        if (g_pww_full[i].when != 0 &&
+            strcmp(g_pww_full[i].dsname, dsname) == 0)
+            g_pww_full[i].when = 0;
+    }
+}
+
+/* Is 'dsname' known to be out of space?  Expired entries are dropped here, so
+   the table needs no separate sweep. */
+static int pww_is_full(const char *dsname, time_t now)
+{
+    int i;
+    for (i = 0; i < PWW_FULL_REMEMBER; i++) {
+        if (g_pww_full[i].when == 0)
+            continue;
+        if (now - g_pww_full[i].when > PWW_FULL_EXPIRY_SEC) {
+            g_pww_full[i].when = 0;
+            continue;
+        }
+        if (strcmp(g_pww_full[i].dsname, dsname) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 #ifdef __MVS__
 /* -------------------------------------------------------------------- */
 /* Abend protection for the flush (design_nfs_write.md Sec 7.3)          */
@@ -76,20 +153,35 @@ static int g_flush_abended = 0;
    abended (0 = it did not), so the warning can name it. */
 static int g_stats_abend = 0;
 
-/* Map an abend completion code onto errno.  B14 is the visible face of an
-   out-of-space condition (see above) and is also how a directory-full STOW
-   surfaces, so it maps to ENOSPC -> NFS3ERR_NOSPC, which is the diagnosis the
-   client should see. */
-static int pww_abend_errno(unsigned int code)
+/* Is this an abend we deliberately trap and recover from?
+ *
+ * ONLY the out-of-space family.  These are environmental: the dataset filled
+ * up, which is outside our control and must not take the server down.  B14 is
+ * the visible face of an out-of-space condition (see above) and is also how a
+ * directory-full STOW surfaces, so it belongs here too.  All map to ENOSPC ->
+ * NFS3ERR_NOSPC, which is the diagnosis the client should see.
+ *
+ * Everything else -- S0C4, S0C1, ... -- means a PROGRAM ERROR, and recovering
+ * from it would be actively harmful: it would turn a deterministic crash into a
+ * silent, repeating "I/O error" and hide the bug.  Those are reported loudly
+ * and set the fatal flag instead (see pww_fatal_abend). */
+static int pww_abend_recoverable(unsigned int code)
 {
     switch (code) {
     case 0xB14:                                    /* CLOSE/STOW failed     */
     case 0xB37: case 0xD37: case 0xE37:            /* out of space/extents  */
-        return ENOSPC;
+        return 1;
     default:
-        return EIO;
+        return 0;
     }
 }
+
+/* Set when an abend we do NOT recover from is trapped, or when cleanup could
+   not release its resources.  The main select loop polls pww_fatal_abend() and
+   shuts the server down cleanly: continuing after an unexpected abend risks
+   serving from corrupt state, and an orderly shutdown also lets MVS free any
+   allocation or SPFEDIT enqueue we failed to release. */
+static int g_fatal_abend = 0;
 
 /* Publish / clear the in-flight member stream for the recovery path. */
 #define PWW_FLUSH_FP(f)   (g_flush_fp = (f))
@@ -168,37 +260,103 @@ static int pww_lock(pending_member_t *pm)
     return 0;
 }
 
-/* Release whatever pww_lock acquired, driven by the slot's flags so it
-   is safe to call unconditionally and after a partial open.  Unallocate
-   first, then DEQ (DEQ RET=HAVE is safe even if not held). */
-static void pww_unlock(pending_member_t *pm)
+/* Unallocate the member, under its own STAE.  Always clears the flag: if the
+   step abended the ddname may leak, but pretending it is still ours would stop
+   the slot ever being reused. */
+static void pww_unalloc_guarded(pending_member_t *pm)
 {
-    if (pm->allocated) {
+    jmp_buf      env;
+    unsigned int sdwa[26];
+    long         rc;
+
+    if (!pm->allocated)
+        return;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    if (rc == 0) {
         char scratch[9];   /* the ddname arg is unused for UNALLOC */
+        log_debug("pww_unlock: unalloc %s(%s) ddname=%s ...",
+                  pm->dsname_ebcdic, pm->member_name, pm->ddname);
         if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
                          pm->dsname_ebcdic, pm->member_name, scratch) != 0)
             log_warn("pww_unlock: unalloc %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
-        pm->allocated = 0;
-        pm->ddname[0] = '\0';
+        (void)_setjmp_canc();
+    } else if (rc == 1) {
+        log_error("pww_unlock: ABEND S%03X unallocating %s(%s) -- ddname may"
+                  " leak; continuing to the DEQ, and requesting shutdown so"
+                  " MVS reclaims it", PWW_ABEND_CODE(sdwa),
+                  pm->dsname_ebcdic, pm->member_name);
+        g_fatal_abend = 1;
     }
-    if (pm->enq_held) {
+    pm->allocated = 0;
+    pm->ddname[0] = '\0';
+}
+
+/* DEQ the SPFEDIT enqueue, under its own STAE.  Runs even if the unallocate
+   above failed -- this is the resource that must not be stranded. */
+static void pww_deq_guarded(pending_member_t *pm)
+{
+    jmp_buf      env;
+    unsigned int sdwa[26];
+    long         rc;
+
+    if (!pm->enq_held)
+        return;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    if (rc == 0) {
         char rname[44 + 8 + 1];
+        log_debug("pww_unlock: DEQ %s(%s) ...",
+                  pm->dsname_ebcdic, pm->member_name);
         pww_spfedit_rname(pm->dsname_ebcdic, pm->member_name, rname);
         if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0)
             log_warn("pww_unlock: DEQ %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
-        pm->enq_held = 0;
+        (void)_setjmp_canc();
+    } else if (rc == 1) {
+        log_error("pww_unlock: ABEND S%03X releasing the SPFEDIT enqueue on"
+                  " %s(%s) -- the member may stay LOCKED against ISPF;"
+                  " requesting shutdown so MVS releases it",
+                  PWW_ABEND_CODE(sdwa), pm->dsname_ebcdic, pm->member_name);
+        g_fatal_abend = 1;
     }
+    pm->enq_held = 0;
+}
+
+/* Release whatever pww_lock acquired, driven by the slot's flags so it is safe
+   to call unconditionally and after a partial open.
+
+   ORDER MATTERS: pww_lock takes the SPFEDIT enqueue FIRST and then allocates,
+   so release must run in the exact reverse -- unallocate, then DEQ.  Releasing
+   in the same order as acquiring risks a deadly embrace with another task doing
+   the same thing, so do not "helpfully" swap these. */
+static void pww_unlock(pending_member_t *pm)
+{
+    /* Each step runs under its OWN STAE.  A release that follows an abend acts
+       on a dataset whose DCB the runtime just closed badly, so the unallocate is
+       the likeliest thing to fail -- and with a single shared STAE its failure
+       would skip the DEQ entirely, stranding the SPFEDIT enqueue.  That is the
+       worst possible residue: it blocks a human in ISPF for the life of the
+       task.  Separate guards mean BOTH are always attempted. */
+    pww_unalloc_guarded(pm);
+    pww_deq_guarded(pm);
+    log_debug("pww_unlock: released %s(%s)",
+              pm->dsname_ebcdic, pm->member_name);
 }
 #else
 static int  pww_lock(pending_member_t *pm)   { (void)pm; return 0; }
 static void pww_unlock(pending_member_t *pm) { (void)pm; }
 #endif
 
-static void pww_slot_release(pending_member_t *pm)
+/* The actual release work.  Never call this directly -- go through
+   pww_slot_release(), which protects it on MVS. */
+static void pww_slot_release_inner(pending_member_t *pm)
 {
     pww_unlock(pm);        /* DEQ + unallocate whatever the slot still holds */
+    if (pm->spill_fp != NULL)
+        log_debug("pww_slot_release: closing spill for %s(%s) ...",
+                  pm->dsname_ebcdic, pm->member_name);
     spill_close(pm);       /* close the scratch dataset if the member spilled */
     if (pm->buf != NULL)
         free(pm->buf);
@@ -207,12 +365,19 @@ static void pww_slot_release(pending_member_t *pm)
 }
 
 #ifdef __MVS__
-/* Release a slot from the abend-recovery path, under its own STAE.
-   Unallocating the member and DEQ'ing the SPFEDIT enqueue is MANDATORY after a
-   failed flush -- a retained enqueue locks the member against ISPF for the life
-   of the task -- but we are running just after an abend, so a secondary abend
-   inside the unallocate/DEQ is plausible and must not escape either. */
-static void pww_slot_release_guarded(pending_member_t *pm)
+/* Release a slot under a STAE.
+ *
+ * EVERY release is protected, not just the one after a failed flush: the most
+ * dangerous release is precisely the one that follows an abend, and that one is
+ * issued by the caller (pww_flush_idle / pww_flush_all), not by the flush.  It
+ * runs unallocate + DEQ against a dataset whose DCB the runtime has just closed
+ * badly, so a secondary abend here is plausible -- and it must not escape.
+ *
+ * Releasing is also MANDATORY: a retained allocation leaks a ddname, and a
+ * retained SPFEDIT enqueue locks the member against ISPF for the life of the
+ * task.  So if the protected release does abend, the slot is still forced free
+ * rather than left USED, which would wedge the pool as well. */
+static void pww_slot_release(pending_member_t *pm)
 {
     jmp_buf      env;
     unsigned int sdwa[26];      /* 104-byte SDWA copy (IHASDWA) */
@@ -220,7 +385,7 @@ static void pww_slot_release_guarded(pending_member_t *pm)
 
     rc = _setjmp_stae(env, (unsigned char *)sdwa);
     if (rc == 0) {
-        pww_slot_release(pm);
+        pww_slot_release_inner(pm);
         if (_setjmp_canc() != 0)
             log_warn("pww_slot_release: _setjmp_canc failed");
         return;
@@ -229,15 +394,18 @@ static void pww_slot_release_guarded(pending_member_t *pm)
         log_error("pww_slot_release: ABEND S%03X cleaning up %s(%s) -- the"
                   " allocation and/or SPFEDIT enqueue may still be held",
                   PWW_ABEND_CODE(sdwa), pm->dsname_ebcdic, pm->member_name);
-        /* Free the slot anyway: leaving it USED would wedge the pool, which is
-           worse than the leak we have just reported. */
         memset(pm, 0, sizeof(*pm));
         pm->status = PWW_STATUS_FREE;
         return;
     }
     log_warn("pww_slot_release: STAE not established (rc=%ld) --"
              " releasing unprotected", rc);
-    pww_slot_release(pm);
+    pww_slot_release_inner(pm);
+}
+#else
+static void pww_slot_release(pending_member_t *pm)
+{
+    pww_slot_release_inner(pm);
 }
 #endif /* __MVS__ */
 
@@ -507,10 +675,30 @@ static int pww_write_member_guarded(pending_member_t *pm,
 
     if (rc == 1) {                          /* an abend was intercepted */
         code = PWW_ABEND_CODE(sdwa);
-        err  = pww_abend_errno(code);
-        log_error("pww_flush_slot: %s(%s) ABENDED S%03X%s -- member NOT written",
-                  pm->dsname_ebcdic, pm->member_name, code,
-                  (err == ENOSPC) ? " (dataset out of space)" : "");
+        if (pww_abend_recoverable(code)) {
+            /* Expected: the dataset filled up.  Remember it, so the next write
+               is refused up front instead of costing another abend -- and so
+               the client gets a synchronous ENOSPC it can actually see. */
+            pww_mark_full(pm->dsname_ebcdic, time(NULL));
+            log_error("pww_flush_slot: %s(%s) ABENDED S%03X (dataset out of"
+                      " space) -- member NOT written; refusing writes to this"
+                      " dataset for %d seconds",
+                      pm->dsname_ebcdic, pm->member_name, code,
+                      PWW_FULL_EXPIRY_SEC);
+            err = ENOSPC;
+        } else {
+            /* NOT an out-of-space condition, so almost certainly a program
+               error (bad pointer, overrun, ...).  Do not dress it up as an I/O
+               error and carry on -- that would hide the bug and keep serving
+               from state we no longer trust.  Say so unmistakably and ask for
+               an orderly shutdown. */
+            log_error("pww_flush_slot: %s(%s) ABENDED S%03X -- UNEXPECTED abend"
+                      " (probable PROGRAM ERROR, not out of space);"
+                      " requesting server shutdown",
+                      pm->dsname_ebcdic, pm->member_name, code);
+            g_fatal_abend = 1;
+            err = EIO;
+        }
         g_flush_fp      = NULL;             /* runtime already closed it */
         g_flush_abended = 1;
         errno = err;                        /* set last: logging clobbers it */
@@ -577,7 +765,17 @@ static int pww_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
     }
 
     if (rc == 1) {                          /* an abend was intercepted */
-        g_stats_abend = (int)PWW_ABEND_CODE(sdwa);
+        unsigned int code = PWW_ABEND_CODE(sdwa);
+        g_stats_abend = (int)code;
+        if (!pww_abend_recoverable(code)) {
+            /* Same rule as region A: only the out-of-space family is expected
+               here (a full PDS directory).  Anything else is a program error. */
+            log_error("pww_flush_slot: stats update for %s(%s) ABENDED S%03X --"
+                      " UNEXPECTED abend (probable PROGRAM ERROR);"
+                      " requesting server shutdown",
+                      pm->dsname_ebcdic, pm->member_name, code);
+            g_fatal_abend = 1;
+        }
         return -1;                          /* caller warns; flush still OK */
     }
 
@@ -619,15 +817,15 @@ static int pww_flush_slot(pending_member_t *pm)
     strcat(path, pm->ddname);
     if (pww_write_member_guarded(pm, path, &line_count) != 0) {  /* write + STOW */
         if (g_flush_abended) {
-            /* Sec 7.3 region A: an abend (typically the dataset filling) is
-               not worth retrying -- a retry just abends again.  Release the
-               slot NOW so the DISP=SHR allocation and, above all, the SPFEDIT
-               enqueue are dropped: a retained enqueue would lock the member
-               against ISPF for the life of the task.  Preserve errno across
-               the cleanup so the caller still reports ENOSPC. */
-            int saved = errno;
-            pww_slot_release_guarded(pm);
-            errno = saved;
+            /* Sec 7.3 region A: an abend (typically the dataset filling) is not
+               worth retrying -- a retry just abends again -- so mark the slot
+               clean and let it go on the next sweep.
+               Do NOT release the slot here: the CALLER owns release
+               (pww_flush_idle / pww_flush_all already do it, under the STAE in
+               pww_slot_release).  Releasing it here zeroed the slot underneath
+               the caller, which then logged an empty "flush failed for ()" and
+               released it a second time. */
+            pm->dirty = 0;
         }
         return -1;
     }
@@ -638,6 +836,9 @@ static int pww_flush_slot(pending_member_t *pm)
 #endif
 
     pm->dirty = 0;
+    /* The dataset clearly has room, so drop any "out of space" memory of it
+       (Sec 7.3): recovery is immediate once an operator adds space. */
+    pww_clear_full(pm->dsname_ebcdic);
     log_info("pww_flush_slot: stowed %s(%s), %u bytes",
         pm->dsname_ebcdic, pm->member_name, pm->high_water);
 
@@ -721,6 +922,20 @@ static int pww_flush_slot(pending_member_t *pm)
 /* Public API (declared in mvspww.h; called from the vfs_* layer)        */
 /* ==================================================================== */
 
+/* Non-zero once an abend we do NOT recover from has been trapped, or cleanup
+   failed to release an allocation / SPFEDIT enqueue.  The main select loop
+   polls this and shuts the server down cleanly: carrying on would mean serving
+   from state we no longer trust, and ending the task also makes MVS reclaim
+   anything we could not release ourselves. */
+int pww_fatal_abend(void)
+{
+#ifdef __MVS__
+    return g_fatal_abend;
+#else
+    return 0;
+#endif
+}
+
 /* Initialise the pool.  Call once at startup. */
 void pww_init(void)
 {
@@ -731,6 +946,16 @@ int pww_create(int export_idx, int dataset_idx,
                const char *dsname_ebcdic, const char *member_name)
 {
     pending_member_t *pm;
+
+    /* Refuse up front if a flush to this dataset has just abended out of space
+       (Sec 7.3).  CREATE is synchronous, so unlike a failed background flush
+       this error actually reaches the client. */
+    if (pww_is_full(dsname_ebcdic, time(NULL))) {
+        log_debug("pww_create: %s is out of space -- refusing %s",
+                  dsname_ebcdic, member_name);
+        errno = ENOSPC;
+        return -1;
+    }
 
     pm = pww_slot_acquire(dsname_ebcdic, member_name);
     if (pm->status != PWW_STATUS_USED ||
@@ -772,6 +997,16 @@ int pww_write(int export_idx, int dataset_idx,
             dsname_ebcdic, member_name, PWW_MAX_MEMBER_BYTES,
             (unsigned long long)offset, count);
         errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
+        return -1;
+    }
+
+    /* Refuse up front if a flush to this dataset has just abended out of space
+       (Sec 7.3): one abend instead of one per file, and WRITE being synchronous
+       the client actually sees the ENOSPC. */
+    if (pww_is_full(dsname_ebcdic, time(NULL))) {
+        log_debug("pww_write: %s is out of space -- refusing %s",
+                  dsname_ebcdic, member_name);
+        errno = ENOSPC;
         return -1;
     }
 
@@ -985,7 +1220,8 @@ void pww_flush_all(void)
    -- so a plain copy (whose mtime matches the just-stowed date) does nothing,
    while a touch or a timestamp-preserving copy updates it.  Always returns 0
    (a SETATTR must not fail; clients issue it inside the write sequence). */
-int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
+int pww_touch_stats(int export_idx, int dataset_idx,
+                    const char *dsname_ebcdic,
                     const char *member_name, time_t new_time)
 {
 #ifdef __MVS__
@@ -1040,15 +1276,26 @@ int pww_touch_stats(int export_idx, const char *dsname_ebcdic,
         ddname[8] = '\0';
         rc = mvs_stow(ddname, member_name, stats_ud, (int)MVS_ISPF_STATS_LEN);
     }
-    if (rc != 0)
+    if (rc != 0) {
         log_warn("pww_touch_stats: stats update failed for %s(%s) rc=%d",
             dsname_ebcdic, member_name, rc);
+    } else {
+        /* The directory entry just changed, so invalidate exactly as every
+           other mutator does (pww_flush_slot, vfs_remove, vfs_rename).
+           Without this the STOW lands in the PDS but our cached listing keeps
+           the OLD changed-date and dir_mtime never moves, so the client never
+           re-reads: a SETATTR mtime appears to be ignored FOREVER, not merely
+           briefly.  Found by integration test 4 (update_stats). */
+        export_dataset_touch(export_idx, dataset_idx);
+        dir_openlist_invalidate(dsname_ebcdic);
+    }
 
     if (own_enq)
         (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
     return 0;
 #else
-    (void)export_idx; (void)dsname_ebcdic; (void)member_name; (void)new_time;
+    (void)export_idx; (void)dataset_idx; (void)dsname_ebcdic;
+    (void)member_name; (void)new_time;
     return 0;
 #endif
 }

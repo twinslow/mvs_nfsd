@@ -14,7 +14,22 @@ import sys
 
 DEFAULTS = {
     "mode": "mvs",
-    "options": {"large_lines": 1500, "line_width": 72, "mtime_tolerance_sec": 120},
+    "options": {"large_lines": 1500, "line_width": 72, "mtime_tolerance_sec": 120,
+                # The server buffers writes until COMMIT or its idle sweep, so
+                # an out-of-band (FTP) check right after an NFS write can
+                # legitimately see nothing yet.  sync_timeout_sec bounds how long
+                # a verification polls; settle_sec is the hard wait used before
+                # an FTP write, which needs exclusive access to the PDS.  Both
+                # must exceed the server's PWW_IDLE_TIMEOUT_SECONDS (3).
+                # 20s comfortably exceeds BOTH the server's idle-flush window
+                # (3s) and its throttled out-of-band change detection (10s),
+                # which is what makes an FTP-created member visible over NFS.
+                "sync_timeout_sec": 20, "settle_sec": 5,
+                # fsync after each write.  OFF by default: a Windows FILE_SYNC
+                # client otherwise never sends NFS COMMIT, so enabling this
+                # changes what the server is asked to do (it forces the
+                # synchronous flush path) rather than just how the test waits.
+                "use_fsync": False},
 }
 
 

@@ -18,8 +18,12 @@
     "host": "192.0.2.10",
     "port": 2121,
     "user": null,
-    "password": null
+    "password": null,
+    "use_cwd": true,
+    "quote_dsn": true,
+    "dsn_prefix": ""
   },
+  "_ftp_dialect_note": "How a dataset is named. true/true/'' = CWD 'DSN' then RETR MEMBER (z/OS convention). false/false/'/' = CWD /DSN -- the path form mvs_upload.expect uses, and the one to try if reads work but STOR is refused. use_cwd=false = RETR 'DSN(MEMBER)' with no CWD. Run 'run_tests.py --config config.json --probe-ftp': it tests each form for BOTH read and write and prints the config line to paste.",
   "_ftp_note": "Leave user/password null and set the MVS_USERID and MVS_PASSWORD environment variables instead (do not put credentials in this file).",
 
   "datasets": {

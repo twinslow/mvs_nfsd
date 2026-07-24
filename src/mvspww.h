@@ -99,6 +99,16 @@ typedef struct {
 /* Initialise the pool (call once at startup). */
 void pww_init(void);
 
+/* Non-zero once the flush path has trapped an abend it does NOT recover from
+ * (anything outside the out-of-space family -- i.e. a probable program error),
+ * or once cleanup failed to release an allocation / SPFEDIT enqueue.
+ *
+ * The main select loop polls this and shuts down cleanly.  Recovering from an
+ * unexpected abend and carrying on would hide a real bug and keep serving from
+ * state we no longer trust; ending the task also lets MVS reclaim any resource
+ * we could not release ourselves.  See doc/design_nfs_write.md Sec 7.3. */
+int  pww_fatal_abend(void);
+
 /* Reserve a pending member for a new/truncated file (NFS CREATE).
  * Returns 0 on success, -1 on error (errno set). */
 int  pww_create(int export_idx, int dataset_idx,
@@ -150,7 +160,8 @@ void pww_flush_all(void);
  * new_time via a stats-only STOW (no content rewrite, no mod-level change).
  * No-op unless the member already has ISPF stats and new_time differs (to the
  * second) from the stored changed date.  Always returns 0. */
-int  pww_touch_stats(int export_idx, const char *dsname_ebcdic,
+int  pww_touch_stats(int export_idx, int dataset_idx,
+                     const char *dsname_ebcdic,
                      const char *member_name, time_t new_time);
 
 #endif /* MVSPWW_H_INCLUDED */

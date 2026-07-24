@@ -105,6 +105,17 @@ Key fields:
 | `nfs.export` / `nfs.windows_export` | Only needed for `auto_mount`. |
 | `ftp.host` / `ftp.port` | MVS FTP endpoint (mode `mvs`). |
 | `ftp.user` / `ftp.password` | Leave `null`. Credentials come from **`MVS_USERID`** / **`MVS_PASSWORD`** (same env vars the expect scripts use); a config value overrides the env, and an interactive run falls back to a prompt. |
+| `ftp.use_cwd` / `ftp.quote_dsn` / `ftp.dsn_prefix` | How a dataset is named. MVS FTP servers differ: `true`/`true`/`""` → `CWD 'DSN'` then `RETR MEMBER` (z/OS convention, the default); `true`/`false`/`"/"` → `CWD /DSN` — the **path form `mvs_upload.expect` uses**; `false`/`true`/`""` → `RETR 'DSN(MEMBER)'` with no CWD. If you get **`550 Can't cd into '<dsn>'`**, or reads work but writes fail with **`550 <mem>: Not opened`**, run the probe below. |
+
+**Finding the right FTP dialect.** If the FTP verification fails with a `550`,
+let the harness work it out:
+
+```bash
+python run_tests.py --config config.json --probe-ftp
+```
+
+It tries all four combinations against your first configured dataset and prints
+the ones that work, ready to paste into the `ftp` section of `config.json`.
 | `datasets.<key>` | `nfs_dir` (the directory under the mount = lower-cased dsname on dino-nfs), `dsname` (for FTP), `ext`, `recfm`, `lrecl`. |
 | `options.large_lines` | Line count for "large" members (default 1500 ≈ 108 KB — exceeds the server's in-memory/spill threshold, exercising the spill path). |
 | `options.mtime_tolerance_sec` | Slack when checking a set mtime (120 on MVS to absorb ISPF minute/second granularity; a *large* miss usually means a server timezone problem). |

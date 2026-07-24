@@ -39,6 +39,9 @@ def main(argv=None):
                     help="run only this outline section (e.g. 1, 1.2); repeatable")
     ap.add_argument("--filter", "-f", action="append", default=[],
                     help="run only tests whose name contains this substring; repeatable")
+    ap.add_argument("--probe-ftp", action="store_true",
+                    help="diagnose which dataset-naming dialect the MVS FTP "
+                         "server accepts, print the matching config, and exit")
     args = ap.parse_args(argv)
 
     if args.list:
@@ -48,6 +51,13 @@ def main(argv=None):
         return 0
 
     cfg = cfgmod.load(args.config)
+
+    if args.probe_ftp:
+        if cfg["mode"] != "mvs":
+            print("--probe-ftp only applies to mode 'mvs'")
+            return 1
+        return backendmod.probe_ftp(cfg)
+
     print("dino-nfs integration tests  |  mode=%s  mount=%s"
           % (cfg["mode"], cfg["nfs"]["mount_point"]))
 
