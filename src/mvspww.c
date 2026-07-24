@@ -22,6 +22,11 @@
 #include "logger.h"
 #include "asmutils.h"    /* MVS assembler helpers: mvs_dynalloc(), mvs_stow() */
 
+#ifdef __MVS__
+#include <setjmp.h>      /* jmp_buf                                          */
+#include <mvsutils.h>    /* _setjmp_stae / _setjmp_canc -- STAE abend trap   */
+#endif
+
 /* -------------------------------------------------------------------- */
 /* Static pool of pending members                                        */
 /* -------------------------------------------------------------------- */
@@ -31,6 +36,66 @@ static pending_member_t g_pww_pool[PWW_MAX_PENDING];
    never modify the (ASCII) member buffer -- it must survive across a COMMIT
    in case the client writes more before the slot is released. */
 static uint8_t g_pww_xlate[4096];
+
+#ifdef __MVS__
+/* -------------------------------------------------------------------- */
+/* Abend protection for the flush (design_nfs_write.md Sec 7.3)          */
+/*                                                                       */
+/* Writing a PDS member abends when the dataset fills, and without a     */
+/* trap that terminates the whole NFSD task -- one user filling a PDS    */
+/* would take the server down for everyone.  _setjmp_stae() establishes  */
+/* an MVS STAE and behaves like setjmp: 0 = armed, 1 = an abend was      */
+/* intercepted (the SDWA copy holds the diagnostics), anything else =    */
+/* the STAE could not be established.  _setjmp_canc() cancels it and     */
+/* MUST be called on the normal path -- establish/cancel are LIFO and    */
+/* have to balance.                                                      */
+/*                                                                       */
+/* What we actually catch is B14, not D37: the data write hits D37, the  */
+/* runtime absorbs it (it reaches the console, not us), and then the     */
+/* runtime's own internal fclose() cannot complete its STOW and abends    */
+/* B14 -- that is the code that lands in the SDWA.                        */
+/* -------------------------------------------------------------------- */
+
+/* System completion code out of the SDWA copy, e.g. 0xB14. */
+#define PWW_ABEND_CODE(sdwa)   (((sdwa)[1] & 0x00FFF000u) >> 12)
+
+/* The member stream, reachable from the recovery path: the abend unwinds out
+   of pww_write_member, so its local FILE * is gone by the time we regain
+   control.  The server is single-threaded and flushes one slot at a time, so a
+   single module-scope handle is sufficient.  Set on open, cleared on close or
+   recovery -- and NEVER closed by the recovery path (the runtime already did
+   that, which is what raised the abend). */
+static FILE *g_flush_fp = NULL;
+
+/* Set by the region-A guard when the member write abended, so pww_flush_slot
+   can tell a genuine abend from an ordinary I/O failure and release the slot
+   instead of leaving it to be retried. */
+static int g_flush_abended = 0;
+
+/* Set by the region-B guard to the completion code when the ISPF-stats STOW
+   abended (0 = it did not), so the warning can name it. */
+static int g_stats_abend = 0;
+
+/* Map an abend completion code onto errno.  B14 is the visible face of an
+   out-of-space condition (see above) and is also how a directory-full STOW
+   surfaces, so it maps to ENOSPC -> NFS3ERR_NOSPC, which is the diagnosis the
+   client should see. */
+static int pww_abend_errno(unsigned int code)
+{
+    switch (code) {
+    case 0xB14:                                    /* CLOSE/STOW failed     */
+    case 0xB37: case 0xD37: case 0xE37:            /* out of space/extents  */
+        return ENOSPC;
+    default:
+        return EIO;
+    }
+}
+
+/* Publish / clear the in-flight member stream for the recovery path. */
+#define PWW_FLUSH_FP(f)   (g_flush_fp = (f))
+#else
+#define PWW_FLUSH_FP(f)   ((void)0)   /* no STAE off-MVS: nothing to publish */
+#endif /* __MVS__ */
 
 /* ==================================================================== */
 /* Slot pool internals                                                   */
@@ -140,6 +205,41 @@ static void pww_slot_release(pending_member_t *pm)
     memset(pm, 0, sizeof(*pm));
     pm->status = PWW_STATUS_FREE;
 }
+
+#ifdef __MVS__
+/* Release a slot from the abend-recovery path, under its own STAE.
+   Unallocating the member and DEQ'ing the SPFEDIT enqueue is MANDATORY after a
+   failed flush -- a retained enqueue locks the member against ISPF for the life
+   of the task -- but we are running just after an abend, so a secondary abend
+   inside the unallocate/DEQ is plausible and must not escape either. */
+static void pww_slot_release_guarded(pending_member_t *pm)
+{
+    jmp_buf      env;
+    unsigned int sdwa[26];      /* 104-byte SDWA copy (IHASDWA) */
+    long         rc;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    if (rc == 0) {
+        pww_slot_release(pm);
+        if (_setjmp_canc() != 0)
+            log_warn("pww_slot_release: _setjmp_canc failed");
+        return;
+    }
+    if (rc == 1) {
+        log_error("pww_slot_release: ABEND S%03X cleaning up %s(%s) -- the"
+                  " allocation and/or SPFEDIT enqueue may still be held",
+                  PWW_ABEND_CODE(sdwa), pm->dsname_ebcdic, pm->member_name);
+        /* Free the slot anyway: leaving it USED would wedge the pool, which is
+           worse than the leak we have just reported. */
+        memset(pm, 0, sizeof(*pm));
+        pm->status = PWW_STATUS_FREE;
+        return;
+    }
+    log_warn("pww_slot_release: STAE not established (rc=%ld) --"
+             " releasing unprotected", rc);
+    pww_slot_release(pm);
+}
+#endif /* __MVS__ */
 
 /* Find the USED slot for (dsname, member), or NULL. */
 static pending_member_t *pww_slot_find(const char *dsname_ebcdic,
@@ -329,6 +429,7 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
                   open_target, strerror(errno));
         return -1;
     }
+    PWW_FLUSH_FP(fh);                 /* visible to the abend-recovery path */
 
     /* One read pass: read a chunk, count records off the ASCII (one per LF, plus
        a trailing partial line), then translate ASCII->EBCDIC in place and write.
@@ -342,6 +443,7 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
             log_error("pww_flush_slot: read-back failed on %s at %u",
                       open_target, off);
             fclose(fh);
+            PWW_FLUSH_FP(NULL);
             return -1;
         }
         for (i = 0; i < n; i++)
@@ -354,6 +456,7 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
             log_error("pww_flush_slot: short write on %s (%u of %u)",
                       open_target, (unsigned)w, n);
             fclose(fh);
+            PWW_FLUSH_FP(NULL);
             return -1;
         }
     }
@@ -363,12 +466,126 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
     *lines_out = lines;
 
     if (fclose(fh) != 0) {            /* STOW happens here */
+        PWW_FLUSH_FP(NULL);
         log_error("pww_flush_slot: fclose(STOW) %s failed: %s",
                   open_target, strerror(errno));
         return -1;
     }
+    PWW_FLUSH_FP(NULL);
     return 0;
 }
+
+#ifdef __MVS__
+/* Region A of the flush (design_nfs_write.md Sec 7.3): run pww_write_member
+   under a STAE so an out-of-space abend fails THIS request instead of
+   terminating the NFSD task.
+
+   On an abend the member content is lost or partial -- a real failure -- so we
+   set errno (ENOSPC for the out-of-space family) and return -1; the caller
+   releases the slot rather than retrying, because a retry would only abend
+   again.  We do NOT close the stream here: the runtime already closed it, and
+   that close is what raised the abend. */
+static int pww_write_member_guarded(pending_member_t *pm,
+                                    const char *open_target,
+                                    int32_t *lines_out)
+{
+    jmp_buf      env;
+    unsigned int sdwa[26];      /* 104-byte SDWA copy (IHASDWA) */
+    long         rc;
+    unsigned int code;
+    int          err;
+
+    g_flush_abended = 0;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    if (rc == 0) {                          /* armed -- do the work */
+        int frc = pww_write_member(pm, open_target, lines_out);
+        if (_setjmp_canc() != 0)
+            log_warn("pww_flush_slot: _setjmp_canc failed");
+        return frc;
+    }
+
+    if (rc == 1) {                          /* an abend was intercepted */
+        code = PWW_ABEND_CODE(sdwa);
+        err  = pww_abend_errno(code);
+        log_error("pww_flush_slot: %s(%s) ABENDED S%03X%s -- member NOT written",
+                  pm->dsname_ebcdic, pm->member_name, code,
+                  (err == ENOSPC) ? " (dataset out of space)" : "");
+        g_flush_fp      = NULL;             /* runtime already closed it */
+        g_flush_abended = 1;
+        errno = err;                        /* set last: logging clobbers it */
+        return -1;
+    }
+
+    /* The STAE could not be established.  Refusing to flush would guarantee
+       data loss, whereas this is rare and usually means the system is already
+       in trouble -- so proceed, but say so loudly (this reaches the console). */
+    log_error("pww_flush_slot: STAE not established (rc=%ld) -- writing"
+              " %s(%s) UNPROTECTED", rc, pm->dsname_ebcdic, pm->member_name);
+    return pww_write_member(pm, open_target, lines_out);
+}
+
+/* Apply the ISPF statistics to the just-stowed member: allocate the PDS
+   (FREE=CLOSE, dataset level -- BLDL/FIND/STOW operate on the directory, so no
+   member qualifier) and STOW REPLACE the directory user data.
+   Returns 0 on success, non-zero on failure. */
+static int pww_apply_stats(pending_member_t *pm, uint8_t *stats_ud)
+{
+    char ddname[9];
+    int  rc;
+
+    ddname[0] = '\0';
+    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, MVS_DYNALLOC_OPT_FREECLOSE,
+                      pm->dsname_ebcdic, NULL, ddname);
+    if (rc != 0) {
+        log_debug("pww_flush_slot: mvs_dynalloc failed for %s (rc=%d)",
+                  pm->dsname_ebcdic, rc);
+        return rc;
+    }
+    ddname[8] = '\0';       /* dynalloc returns 8 blank-padded chars */
+    return mvs_stow(ddname, pm->member_name,
+                    stats_ud, (int)MVS_ISPF_STATS_LEN);
+}
+
+/* Region B of the flush (design_nfs_write.md Sec 7.3): run the stats update
+   under its OWN STAE, separate from region A, because it fails with a
+   different meaning.
+
+   Adding the 30-byte user data makes the directory entry longer, so a PDS that
+   has run out of DIRECTORY blocks can fail here even though the member itself
+   was written and stowed perfectly -- by abend, or by a non-zero mvs_stow
+   return code (a directory-full can surface either way, so both are treated
+   alike).
+
+   Returns 0 if the stats were applied, non-zero if not.  A non-zero result must
+   NOT fail the flush: the member content is already safe on disk, and returning
+   ENOSPC for a write that actually worked would be a false negative. */
+static int pww_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
+{
+    jmp_buf      env;
+    unsigned int sdwa[26];      /* 104-byte SDWA copy (IHASDWA) */
+    long         rc;
+
+    g_stats_abend = 0;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    if (rc == 0) {                          /* armed -- do the work */
+        int src = pww_apply_stats(pm, stats_ud);
+        if (_setjmp_canc() != 0)
+            log_warn("pww_flush_slot: _setjmp_canc failed (stats)");
+        return src;
+    }
+
+    if (rc == 1) {                          /* an abend was intercepted */
+        g_stats_abend = (int)PWW_ABEND_CODE(sdwa);
+        return -1;                          /* caller warns; flush still OK */
+    }
+
+    log_warn("pww_flush_slot: STAE not established (rc=%ld) -- applying stats"
+             " to %s(%s) UNPROTECTED", rc, pm->dsname_ebcdic, pm->member_name);
+    return pww_apply_stats(pm, stats_ud);
+}
+#endif /* __MVS__ */
 
 /* Write the buffered member out in one pass and STOW it.
    Returns 0 on success, -1 on failure (errno set). */
@@ -400,8 +617,20 @@ static int pww_flush_slot(pending_member_t *pm)
        record count (single read pass) for the ISPF stats applied afterwards. */
     strcpy(path, "//DDN:");
     strcat(path, pm->ddname);
-    if (pww_write_member(pm, path, &line_count) != 0)   /* write + STOW */
+    if (pww_write_member_guarded(pm, path, &line_count) != 0) {  /* write + STOW */
+        if (g_flush_abended) {
+            /* Sec 7.3 region A: an abend (typically the dataset filling) is
+               not worth retrying -- a retry just abends again.  Release the
+               slot NOW so the DISP=SHR allocation and, above all, the SPFEDIT
+               enqueue are dropped: a retained enqueue would lock the member
+               against ISPF for the life of the task.  Preserve errno across
+               the cleanup so the caller still reports ENOSPC. */
+            int saved = errno;
+            pww_slot_release_guarded(pm);
+            errno = saved;
+        }
         return -1;
+    }
 #else
     pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
     if (pww_write_member(pm, path, &line_count) != 0)
@@ -430,27 +659,39 @@ static int pww_flush_slot(pending_member_t *pm)
     want_stats = mvs_build_write_stats(&new_stats, existing, line_count,
                                        time(NULL));
     if (want_stats) {
-        char ddname[9];
-        int  rc;
+        int rc;
 
         mvs_encode_ispf_stats(&new_stats, stats_ud);
+        rc = pww_apply_stats_guarded(pm, stats_ud);
 
-        ddname[0] = '\0';
-        rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, MVS_DYNALLOC_OPT_FREECLOSE,
-                          pm->dsname_ebcdic, NULL, ddname);
-        if (rc == 0) {
-            ddname[8] = '\0';   /* dynalloc returns 8 blank-padded chars */
-            rc = mvs_stow(ddname, pm->member_name,
-                          stats_ud, (int)MVS_ISPF_STATS_LEN);
-        } else {
-            log_debug("pww_flush_slot: mvs_dynalloc failed for %s (rc=%d)",
-                pm->dsname_ebcdic, rc);
-        }
+        /* Sec 7.3 region B: a stats failure does NOT fail the flush.  The
+           member content is written and stowed; only its statistics are
+           missing, and returning an error here would report ENOSPC for a write
+           that actually succeeded.  The buffered data is not retried either --
+           it is already on disk.  This also degrades into a path the read side
+           already handles: an entry with no user data falls back to
+           mvs_set_no_ispf_stats(), and mvs_build_write_stats() will not ask for
+           stats on that member again, so the condition settles instead of
+           re-abending on every write.
 
+           Two suppression flags, so a serious directory-full abend can never be
+           masked by an earlier benign return-code warning. */
         if (rc != 0) {
-            static int stats_warned = 0;
-            if (!stats_warned) {
-                stats_warned = 1;
+            static int warned_abend = 0;
+            static int warned_rc    = 0;
+
+            if (g_stats_abend != 0) {
+                if (!warned_abend) {
+                    warned_abend = 1;
+                    log_warn("pww_flush_slot: ISPF stats update ABENDED S%03X"
+                             " for %s(%s) -- PDS directory may be full; member"
+                             " IS stowed but without ISPF stats"
+                             " (further warnings suppressed)",
+                             (unsigned)g_stats_abend,
+                             pm->dsname_ebcdic, pm->member_name);
+                }
+            } else if (!warned_rc) {
+                warned_rc = 1;
                 log_warn("pww_flush_slot: ISPF stats update failed for %s(%s)"
                          " (rc=%d) -- members stowed without ISPF stats"
                          " (further warnings suppressed)",

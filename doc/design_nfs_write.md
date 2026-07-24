@@ -352,6 +352,259 @@ reused; otherwise it takes its own and drops it after.  If an editor holds the
 member, the stats touch is **skipped** (the editor's own save will set the
 changed date) rather than failing the SETATTR.
 
+### 7.3 Abend protection during the flush — the STAE exit
+
+**The problem.**  The flush is the one place NFSD writes to a PDS, and PDS
+writes abend.  The common case is **running out of space**: `D37` (primary
+extent full, no secondary), `B37` (secondary extents / volume exhausted),
+`E37` (no more extents or volumes).  Today an abend in the flush path
+terminates the NFSD task outright — a single user filling a PDS takes the
+whole server down for everyone, with pending members in other slots lost.  That
+is unacceptable for a long-running service; an out-of-space condition must
+degrade to an error on *one* request.
+
+**The mechanism.**  JCC exposes MVS recovery through `_setjmp_stae()`, which
+establishes a STAE and behaves like `setjmp`:
+
+| Return | Meaning |
+|---|---|
+| `0` | STAE established; fall through and run the protected work. |
+| `1` | An abend was intercepted and control resumed here; the SDWA copy holds the diagnostics. |
+| other | The STAE could **not** be established. |
+
+`_setjmp_canc()` cancels the most recently established STAE and **must** be
+called on the normal path once the protected work completes — establish/cancel
+are LIFO and must balance.  The caller supplies a 104-byte buffer that receives
+a copy of the System Diagnostic Work Area (mapped by `IHASDWA`); the system
+completion code is:
+
+```c
+#define ABEND_SYSCODE(sdwa)   (((sdwa)[1] & 0x00FFF000u) >> 12)   /* e.g. 0xD37 */
+```
+
+The shape is proven by the prototype in `jcl/t#stae1.jcl` (`protected_write`
+traps an abend raised inside `write_lines`).  Needs `<mvsutils.h>` and
+`<setjmp.h>`, and is **MVS-only** — the non-MVS build calls the unprotected
+function directly, so the wrapper's signature is identical on both platforms.
+
+**Where the boundary goes — two regions, not one.**  Both PDS-mutating steps of
+a flush need protection, but they fail with *different meanings*, so each gets
+its own STAE rather than sharing one:
+
+| Region | Covers | An abend here means |
+|---|---|---|
+| **A — member write** | `fopen` → translate/`fwrite` loop → `fclose` (the runtime's STOW) | the member content is lost or partial — a **real** flush failure |
+| **B — ISPF stats** | `mvs_stow` STOW REPLACE adding the 30-byte user data (§9.1) | the member is **intact and stowed**; only its statistics are missing |
+
+Protection is per region, never per record: the establish is an SVC call,
+negligible against a member write.  `pww_flush_slot` splits into unprotected
+workers plus a guard — region A is shown below; region B has the same shape but
+the weaker recovery described further down:
+
+```c
+static int pww_flush_guarded(pending_member_t *pm)
+{
+#ifdef __MVS__
+    jmp_buf      env;
+    unsigned int sdwa[26];          /* 104-byte SDWA copy */
+    long         rc;
+    int          frc = -1;
+
+    rc = _setjmp_stae(env, (unsigned char *)sdwa);
+    switch (rc) {
+    case 0:                                     /* armed - do the work */
+        frc = pww_flush_worker(pm);
+        if (_setjmp_canc() != 0)
+            log_warn("pww_flush: _setjmp_canc failed");
+        break;
+
+    case 1:                                     /* abend intercepted */
+        frc = pww_flush_recover(pm, ABEND_SYSCODE(sdwa));
+        break;
+
+    default:                                    /* could not establish */
+        log_error("pww_flush: STAE not established (rc=%ld); "
+                  "flushing UNPROTECTED", rc);
+        frc = pww_flush_worker(pm);
+        break;
+    }
+    return frc;
+#else
+    return pww_flush_worker(pm);
+#endif
+}
+```
+
+On the `default` path we still attempt the flush.  Refusing would guarantee
+data loss, whereas an unestablished STAE is rare and usually means the system
+is already in trouble; it is logged at ERROR (and WTO'd) so it is visible.
+
+**What the application actually sees — `B14`, not `D37`.**  The abend chain
+observed in `jcl/t#stae1.jcl` is two-stage:
+
+1. The data write exhausts the dataset and MVS raises **`D37`**.  That is
+   written to the system console / job log but **does not reach the
+   application** — the JCC runtime absorbs it.
+2. The runtime then performs its **own internal `fclose()`** of the member,
+   whose STOW cannot complete.  *That* failure abends with **`B14`**, and `B14`
+   is the completion code the application's STAE actually receives in the SDWA.
+
+Two consequences.  First, recovery must key off **`B14`** — the code we can
+really see — as well as the `x37` family; a design that recognised only `D37`
+would fall through to the generic `EIO` path and mis-report the condition.
+Second, **we do not control the close**: the runtime has already issued it by
+the time we regain control, so there is no "abandon the stream without STOWing"
+option available to us at the C level.
+
+**A partial member is left behind.**  The prototype confirms it — after the
+out-of-space abend the PDS contains a **partially written member**.  We cannot
+prevent that from C, so the design must accept it and make it *visible* rather
+than silent:
+
+- Log **and WTO** the failure prominently (step 1 below), so the operator knows
+  both that the dataset is full and that a member is suspect.
+- *Optional follow-on (not required for the first cut):* because the flush
+  reads the member's existing directory entry up front for ISPF stats (§9.1),
+  we hold its **original TTR**.  A `STOW REPLACE` with that saved TTR would
+  restore the previous content, and a `STOW DELETE` would remove a member that
+  did not exist before — both are directory-only operations needing no data
+  space.  That would turn "silently truncated" into "unchanged", and is the
+  natural second iteration once the basic trap is proven.
+
+**Recovery steps** (`pww_flush_recover`), in order:
+
+1. **Log and WTO** the failure with the decoded code, e.g.
+   `pww_flush: TEMP.ITEST.FB(LARGE) abended S0D37 - dataset out of space`.
+   An out-of-space condition needs operator attention, so it goes to the
+   console, not just the log.
+2. **Drop our reference to the member stream** — the runtime has already closed
+   it (that is what raised the `B14`), so recovery simply clears the saved
+   `FILE *` and must **not** touch it again.  Because the abend unwinds out of
+   `pww_write_member`, keep it in a module-scope `static FILE *g_flush_fp` (the
+   server is single-threaded and flushes one slot at a time), set on open and
+   cleared on close or recovery.
+3. **Unallocate the member and DEQ the enqueue — mandatory.**  Release the
+   `DISP=SHR` PDS/member allocation (the ddname) and DEQ the `SPFEDIT`
+   resource, then free the buffer / `spill_close` (§7.2).  Neither may be
+   skipped: a retained allocation leaks a ddname for the life of the task, and
+   a retained enqueue locks the member against ISPF **indefinitely** — the
+   worst possible residue, because it outlives the failed request and blocks a
+   human.  Each step runs under a **nested** STAE so a secondary abend during
+   cleanup cannot escape either (establish/cancel still balance, LIFO).
+4. **Mark the slot clean and free** so neither the idle sweep nor a later
+   COMMIT retries it.  Retrying an out-of-space write only abends again; the
+   buffered data is discarded and the client has been told.
+5. **Set `errno`** from the abend code and return −1.
+
+**Abend → errno → NFS status.**
+
+| Abend | Meaning | `errno` | NFS3 status |
+|---|---|---|---|
+| `B14` | Member CLOSE/STOW failed — **in practice the visible face of an out-of-space `D37`** (see above), and also what a directory-full STOW surfaces as | `ENOSPC` | `NFS3ERR_NOSPC` |
+| `B37`, `D37`, `E37` | Out of space / no extents, if ever surfaced directly | `ENOSPC` | `NFS3ERR_NOSPC` |
+| anything else | Unexpected failure | `EIO` | `NFS3ERR_IO` |
+
+`vfs_errno_to_nfs3` already maps both, so `proc_commit` returns a proper error
+and the client reports "no space left on device" — exactly the right diagnosis.
+**Region B — a stats failure must NOT fail the flush.**  There is a real edge
+case here.  A *new* member can be written and stowed successfully by the
+runtime's `fclose` **without** user data; our follow-up `STOW REPLACE` then
+rewrites that entry *with* the 30-byte ISPF stats, which makes the directory
+entry longer.  If the PDS has run out of **directory blocks**, that replace
+cannot be absorbed and fails — by abend, or by a non-zero `mvs_stow` return
+code.  Both must be handled, since a directory-full can surface either way.
+
+The crucial point is that this is **not** a data failure:
+
+- the member's content is complete and already visible in the directory;
+- only its ISPF statistics are missing.
+
+So region B's recovery is deliberately *weaker* than region A's: **log a
+warning and report the flush as successful.**  Treating it as a failure would
+return `NFS3ERR_NOSPC` for a write that genuinely worked — a false negative,
+which is worse for the client than absent metadata.  The buffered data must not
+be discarded-and-retried either: it is already on disk.
+
+**It degrades gracefully, and it does not repeat.**  A directory entry with no
+user data is exactly what the read path already expects from a member created
+by IEBGENER — `mvs_pds_member_entry_set` sees fewer than 30 bytes of user data
+and falls back to `mvs_set_no_ispf_stats`, so the member stays fully readable
+over NFS, just with synthetic timestamps.  Better still, the condition is
+self-limiting: `mvs_build_write_stats` returns "no stats wanted" for an existing
+member that lacks the ISPF-stats flag (§9.1), so **later flushes of that member
+skip the stats STOW altogether** instead of re-abending on every write.
+
+**What each trigger sees.**  A COMMIT-driven flush propagates the error to the
+client.  An **idle-sweep** flush has no client to answer, so it logs/WTOs and
+drops the slot; the data is lost, which is unavoidable once the dataset is
+full, but the server keeps running and every other slot is unaffected.
+
+**The reporting gap — silent loss on an asynchronous flush.**  A **COMMIT**-driven
+flush can answer the client: `proc_commit` returns `NFS3ERR_NOSPC` and the
+failure is reported properly.  Every other trigger — the **idle sweep**, pool
+**eviction**, and **shutdown** — runs with no client request in flight, so the
+error has nowhere to go and the loss is silent.  That is an accepted constraint
+for the first cut; the ways out, in rough order of value:
+
+1. **Make the client COMMIT (the strongest lever).**  RFC 1813 requires a client
+   that receives `UNSTABLE` on a WRITE to COMMIT before it may discard its copy
+   — and COMMIT is synchronous, so it carries our error.  Today the server
+   *echoes* the client's requested stability (§4), so a `FILE_SYNC` client
+   (Windows) is told the data is already safe and never commits: precisely the
+   case that loses data silently.  Always answering `UNSTABLE` would force a
+   COMMIT and close most of the gap.  It re-opens the §4 trade-off that led to
+   echoing, so it is a deliberate decision, not a free win.
+2. **Sticky per-member error (the POSIX writeback model).**  Linux reports a
+   deferred writeback error to the *next* `fsync`/`close` rather than dropping
+   it.  The same works here: on flush failure record `(dsname, member, errno)`
+   in a small fixed table, and have the next NFS operation resolving to that
+   member — COMMIT, WRITE, SETATTR or GETATTR — return the error once and clear
+   the entry.  Clients nearly always touch the file again (a final GETATTR at
+   close is near-universal), so this converts most silent losses into a reported
+   one for the cost of a few table entries.  It composes with (1).
+3. **Fail fast on the next write.**  A cheaper subset of (2): mark the member
+   poisoned so any later WRITE fails at once.  Helps a client still streaming a
+   large file; does nothing when the failed flush was the last one.
+4. **Check space before accepting.**  Consult the dataset's free extents at
+   CREATE / first write and refuse early with `ENOSPC` on the (synchronous)
+   WRITE.  Preventative rather than reactive, and it cannot know the eventual
+   size, but it would cheaply catch "this dataset is already essentially full".
+5. **Operator visibility.**  Some loss will always be un-reportable to the
+   client, so the WTO in step 1 is not optional — it is the backstop that makes
+   the condition discoverable at all.
+
+Recommendation: ship the trap first (this section), then add (2), and treat (1)
+as a separate, explicit revisit of §4.
+
+**Residual risks.**
+
+- A **partially written member** remains in the PDS after an out-of-space abend
+  (proven by the prototype) until the optional TTR-restore follow-on above is
+  implemented.  The WTO is what stops that being silent.
+- The recovery path's own unallocate / DEQ could themselves fail; the nested
+  STAE contains such a failure but cannot undo it.  A leaked ddname is
+  survivable, but a **leaked `SPFEDIT` enqueue is not benign** — it blocks ISPF
+  on that member for the life of the task, so a failure there must be logged at
+  ERROR and WTO'd, not swallowed.
+- A STAE cannot recover from every failure mode (e.g. a system-forced
+  termination); this reduces the blast radius, it does not make NFSD
+  unkillable.
+- Protection is applied to the flush path only.  The same pattern should later
+  be extended to the PDS **directory read** and **member read** paths, which
+  can also abend on a damaged dataset.
+
+**Testing hook.**  The automated integration suite already drives this: test
+**1.3 `upload_full_dataset`** writes members into a deliberately tiny PDS
+(`TEMP.ITEST.FBSMALL`, 1 track) until a write fails.  Before this change that
+test kills the server.  After it, the primary assertion must be that **the
+server survives and still answers the remaining tests in the run** — not that
+the client necessarily sees an error.  Per the reporting gap above, a
+`FILE_SYNC` client whose flush lands on the idle sweep may see every write
+succeed; the failure is then only in the log/WTO.  The test as first written
+asserts that a write fails, so it will need adjusting to match: pass = "server
+alive and serving", with a reported `ENOSPC` as a bonus that becomes reliable
+once (1) or (2) above is in place.
+
 ## 8. Memory strategy (the 8 MB address-space constraint)
 
 The MVS 3.8J application address space is ~8 MB for code + data, so we cannot
@@ -702,7 +955,7 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 
 | File | Change |
 |------|--------|
-| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1). **Phase 2 (§8):** spills to a temp dataset past `PWW_SPILL_THRESHOLD`; adds `pww_read_range()` and calls into `mvsspl` |
+| `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1). **Phase 2 (§8):** spills to a temp dataset past `PWW_SPILL_THRESHOLD`; adds `pww_read_range()` and calls into `mvsspl`. **Abend protection (§7.3):** two STAE-guarded regions (`_setjmp_stae` / `_setjmp_canc`, `<mvsutils.h>`) — **A** the member write (abend ⇒ real failure; decode SDWA, `B14`→`ENOSPC`; mandatory unallocate **and** `SPFEDIT` DEQ under nested protection; slot dropped, not retried) and **B** the ISPF-stats STOW REPLACE (abend *or* non-zero `mvs_stow` rc ⇒ warn only, flush still reports success) |
 | `src/mvsspl.c` / `.h` (new — **Phase 2**, §8) | Temp-dataset spill store: `spill_open` / `spill_write` (zero-extending past EOF) / `spill_read` / `spill_close`, over one reusable `&&PWWSP<nn>` scratch PS per pool slot (`DSORG=PS RECFM=FB BLKSIZE=4096`, binary; one `"w+b"` open per spill). Distinct `spill_` prefix keeps it separate from the member-write path |
 | `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/mvsenq.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 `DISP=SHR` dynamic allocation returning its ddname via `DALRTDDN` (`mvs_dynalloc`); BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); ENQ/DEQ/TEST on `SPFEDIT`, exclusive, `RET=USE`, scope `SYSTEMS` (`mvs_enq`, §7.2); C prototypes + `MVSDALC`/`MVSSTOW`/`MVSENQ` name aliases in `asmutils.h` |
 | `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible; `vfs_errno_to_nfs3` maps the write path's `EACCES` (member locked → `NFS3ERR_ACCES`) and `EROFS`/`EXDEV` |
