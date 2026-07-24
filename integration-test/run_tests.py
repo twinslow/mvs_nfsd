@@ -42,6 +42,11 @@ def main(argv=None):
     ap.add_argument("--probe-ftp", action="store_true",
                     help="diagnose which dataset-naming dialect the MVS FTP "
                          "server accepts, print the matching config, and exit")
+    ap.add_argument("--repeat", "-r", type=int, default=1, metavar="N",
+                    help="run the selected tests up to N times, STOPPING at the "
+                         "first failure (leaves the corrupt member preserved) -- "
+                         "for catching intermittent bugs, e.g. "
+                         "-f upload_small -f upload_large -r 40")
     args = ap.parse_args(argv)
 
     if args.list:
@@ -69,7 +74,8 @@ def main(argv=None):
     try:
         ctx = Context(cfg, backend, workdir)
         ctx.ensure_dirs()                      # plain mode: create dataset dirs
-        rc = runner.run_all(ctx, filters=args.filter, sections=args.section)
+        rc = runner.run_all(ctx, filters=args.filter, sections=args.section,
+                             repeat=args.repeat)
     finally:
         backend.close()
         nfsmount.cleanup(cfg)

@@ -24,6 +24,7 @@ class Context(object):
         self.workdir = Path(workdir)
         self.opts = cfg["options"]
         self._to_clean = []          # (key, name) created during a test
+        self._preserve = set()       # (key, name) to KEEP for post-mortem
 
     # -- dataset / path mapping -------------------------------------------
     def ds(self, key):
@@ -222,24 +223,61 @@ class Context(object):
         while True:
             try:
                 actual = self.backend.fetch(self, key, name)
-                d = textutil.diff_summary(expected_text, actual)
-                if d:
-                    raise AssertionError("member %s(%s) mismatch: %s"
-                                         % (self.ds(key)["nfs_dir"], name, d))
-                return
-            except AssertionError:
-                raise                        # real mismatch: fail immediately
             except Exception as e:           # noqa -- not stowed / not openable
                 last = e
-            if time.time() >= end:
-                raise AssertionError(
-                    "member %s(%s) never became readable over the verification"
-                    " backend within %ss (last error: %s). The server buffers"
-                    " writes until COMMIT or the idle sweep -- if this persists,"
-                    " the flush is not happening."
-                    % (self.ds(key)["nfs_dir"], name,
-                       self.opts.get("sync_timeout_sec", 12), last))
-            time.sleep(0.5)
+                if time.time() >= end:
+                    raise AssertionError(
+                        "member %s(%s) never became readable over the"
+                        " verification backend within %ss (last error: %s). The"
+                        " server buffers writes until COMMIT or the idle sweep"
+                        " -- if this persists, the flush is not happening."
+                        % (self.ds(key)["nfs_dir"], name,
+                           self.opts.get("sync_timeout_sec", 12), last))
+                time.sleep(0.5)
+                continue
+
+            # Fetch SUCCEEDED.  A content mismatch now is a real defect, not a
+            # timing issue -- do not retry it; capture evidence and preserve the
+            # member so it can be inspected on the server (see _corruption).
+            d = textutil.diff_summary(expected_text, actual)
+            if not d:
+                return
+            self._preserve.add((key, name))
+            raise AssertionError("member %s(%s) mismatch: %s\n%s"
+                                 % (self.ds(key)["nfs_dir"], name, d,
+                                    self._corruption(key, name, expected_text, actual)))
+
+    def _corruption(self, key, name, expected, actual):
+        """Build a post-mortem for a content mismatch: the exact byte offset,
+        a hex window from both sides, and an independent NFS read-back to say
+        whether the on-disk member is corrupt or only the fetch path is."""
+        off = textutil.first_byte_diff(expected, actual)
+        lines = []
+        lines.append("  first byte diff:")
+        lines.append("    expected: " + textutil.hexdump_around(expected, off))
+        lines.append("    fetched : " + textutil.hexdump_around(actual, off))
+
+        # MVS FTP reads the PDS member straight off disk, bypassing dino-nfs, so
+        # a corrupt fetch already means the on-disk member is corrupt (the write
+        # path).  Cross-read via NFS too -- if it ALSO differs the member is
+        # definitely bad; if it matches, suspect the fetch/download path.  (NFS
+        # client caching can mask a bad disk here, so FTP remains authoritative.)
+        try:
+            nfs = self.read_member(key, name)
+            if textutil.first_byte_diff(expected, nfs) < 0:
+                lines.append("  NFS read-back MATCHES (fetch path suspect; but "
+                             "FTP reads disk directly, so more likely a caching "
+                             "artifact)")
+            else:
+                lines.append("  NFS read-back ALSO differs -> the PDS member on "
+                             "disk is corrupt (server WRITE/flush path)")
+        except Exception as e:                       # noqa
+            lines.append("  NFS read-back failed: %s" % e)
+
+        dsname = self.ds(key).get("dsname", "?")
+        lines.append("  member PRESERVED for inspection: ISPF browse %s(%s) on "
+                     "MVS (or FTP GET) to see the raw record" % (dsname, self.mvs_name(name)))
+        return "\n".join(lines)
 
     def require_mvs(self):
         if self.mode != "mvs":
@@ -248,5 +286,13 @@ class Context(object):
     # -- per-test teardown ------------------------------------------------
     def after_test(self):
         for key, name in self._to_clean:
+            if (key, name) in self._preserve:
+                continue                     # keep corrupt members for post-mortem
             self.remove_member(key, name)
+        if self._preserve:
+            kept = ", ".join("%s(%s)" % (self.ds(k)["nfs_dir"], n)
+                             for k, n in sorted(self._preserve))
+            print("      NOTE: preserved for inspection (NOT deleted): %s" % kept)
+            print("            re-run deletes them at that test's start, so look now")
         self._to_clean = []
+        self._preserve = set()

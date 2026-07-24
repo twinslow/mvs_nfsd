@@ -42,37 +42,59 @@ def _selected(entry, filters, sections):
     return True
 
 
-def run_all(ctx, filters=None, sections=None):
-    """Run the selected tests against ctx.  Returns the process exit code."""
+def run_all(ctx, filters=None, sections=None, repeat=1):
+    """Run the selected tests against ctx.  Returns the process exit code.
+
+    repeat > 1 loops the selected tests up to that many passes and STOPS at the
+    first failure (leaving the offending member preserved, see Context) -- the
+    way to catch an intermittent bug: e.g.
+        run_tests.py -c config.json -f upload_small -f upload_large --repeat 40
+    """
     passed = failed = skipped = 0
     failures = []
 
     ordered = sorted(REGISTRY, key=lambda e: [int(x) for x in e["section"].split(".")])
-    for entry in ordered:
-        if not _selected(entry, filters, sections):
-            continue
-        label = "[%s] %s" % (entry["section"], entry["name"])
-        if entry["requires"] == "mvs" and ctx.mode != "mvs":
-            print("SKIP %-42s (MVS-only)" % label)
-            skipped += 1
-            continue
-        t0 = time.time()
-        try:
-            entry["fn"](ctx)
-            print("PASS %-42s (%.2fs)" % (label, time.time() - t0))
-            passed += 1
-        except TestSkip as e:
-            print("SKIP %-42s (%s)" % (label, e))
-            skipped += 1
-        except Exception as e:
-            print("FAIL %-42s (%.2fs) -- %s" % (label, time.time() - t0, e))
-            failures.append((label, traceback.format_exc()))
-            failed += 1
-        finally:
-            ctx.after_test()
+    selected = [e for e in ordered if _selected(e, filters, sections)]
+    if not selected:
+        print("no tests matched the given --section/--filter")
+        return 0
+
+    stop = False
+    for it in range(1, repeat + 1):
+        if repeat > 1:
+            print("\n----- pass %d/%d -----" % (it, repeat))
+        for entry in selected:
+            label = "[%s] %s" % (entry["section"], entry["name"])
+            if entry["requires"] == "mvs" and ctx.mode != "mvs":
+                print("SKIP %-42s (MVS-only)" % label)
+                skipped += 1
+                continue
+            t0 = time.time()
+            try:
+                entry["fn"](ctx)
+                print("PASS %-42s (%.2fs)" % (label, time.time() - t0))
+                passed += 1
+            except TestSkip as e:
+                print("SKIP %-42s (%s)" % (label, e))
+                skipped += 1
+            except Exception as e:
+                print("FAIL %-42s (%.2fs) -- %s" % (label, time.time() - t0, e))
+                failures.append(("pass %d: %s" % (it, label), traceback.format_exc()))
+                failed += 1
+                stop = (repeat > 1)   # loop-until-fail: stop at the first one
+            finally:
+                ctx.after_test()
+            if stop:
+                break
+        if stop:
+            print("\nfailure detected on pass %d -- stopping (member preserved)"
+                  % it)
+            break
 
     print("\n" + "=" * 60)
-    print("Results: %d passed, %d failed, %d skipped" % (passed, failed, skipped))
+    tail = " over %d pass(es)" % it if repeat > 1 else ""
+    print("Results: %d passed, %d failed, %d skipped%s"
+          % (passed, failed, skipped, tail))
     if failures:
         print("-" * 60)
         for label, tb in failures:

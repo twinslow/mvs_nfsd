@@ -63,3 +63,23 @@ def diff_summary(expected, actual):
 
 def text_equal(expected, actual):
     return normalize(expected) == normalize(actual)
+
+
+def first_byte_diff(a, b):
+    """Offset of the first differing raw byte, or -1 if a == b."""
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n if len(a) != len(b) else -1
+
+
+def hexdump_around(data, offset, radius=32):
+    """Hex of data[offset-radius : offset+radius] with the offset marked."""
+    lo = max(0, offset - radius)
+    hi = min(len(data), offset + radius)
+    out = []
+    for i in range(lo, hi):
+        b = ord(data[i]) & 0xFF if isinstance(data, str) else data[i]
+        out.append(("[%02x]" if i == offset else "%02x") % b)
+    return "off %d, bytes[%d:%d]: %s" % (offset, lo, hi, " ".join(out))
