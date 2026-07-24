@@ -280,6 +280,20 @@ on-system integration runs, not munit.  `mockvfs.c` is a test mock (compiled but
 not linked into the server, per `makejcc.jcl`).  `vfs.c` and `ressock.c` are part
 of the non-MVS reference build only and are not in the MVS application.
 
+**`exports.c` is tested by a SEPARATE program.**  Every suite in `runall` links
+`tests/tstubs.c`, which *replaces* `exports.c` (it defines `exports_count` /
+`exports_get` / `export_dataset_*` so the modules under test resolve them).  The
+exports suite tests the **real** `exports.c`, so it cannot link `tstubs` — the
+two collide on those symbols.  `tests/texports.c` is therefore its own program
+with its own `main()`, built and run by `tests-jcl/testexp.jcl` (linking
+`EXPORTS` + `CFGOPTS` + `EBCDIC` + `LOGGER` + `MUNIT`; `mvs_get_dcb_info_dsn` is
+stubbed inside the test).  It drives the real `exports_load()` against generated
+temp config files and checks the result through the public accessors — covering
+single/multiple export **paths** (the case that had none), dataset accumulation,
+`ro`/perms/`fileext`/`nofileext`, the fail-closed drop, and the lookup helpers.
+Not yet covered (hence Medium): the `{ … }` block config form and the `[Init]`
+command dispatch.
+
 ### Core RPC / NFS / server plumbing
 
 | Source module | Role | Unit test module(s) | Coverage |
@@ -317,7 +331,7 @@ of the non-MVS reference build only and are not in the MVS application.
 | Source module | Role | Unit test module(s) | Coverage |
 |---|---|---|---|
 | `cfgopts.c` | Export keyword option parsing (pure) | `tcfgopts.c` | **High** |
-| `exports.c` | Exports file load + export/dataset tables | *(none — replaced by `tstubs.c` in tests)* | **None** |
+| `exports.c` | Exports file load + export/dataset tables | `texports.c` *(standalone — see note)* | **Medium** |
 
 ### Utilities
 

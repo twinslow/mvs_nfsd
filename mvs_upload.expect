@@ -50,7 +50,7 @@
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
-set ftp_host  "localhost"
+set ftp_host  "192.168.1.168"
 set ftp_port  "2121"
 
 set script_dir     [file dirname [file normalize [info script]]]

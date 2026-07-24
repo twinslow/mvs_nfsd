@@ -125,6 +125,7 @@ other important datasets that could prevent an IPL from completing.
 | `tests/tmvsfid.c` | Tests for `mvsfid.c` — FNV-1a fileid hashing (determinism, distinctness, NUL domain separation, length clamps, ino32 fold) |
 | `tests/tebcdic.c` | Tests for `ebcdic.c` — CP037 translation tables both ways, unmapped fallbacks, buffer translators, `ebcdic_member_to_name` |
 | `tests/tmvsutl.c` | Tests for `mvsutl.c` — LOCAL ↔ UTC epoch conversions (sign, inverse property) via the offset test seam |
+| `tests/texports.c` | Tests for `exports.c` — the NFSDCONF parser + export table (multiple export paths, dataset accumulation, options, fail-closed, lookups). **Standalone program** — links the real `exports.c`, so it cannot use `tstubs`; built/run by `tests-jcl/testexp.jcl`, not `runall` |
 
 > Coverage summary: see the **test coverage matrix** in
 > [doc/readme_unit_tests.md](doc/readme_unit_tests.md), which maps every
