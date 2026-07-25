@@ -38,6 +38,45 @@ static pending_member_t g_pww_pool[PWW_MAX_PENDING];
 static uint8_t g_pww_xlate[4096];
 
 /* -------------------------------------------------------------------- */
+/* Corruption tripwire (TEMPORARY -- see spill_corruption_open)          */
+/*                                                                       */
+/* Members intermittently end up with an inbound RPC WRITE message       */
+/* embedded in their data, every capture so far starting exactly 60      */
+/* bytes into a flush chunk (offsets 60, 4156, 60 == 60 mod 4096).  An   */
+/* RPC CALL header is unmistakable and cannot occur in file data, so     */
+/* look for the constant triple mtype=0, rpcvers=2, prog=100003 on a     */
+/* 4-byte boundary.  WHERE it is found splits the search in half:        */
+/*                                                                       */
+/*   fires in pww_write  -> the payload was ALREADY corrupt on arrival,   */
+/*                          so the fault is upstream (rpc_recv / xdr /    */
+/*                          g_write_buf) and rpc.c's own self-check       */
+/*                          should have fired as well.                    */
+/*   fires only at flush -> the data arrived clean and was corrupted      */
+/*                          inside the pool (pm->buf, the spill dataset,  */
+/*                          or the chunk read-back), which eliminates the */
+/*                          entire receive path in one observation.       */
+/*                                                                       */
+/* Cheap: a single 4-byte-strided pass.  Returns the offset, or -1.       */
+/* -------------------------------------------------------------------- */
+static int pww_find_rpc_header(const uint8_t *p, uint32_t len)
+{
+    uint32_t i;
+
+    if (p == NULL || len < 16u) return -1;
+    for (i = 0; i + 16u <= len; i += 4u) {
+        if (p[i] != 0 || p[i+1] != 0 || p[i+2] != 0 || p[i+3] != 0)
+            continue;                                  /* mtype   == 0   */
+        if (p[i+4] != 0 || p[i+5] != 0 || p[i+6] != 0 || p[i+7] != 2)
+            continue;                                  /* rpcvers == 2   */
+        if (p[i+8]  != 0x00u || p[i+9]  != 0x01u ||
+            p[i+10] != 0x86u || p[i+11] != 0xA3u)
+            continue;                                  /* prog == 100003 */
+        return (int)i;
+    }
+    return -1;
+}
+
+/* -------------------------------------------------------------------- */
 /* "Dataset is out of space" memory (design_nfs_write.md Sec 7.3)        */
 /*                                                                       */
 /* A full PDS abends on EVERY flush, and each abend is expensive: D37 +  */
@@ -614,6 +653,21 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
             PWW_FLUSH_FP(NULL);
             return -1;
         }
+        /* Tripwire: the chunk about to be translated and written must not
+           contain an RPC message.  A hit HERE with no matching "CORRUPT
+           PAYLOAD ON ARRIVAL" from pww_write means the data was clean when
+           stored and was corrupted inside the pool -- which rules out the
+           whole receive path.  Log both the in-chunk offset and the member
+           offset, to confirm the "60 bytes into a chunk" phase. */
+        {
+            int rpc_at = pww_find_rpc_header(g_pww_xlate, n);
+            if (rpc_at >= 0)
+                log_error("pww_flush_slot: CORRUPT CHUNK -- RPC CALL header at"
+                          " in-chunk offset %d (member offset %u) flushing %s"
+                          " (chunk off=%u len=%u)",
+                          rpc_at, off + (uint32_t)rpc_at, open_target, off, n);
+        }
+
         for (i = 0; i < n; i++)
             if (g_pww_xlate[i] == 0x0A)   /* ASCII LF -- the stream is ASCII */
                 lines++;
@@ -990,6 +1044,18 @@ int pww_write(int export_idx, int dataset_idx,
 {
     pending_member_t *pm;
     uint64_t          end;
+    int               rpc_at;
+
+    /* Tripwire: is an RPC message already inside the payload we were handed?
+       Checked BEFORE the data is stored, so a hit means the corruption
+       happened upstream of the write pool. */
+    rpc_at = pww_find_rpc_header(data, count);
+    if (rpc_at >= 0)
+        log_error("pww_write: CORRUPT PAYLOAD ON ARRIVAL -- RPC CALL header at"
+                  " payload offset %d of %s(%s) (write offset=%llu count=%u)."
+                  "  Corruption is UPSTREAM of the write pool.",
+                  rpc_at, dsname_ebcdic, member_name,
+                  (unsigned long long)offset, count);
 
     end = offset + (uint64_t)count;
     if (end > (uint64_t)PWW_MAX_MEMBER_BYTES) {

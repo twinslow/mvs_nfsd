@@ -74,7 +74,8 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 /* Silent (no output) unless corruption is seen, so it is safe to leave  */
 /* enabled.  Remove once the bug is root-caused.                        */
 /* ------------------------------------------------------------------ */
-#define RPC_MAX_FRAGS  32       /* fragment offsets/lengths recorded    */
+#define RPC_MAX_FRAGS     32     /* fragment offsets/lengths recorded   */
+#define RPC_SCAN_MAX_LEN  8192u  /* skip the O(n) scan above this size  */
 
 /* Deliberately STATIC, not automatic.  These were locals in rpc_recv, which
    added 256 bytes to the stack frame of the hottest function in the server --
@@ -200,12 +201,20 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
                                      : (expected - total));
     }
 
-    for (i = 0; i + 4 <= total; i++) {
-        if (buf[i]     == 0x4Eu && buf[i + 1] == 0x46u &&
-            buf[i + 2] == 0x53u && buf[i + 3] == 0x33u) {
-            if      (hits == 0) off1 = i;
-            else if (hits == 1) off2 = i;
-            hits++;
+    /* The O(n) scan is skipped for large messages.  Adding instrumentation
+       here previously coincided with the bug going quiet for ~150 passes, and
+       a full pass over every 64 KB WRITE is a real cost on this host -- so
+       spend it only where it is needed.  The failures reproduce on a SMALL
+       write (a ~610-byte message), which stays fully covered; 64 KB writes now
+       pay nothing.  The O(1) length check above still runs on every WRITE. */
+    if (total <= RPC_SCAN_MAX_LEN) {
+        for (i = 0; i + 4 <= total; i++) {
+            if (buf[i]     == 0x4Eu && buf[i + 1] == 0x46u &&
+                buf[i + 2] == 0x53u && buf[i + 3] == 0x33u) {
+                if      (hits == 0) off1 = i;
+                else if (hits == 1) off2 = i;
+                hits++;
+            }
         }
     }
 
