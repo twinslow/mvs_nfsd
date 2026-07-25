@@ -16,9 +16,9 @@
  * mvsdol.c/mvsdol.h.  Directory iteration uses the dir_openlist_*
  * functions from that module.
  */
- 
+
 #define _POSIX_C_SOURCE 200809L
- 
+
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
@@ -198,13 +198,13 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
         member_entry = mvs_pds_get_member_entry(pds_dsname, pds_member_name, export_idx, &mem_entry);
         if (member_entry == NULL) {
             errno = ENOENT;
-            return -1;  
+            return -1;
         }
     }
 
     /* Get the member size from the cache, or if required it will read the member and save in cache */
     rc2 = mvsfsz_get_member_size(
-        pds_dsname, pds_member_name, 
+        pds_dsname, pds_member_name,
         member_entry, &set_size);
 
     /* If above fails ... then we'll estimate the size, but this is problematic for the NFS client */
@@ -220,7 +220,7 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
     vs->uid = 0;     /* root-owned */
     vs->gid = 0;     /* root-owned */
     vs->size = set_size;
-    vs->used = set_size; 
+    vs->used = set_size;
     vs->rdev_maj = 0;
     vs->rdev_min = 0;
     vs->fsid = (uint64_t)export_idx + 1; /* unique filesystem ID based on export index */
@@ -427,15 +427,15 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
         else
             ctime_buf[0] = '\0';
 
-        log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
-        log_debug("vfs_stat:      vs->size      = %lld",             vs->size);
-        log_debug("vfs_stat:      vs->used      = %lld",             vs->used);
-        log_debug("vfs_stat:      vs->fsid      = %lld",             vs->fsid);
-        log_debug("vfs_stat:      vs->fileid    = 0x%016X",          vs->fileid);
-        log_debug("vfs_stat:      vs->raw_ino   = 0x%08X",           vs->raw_ino);
-        log_debug("vfs_stat:      vs->atime_sec = 0x%08X (%s UTC)",  vs->atime_sec, atime_buf);
+        //log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
+        //log_debug("vfs_stat:      vs->size      = %lld",             vs->size);
+        //log_debug("vfs_stat:      vs->used      = %lld",             vs->used);
+        //log_debug("vfs_stat:      vs->fsid      = %lld",             vs->fsid);
+        //log_debug("vfs_stat:      vs->fileid    = 0x%016X",          vs->fileid);
+        //log_debug("vfs_stat:      vs->raw_ino   = 0x%08X",           vs->raw_ino);
+        //log_debug("vfs_stat:      vs->atime_sec = 0x%08X (%s UTC)",  vs->atime_sec, atime_buf);
         log_debug("vfs_stat:      vs->mtime_sec = 0x%08X (%s UTC)",  vs->mtime_sec, mtime_buf);
-        log_debug("vfs_stat:      vs->ctime_sec = 0x%08X (%s UTC)",  vs->ctime_sec, ctime_buf);
+        //log_debug("vfs_stat:      vs->ctime_sec = 0x%08X (%s UTC)",  vs->ctime_sec, ctime_buf);
     }
 }
 
@@ -494,14 +494,14 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     char        ebcdic_path[MAX_PATH_LEN];
     char        pds_dsname[45];
     char        pds_member_name[9];
-    int         export_idx; 
+    int         export_idx;
     int         path_type;
     uint64_t    actual_file_size;
     pds_member_entry_t *member_entry;
-    vfs_stat_t  vs; 
+    vfs_stat_t  vs;
 
 
-    log_debug("vfs_pread: path=%s, count=%d, offset=%lld", 
+    log_debug("vfs_pread: path=%s, count=%d, offset=%lld",
         log_ascii(path), count, offset);
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
@@ -571,7 +571,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
 
-    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d", 
+    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d",
         log_ascii(path), *nread, *eof);
 
     return rc;
@@ -672,7 +672,7 @@ int vfs_create(const char *path, uint32_t mode)
 
     return pww_create(export_idx, dataset_idx, pds_dsname, pds_member_name);
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_remove: delete a PDS member (NFS REMOVE).                        */
 /*                                                                      */
@@ -742,7 +742,7 @@ int vfs_remove(const char *path)
     log_debug("vfs_remove: removed %s(%s)", pds_dsname, pds_member_name);
     return 0;
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_rename: rename a PDS member within its dataset.                   */
 /*                                                                      */
@@ -848,7 +848,7 @@ int vfs_rename(const char *from, const char *to)
               from_dsname, from_member, to_member);
     return 0;
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_truncate: set a member's size (NFS SETATTR size / O_TRUNC).       */
 /* Routed to the pending-write pool; the common case is truncate-to-0    */
@@ -885,7 +885,7 @@ int vfs_truncate(const char *path, uint64_t size)
     return pww_truncate(export_idx, dataset_idx, pds_dsname, pds_member_name,
                         (uint32_t)size);
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_set_times: set atime and/or mtime on path.                       */
 /* set_atime / set_mtime use the SET_* constants from nfsd.h:           */
@@ -949,7 +949,7 @@ int vfs_set_times(const char *path,
     return pww_touch_stats(export_idx, dataset_idx,
                            pds_dsname, pds_member_name, new_time);
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_fsstat: fill vfs_fsstat_t from statvfs().                        */
 /* -------------------------------------------------------------------- */
@@ -960,9 +960,9 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 
 #if 0
     struct statvfs sv;
- 
+
     if (statvfs(path, &sv) < 0) return -1;
- 
+
     fs->total_bytes = (uint64_t)sv.f_blocks * (uint64_t)sv.f_frsize;
     fs->free_bytes  = (uint64_t)sv.f_bfree  * (uint64_t)sv.f_frsize;
     fs->avail_bytes = (uint64_t)sv.f_bavail * (uint64_t)sv.f_frsize;
@@ -973,7 +973,7 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
     return 0;
 #endif
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_errno_to_nfs3: map a POSIX errno to an NFSv3 error code.         */
 /* -------------------------------------------------------------------- */
@@ -1009,12 +1009,12 @@ uint32_t vfs_errno_to_nfs3(int err)
 
 nfs3.c proc_readdir() does the following --
 
-Notes: 
+Notes:
 
 1) I think we can use the EBCDIC member name as the cookie value as it
    is 8 bytes / uint64_t. That will make the restart of a directory
-   read easier, as we will have the actual member name. 
-2) mvspdir.c deals ONLY in EBCDIC. 
+   read easier, as we will have the actual member name.
+2) mvspdir.c deals ONLY in EBCDIC.
 3) nfs3.c deals ONLY in ASCII
 4) mvsvfs.c does the translations between ASCII and EBCDIC for --
     * Path names
@@ -1029,9 +1029,9 @@ vfs_opendir
 
     Find a free "opendir" entry : mvspdir_openlist_find_free(...)
     Allocate and open the PDS : mvs_open_pds_dir
-    Setup the "opendir" entry : mvspdir_openlist_set_init(...) 
+    Setup the "opendir" entry : mvspdir_openlist_set_init(...)
     With --
-        PDS dataset name 
+        PDS dataset name
         Cookie -- can be init as 0x01 (or 0x4040404040404040 if we wanted a character value)
         PDS fopen file handle
     Update the "opendir" entry : mvspdir_openlist_clear_memlist(...)
@@ -1074,11 +1074,11 @@ uint64_t to_cookie(const char *member_name) {
     for (i = sizeof(cookie) - 1; i > 0; i--) {
         if ( cookie_char[i] == '\0' )
             cookie_char[i] = 0x40;  /* EBCDIC space */
-        else 
+        else
             break;
     }
 
-    return cookie; 
+    return cookie;
 }
 
 /* -------------------------------------------------------------------- */
@@ -1378,29 +1378,29 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
 
     /* Return the generated fileId value */
     *fileid = mvs_fid_hash(
-        dir_entry->pds_dsname_ebcdic, 
+        dir_entry->pds_dsname_ebcdic,
         member_info->name ); /* generate fileid based on dataset and member name */
 
     /* Return and save the next cookie value */
     *cookie = to_cookie(member_info->name);
     dir_entry->next_cookie = *cookie;
 
-    log_debug("vfs_readdir_next: Ending and returning filename %s for path %s", 
+    log_debug("vfs_readdir_next: Ending and returning filename %s for path %s",
         log_ascii(name), dir_entry->pds_dsname_ebcdic);
-        
+
     return 0;
 
 error_exit:
 
-    log_debug("vfs_readdir_next: Returning error ... retcode %d on path=%s", 
+    log_debug("vfs_readdir_next: Returning error ... retcode %d on path=%s",
         retcode, dir_entry->pds_dsname_ebcdic);
 
 error_exit_no_log:
 
     return retcode;
 
-}    
- 
+}
+
 /* -------------------------------------------------------------------- */
 /* vfs_seekdir_to: seek so the next vfs_readdir_next call returns the   */
 /* entry AFTER the one that had the given cookie value.                 */
@@ -1418,7 +1418,7 @@ void vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie)
     uint64_t skip = cookie;
     d->next_cookie = cookie;
 }
- 
+
 /* -------------------------------------------------------------------- */
 /* vfs_closedir: release a directory handle back to the pool.           */
 /* The pool slot remains USED so its member cache stays available for   */

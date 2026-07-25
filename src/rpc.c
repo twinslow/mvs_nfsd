@@ -48,6 +48,169 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 }
  
 /* ------------------------------------------------------------------ */
+/* Receive-corruption self-check (temporary; see spill_corruption_open) */
+/*                                                                      */
+/* An intermittent bug corrupts a written PDS member: a whole inbound   */
+/* RPC request image (its own file handle + AUTH_UNIX cred) ends up      */
+/* embedded in the middle of the WRITE payload, with the file data       */
+/* restarting from offset 0 after it.  The receive -> store chain is     */
+/* provably a faithful copy, so the corruption is already present in the */
+/* reassembled buffer when rpc_recv returns.  This check catches it at   */
+/* that exact point.                                                    */
+/*                                                                      */
+/* Every our_fhandle_t carries the ASCII magic "NFS3" (0x4E465333).      */
+/*                                                                      */
+/* The check is applied ONLY to NFS WRITE calls, which carry exactly one */
+/* file handle, so a second occurrence means a foreign request image bled */
+/* into the buffer.  It must not be applied to every request: RENAME and */
+/* LINK legitimately carry TWO handles (from-dir and to-dir), and scanning */
+/* those produced a false positive -- two hits 80 bytes apart, which is   */
+/* just handle(60) + a padded filename, exactly the RENAME wire layout.  */
+/*                                                                      */
+/* Residual false-positive risk: file DATA that itself contains the four */
+/* bytes "NFS3" would trip it.  The integration-test data never does, and */
+/* this is a temporary diagnostic, so that is acceptable.               */
+/*                                                                      */
+/* Silent (no output) unless corruption is seen, so it is safe to leave  */
+/* enabled.  Remove once the bug is root-caused.                        */
+/* ------------------------------------------------------------------ */
+#define RPC_MAX_FRAGS  32       /* fragment offsets/lengths recorded    */
+
+/* Fixed offsets in an RPC CALL header: xid(0) mtype(4) rpcvers(8)       */
+/* prog(12) vers(16) proc(20).                                          */
+#define RPC_CALL_PROG_OFF   12u
+#define RPC_CALL_PROC_OFF   20u
+#define RPC_PROG_NFS        100003u
+#define RPC_NFS3_PROC_WRITE 7u
+
+static uint32_t rpc_peek_uint32(const uint8_t *buf, uint32_t off)
+{
+    return ((uint32_t)buf[off]     << 24)
+         | ((uint32_t)buf[off + 1] << 16)
+         | ((uint32_t)buf[off + 2] <<  8)
+         |  (uint32_t)buf[off + 3];
+}
+
+/* XDR pads every opaque/string up to a 4-byte boundary. */
+#define RPC_ROUND4(n)  (((n) + 3u) & ~3u)
+
+/* ------------------------------------------------------------------ */
+/* rpc_write_expected_len: a WRITE call's length is fully determined by  */
+/* its own fields, so it can be recomputed and compared against the     */
+/* length the record mark claimed.  Walks the CALL header, the AUTH     */
+/* credential and verifier, then the WRITE arguments                    */
+/* (fh, offset, count, stable, data), and returns the byte position     */
+/* just past the padded data.                                           */
+/*                                                                      */
+/* This is the discriminator between the two candidate root causes:      */
+/*   expected < total  -> the record mark over-declared the length, so   */
+/*                        recv_all ran on into the NEXT message and      */
+/*                        appended it to this payload (framing desync).  */
+/*   expected == total -> the framing was right and the BYTES were bad   */
+/*                        (a short/stale copy inside recv()).            */
+/*                                                                      */
+/* Returns 0 and sets *expected, or -1 if the message is too short to    */
+/* walk (in which case no conclusion is drawn).                          */
+/* ------------------------------------------------------------------ */
+static int rpc_write_expected_len(const uint8_t *buf, uint32_t total,
+                                  uint32_t *expected)
+{
+    uint32_t pos = 24u;         /* past xid..proc */
+    uint32_t len;
+
+    /* credential: flavor + length + padded body */
+    if (pos + 8u > total) return -1;
+    pos += 4u;
+    len  = rpc_peek_uint32(buf, pos);
+    pos += 4u;
+    if (len > total || pos + RPC_ROUND4(len) > total) return -1;
+    pos += RPC_ROUND4(len);
+
+    /* verifier: flavor + length + padded body */
+    if (pos + 8u > total) return -1;
+    pos += 4u;
+    len  = rpc_peek_uint32(buf, pos);
+    pos += 4u;
+    if (len > total || pos + RPC_ROUND4(len) > total) return -1;
+    pos += RPC_ROUND4(len);
+
+    /* file handle: length + padded body */
+    if (pos + 4u > total) return -1;
+    len  = rpc_peek_uint32(buf, pos);
+    pos += 4u;
+    if (len > total || pos + RPC_ROUND4(len) > total) return -1;
+    pos += RPC_ROUND4(len);
+
+    /* offset (8) + count (4) + stable (4) */
+    if (pos + 16u > total) return -1;
+    pos += 16u;
+
+    /* data: length + padded body */
+    if (pos + 4u > total) return -1;
+    len  = rpc_peek_uint32(buf, pos);
+    pos += 4u;
+    if (len > total) return -1;
+
+    *expected = pos + RPC_ROUND4(len);
+    return 0;
+}
+
+static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
+                               const uint32_t *frag_off,
+                               const uint32_t *frag_len)
+{
+    uint32_t i;
+    uint32_t hits = 0;
+    uint32_t off1 = 0;
+    uint32_t off2 = 0;
+    uint32_t expected = 0;
+    int      bad_len = 0;
+    int      k;
+
+    if (total < RPC_CALL_PROC_OFF + 4u) return;
+
+    /* WRITE calls only -- see the note above on RENAME/LINK. */
+    if (rpc_peek_uint32(buf, RPC_CALL_PROG_OFF) != RPC_PROG_NFS)        return;
+    if (rpc_peek_uint32(buf, RPC_CALL_PROC_OFF) != RPC_NFS3_PROC_WRITE) return;
+
+    /* Length invariant: a WRITE's own fields must account for exactly the
+       bytes the record mark delivered.  Checked on every WRITE, because a
+       mismatch is conclusive on its own even when no second handle shows. */
+    if (rpc_write_expected_len(buf, total, &expected) == 0 && expected != total) {
+        bad_len = 1;
+        log_error("rpc_recv: WRITE LENGTH DESYNC -- record mark(s) delivered"
+                  " %u bytes but the call's own fields account for %u"
+                  " (%s by %u bytes)", total, expected,
+                  (total > expected) ? "over" : "under",
+                  (total > expected) ? (total - expected)
+                                     : (expected - total));
+    }
+
+    for (i = 0; i + 4 <= total; i++) {
+        if (buf[i]     == 0x4Eu && buf[i + 1] == 0x46u &&
+            buf[i + 2] == 0x53u && buf[i + 3] == 0x33u) {
+            if      (hits == 0) off1 = i;
+            else if (hits == 1) off2 = i;
+            hits++;
+        }
+    }
+
+    /* normal: a WRITE has exactly one handle and a consistent length */
+    if (hits <= 1 && !bad_len) return;
+
+    log_error("rpc_recv: CORRUPT RECEIVE BUFFER -- WRITE call with 'NFS3'"
+              " handle magic x%u (first two at off %u, %u) in a %u-byte"
+              " message reassembled from %d fragment(s):",
+              hits, off1, off2, total, nfrag);
+    for (k = 0; k < nfrag && k < RPC_MAX_FRAGS; k++)
+        log_error("rpc_recv:   frag %d: buf_off=%u len=%u",
+                  k, frag_off[k], frag_len[k]);
+    if (nfrag > RPC_MAX_FRAGS)
+        log_error("rpc_recv:   ... %d fragments total, only first %d shown",
+                  nfrag, RPC_MAX_FRAGS);
+}
+
+/* ------------------------------------------------------------------ */
 /* rpc_recv: read one complete RPC message from fd into buf.            */
 /*                                                                      */
 /* Handles multi-fragment messages by reassembling into a single        */
@@ -61,23 +224,33 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
     uint32_t rm;
     uint32_t flen;
     int      last;
- 
+    /* Per-fragment record for the receive-corruption self-check below.  */
+    uint32_t frag_off[RPC_MAX_FRAGS];
+    uint32_t frag_len[RPC_MAX_FRAGS];
+    int      nfrag = 0;
+
     do {
         if (recv_all(fd, mark, 4) < 0) return -1;
- 
+
         rm   = ((uint32_t)mark[0] << 24)
              | ((uint32_t)mark[1] << 16)
              | ((uint32_t)mark[2] <<  8)
              |  (uint32_t)mark[3];
         last = (int)((rm >> 31) & 1u);
         flen = rm & 0x7FFFFFFFu;
- 
+
         if (total + flen > maxlen) return -1;
         if (recv_all(fd, buf + total, flen) < 0) return -1;
+        if (nfrag < RPC_MAX_FRAGS) {
+            frag_off[nfrag] = total;
+            frag_len[nfrag] = flen;
+        }
         total += flen;
+        nfrag++;
     } while (!last);
- 
+
     *msglen = total;
+    rpc_recv_selfcheck(buf, total, nfrag, frag_off, frag_len);
     return 0;
 }
  
