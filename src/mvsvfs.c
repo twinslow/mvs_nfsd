@@ -403,9 +403,14 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
     time_t     t;
     struct tm *tm_p;
 
+    // Suppress output for rc == 0 for now
+    if (rc == 0)
+        return;
+
     log_debug("vfs_stat: Result for path=%s ending retcode=%d",
         log_ascii(path), rc);
     if (rc == 0) {
+
         t    = (time_t)vs->atime_sec;
         tm_p = gmtime(&t);
         if (tm_p != NULL)
@@ -427,7 +432,7 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
         else
             ctime_buf[0] = '\0';
 
-        //log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
+        log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
         //log_debug("vfs_stat:      vs->size      = %lld",             vs->size);
         //log_debug("vfs_stat:      vs->used      = %lld",             vs->used);
         //log_debug("vfs_stat:      vs->fsid      = %lld",             vs->fsid);
@@ -1119,13 +1124,27 @@ void generate_file_name(
 
     ds = export_dataset_get(export_idx, dataset_idx);
 
-    strncpy(file_name_buffer, member_info->name, buflen);
-    for (i = 0; i < strlen(file_name_buffer); i++)
+    /* strncpy does NOT terminate when the source fills the buffer, so leave
+       room for the NUL and write it explicitly. */
+    strncpy(file_name_buffer, member_info->name, (size_t)(buflen - 1));
+    file_name_buffer[buflen - 1] = '\0';
+    for (i = 0; file_name_buffer[i] != '\0'; i++)
         file_name_buffer[i] = tolower(file_name_buffer[i]);
 
+    /* strncat's 3rd argument is the maximum number of characters taken FROM
+       THE SOURCE, not the size of the destination: passing buflen permits a
+       write of strlen(dst) + buflen + 1 bytes.  Pass the room that is
+       actually left instead. */
     if ( ds != NULL && strlen(ds->file_ext) > 0 ) {
-        strncat(file_name_buffer, ".", buflen);
-        strncat(file_name_buffer, ds->file_ext, buflen);
+        size_t used = strlen(file_name_buffer);
+        size_t room = (used + 1 < (size_t)buflen)
+                    ? (size_t)buflen - used - 1 : 0;
+        strncat(file_name_buffer, ".", room);
+
+        used = strlen(file_name_buffer);
+        room = (used + 1 < (size_t)buflen)
+             ? (size_t)buflen - used - 1 : 0;
+        strncat(file_name_buffer, ds->file_ext, room);
     }
 
     ebcdic_to_ascii(file_name_buffer, file_name_buffer, strlen(file_name_buffer));

@@ -76,6 +76,17 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 /* ------------------------------------------------------------------ */
 #define RPC_MAX_FRAGS  32       /* fragment offsets/lengths recorded    */
 
+/* Deliberately STATIC, not automatic.  These were locals in rpc_recv, which
+   added 256 bytes to the stack frame of the hottest function in the server --
+   and the corruption under investigation stopped reproducing the moment that
+   build went in (~100 clean passes against a historical ~2-in-10 failure
+   rate).  Growing a frame in the receive path is a textbook way to MASK a
+   stack overflow rather than fix it, so keep the frame at its original size
+   while retaining the diagnostic.  Safe as statics: the server is
+   single-threaded and these are consumed before rpc_recv returns. */
+static uint32_t g_rpc_frag_off[RPC_MAX_FRAGS];
+static uint32_t g_rpc_frag_len[RPC_MAX_FRAGS];
+
 /* Fixed offsets in an RPC CALL header: xid(0) mtype(4) rpcvers(8)       */
 /* prog(12) vers(16) proc(20).                                          */
 #define RPC_CALL_PROG_OFF   12u
@@ -166,6 +177,9 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     uint32_t expected = 0;
     int      bad_len = 0;
     int      k;
+    uint32_t base2;         /* inferred start of the embedded message      */
+    uint32_t xid_outer;
+    uint32_t xid_inner;
 
     if (total < RPC_CALL_PROC_OFF + 4u) return;
 
@@ -208,6 +222,42 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     if (nfrag > RPC_MAX_FRAGS)
         log_error("rpc_recv:   ... %d fragments total, only first %d shown",
                   nfrag, RPC_MAX_FRAGS);
+
+    /* Identify the embedded message by XID -- the field that says WHICH
+       request bled in, and so which mechanism produced it:
+         same XID      -> the SAME request captured twice (a client
+                          retransmission, or our own code re-reading it),
+         different XID -> a LATER request pulled in (framing desync: the
+                          record mark over-declared and recv_all ran on into
+                          the next message).
+       off1 is the handle's offset within this (well-formed) message, so the
+       embedded copy -- same client, hence same credential length -- should
+       start at off2 - off1.  Verify that structurally before believing it:
+       a genuine RPC CALL header has mtype==0, rpcvers==2, prog==100003. */
+    if (off2 > off1) {
+        base2 = off2 - off1;
+        if (base2 + RPC_CALL_PROC_OFF + 4u <= total &&
+            rpc_peek_uint32(buf, base2 + 4u)  == 0u &&
+            rpc_peek_uint32(buf, base2 + 8u)  == 2u &&
+            rpc_peek_uint32(buf, base2 + RPC_CALL_PROG_OFF) == RPC_PROG_NFS) {
+            xid_outer = rpc_peek_uint32(buf, 0);
+            xid_inner = rpc_peek_uint32(buf, base2);
+            log_error("rpc_recv:   embedded RPC CALL confirmed at off %u:"
+                      " xid=x%08X proc=%u  (this message xid=x%08X)",
+                      base2, xid_inner,
+                      rpc_peek_uint32(buf, base2 + RPC_CALL_PROC_OFF),
+                      xid_outer);
+            log_error("rpc_recv:   -> %s",
+                      (xid_inner == xid_outer)
+                        ? "SAME xid: this request captured TWICE"
+                        : "DIFFERENT xid: a later request bled in"
+                          " (framing desync)");
+        } else {
+            log_error("rpc_recv:   no RPC CALL header at the inferred"
+                      " embedded start (off %u) -- the second handle is not"
+                      " a whole message copied from its beginning", base2);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -224,9 +274,6 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
     uint32_t rm;
     uint32_t flen;
     int      last;
-    /* Per-fragment record for the receive-corruption self-check below.  */
-    uint32_t frag_off[RPC_MAX_FRAGS];
-    uint32_t frag_len[RPC_MAX_FRAGS];
     int      nfrag = 0;
 
     do {
@@ -242,15 +289,15 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
         if (total + flen > maxlen) return -1;
         if (recv_all(fd, buf + total, flen) < 0) return -1;
         if (nfrag < RPC_MAX_FRAGS) {
-            frag_off[nfrag] = total;
-            frag_len[nfrag] = flen;
+            g_rpc_frag_off[nfrag] = total;
+            g_rpc_frag_len[nfrag] = flen;
         }
         total += flen;
         nfrag++;
     } while (!last);
 
     *msglen = total;
-    rpc_recv_selfcheck(buf, total, nfrag, frag_off, frag_len);
+    rpc_recv_selfcheck(buf, total, nfrag, g_rpc_frag_off, g_rpc_frag_len);
     return 0;
 }
  

@@ -140,8 +140,12 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
 
     fp = (g_log_fp != NULL) ? g_log_fp : stderr;
 
-    /* Format message body once; reuse for both the log stream and WTO. */
-    vsprintf(msg_buf, fmt, ap);
+    /* Format message body once; reuse for both the log stream and WTO.
+       Bounded: several callers pass two or more %s arguments that can each
+       be a full MAX_PATH (256) string, which comfortably exceeds msg_buf --
+       an unbounded vsprintf here would smash this frame. */
+    vsnprintf(msg_buf, sizeof(msg_buf), fmt, ap);
+    msg_buf[sizeof(msg_buf) - 1] = '\0';   /* some libcs omit the NUL */
 
     /* Optional timestamp prefix (log stream only, not WTO). */
     if (g_log_timestamps) {
@@ -170,7 +174,9 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
        it can never surface a line the stream itself has filtered out.
        No timestamp -- operator messages stay concise. */
     if (level >= g_wto_level) {
-        sprintf(wto_buf, "[%s] %s", level_tag(level), msg_buf);
+        snprintf(wto_buf, sizeof(wto_buf), "[%s] %s",
+                 level_tag(level), msg_buf);
+        wto_buf[sizeof(wto_buf) - 1] = '\0';
         _write2op(wto_buf);
     }
 #endif
