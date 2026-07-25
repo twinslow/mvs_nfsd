@@ -78,6 +78,7 @@ def run_all(ctx, filters=None, sections=None, repeat=1):
                 print("SKIP %-42s (%s)" % (label, e))
                 skipped += 1
             except Exception as e:
+                ctx.mark_failed()     # keep this test's members for post-mortem
                 print("FAIL %-42s (%.2fs) -- %s" % (label, time.time() - t0, e))
                 failures.append(("pass %d: %s" % (it, label), traceback.format_exc()))
                 failed += 1

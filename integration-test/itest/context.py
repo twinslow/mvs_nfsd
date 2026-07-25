@@ -25,6 +25,7 @@ class Context(object):
         self.opts = cfg["options"]
         self._to_clean = []          # (key, name) created during a test
         self._preserve = set()       # (key, name) to KEEP for post-mortem
+        self._failed = False         # set by the runner when a test fails
 
     # -- dataset / path mapping -------------------------------------------
     def ds(self, key):
@@ -181,8 +182,18 @@ class Context(object):
             time.sleep(0.5)
 
     def read_member(self, key, name):
-        with open(str(self.member_path(key, name)), "r") as f:
-            return f.read()
+        """Read a member over NFS.
+
+        Deliberately BINARY + latin-1, not text mode.  A corrupt member can
+        contain EBCDIC or raw RPC-wire bytes, and a text-mode read then dies
+        with UnicodeDecodeError deep inside the test -- which both loses the
+        evidence and destroys the member (teardown only preserves on a content
+        mismatch).  latin-1 maps bytes 1:1 onto U+0000-U+00FF, so the data
+        survives byte-exact for diffing and hex dumping, and the corruption
+        surfaces as a normal mismatch that the post-mortem can report on."""
+        with open(str(self.member_path(key, name)), "rb") as f:
+            raw = f.read()
+        return raw.decode("latin-1")
 
     def track(self, key, name):
         self._to_clean.append((key, name))
@@ -284,10 +295,18 @@ class Context(object):
             raise TestSkip("MVS-only")
 
     # -- per-test teardown ------------------------------------------------
+    def mark_failed(self):
+        """Called by the runner when a test raises.  Every member the test
+        touched is then kept, not just one a verify_member call flagged: a
+        failure anywhere (a bad read, an exception mid-test) is exactly when
+        the on-disk evidence matters, and it is unrecoverable once deleted."""
+        self._failed = True
+
     def after_test(self):
         for key, name in self._to_clean:
-            if (key, name) in self._preserve:
-                continue                     # keep corrupt members for post-mortem
+            if self._failed or (key, name) in self._preserve:
+                self._preserve.add((key, name))   # keep for post-mortem
+                continue
             self.remove_member(key, name)
         if self._preserve:
             kept = ", ".join("%s(%s)" % (self.ds(k)["nfs_dir"], n)
@@ -296,3 +315,4 @@ class Context(object):
             print("            re-run deletes them at that test's start, so look now")
         self._to_clean = []
         self._preserve = set()
+        self._failed   = False
