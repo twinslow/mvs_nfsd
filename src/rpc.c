@@ -67,12 +67,23 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 /* those produced a false positive -- two hits 80 bytes apart, which is   */
 /* just handle(60) + a padded filename, exactly the RENAME wire layout.  */
 /*                                                                      */
-/* Residual false-positive risk: file DATA that itself contains the four */
-/* bytes "NFS3" would trip it.  The integration-test data never does, and */
-/* this is a temporary diagnostic, so that is acceptable.               */
+/* ROOT CAUSE (found 2026-07-25): a partial recv() on this MVS socket    */
+/* layer can REPLAY the message from byte 0 instead of continuing.  A    */
+/* 636-byte WRITE arrived as M[0..255] followed by M[0..379]: same xid,  */
+/* one fragment, and the record mark agreed with the message's own       */
+/* fields, so the framing was right and the BYTES were duplicated.       */
+/* recv_all() writes to buf+done, so the destination was correct -- the  */
+/* source restarted.  Not a dino-nfs bug; the stack lied to us.          */
 /*                                                                      */
-/* Silent (no output) unless corruption is seen, so it is safe to leave  */
-/* enabled.  Remove once the bug is root-caused.                        */
+/* This check therefore does more than report: it REJECTS the message    */
+/* (rpc_recv returns -1 -> the connection closes -> the client resends), */
+/* so corrupt data can never reach a PDS member.  Rejection is on PROOF  */
+/* only -- a failed length invariant, or a structurally complete RPC     */
+/* CALL header embedded in the payload.  Two "NFS3" magics alone is NOT  */
+/* sufficient, because file data may legitimately contain those bytes    */
+/* and dropping a good connection would be its own corruption.          */
+/*                                                                      */
+/* Silent unless corruption is seen, so it is safe to leave enabled.     */
 /* ------------------------------------------------------------------ */
 #define RPC_MAX_FRAGS     32     /* fragment offsets/lengths recorded   */
 #define RPC_SCAN_MAX_LEN  8192u  /* skip the O(n) scan above this size  */
@@ -167,7 +178,7 @@ static int rpc_write_expected_len(const uint8_t *buf, uint32_t total,
     return 0;
 }
 
-static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
+static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
                                const uint32_t *frag_off,
                                const uint32_t *frag_len)
 {
@@ -177,16 +188,17 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     uint32_t off2 = 0;
     uint32_t expected = 0;
     int      bad_len = 0;
+    int      confirmed = 0;   /* embedded CALL header proven */
     int      k;
     uint32_t base2;         /* inferred start of the embedded message      */
     uint32_t xid_outer;
     uint32_t xid_inner;
 
-    if (total < RPC_CALL_PROC_OFF + 4u) return;
+    if (total < RPC_CALL_PROC_OFF + 4u) return 0;
 
     /* WRITE calls only -- see the note above on RENAME/LINK. */
-    if (rpc_peek_uint32(buf, RPC_CALL_PROG_OFF) != RPC_PROG_NFS)        return;
-    if (rpc_peek_uint32(buf, RPC_CALL_PROC_OFF) != RPC_NFS3_PROC_WRITE) return;
+    if (rpc_peek_uint32(buf, RPC_CALL_PROG_OFF) != RPC_PROG_NFS)        return 0;
+    if (rpc_peek_uint32(buf, RPC_CALL_PROC_OFF) != RPC_NFS3_PROC_WRITE) return 0;
 
     /* Length invariant: a WRITE's own fields must account for exactly the
        bytes the record mark delivered.  Checked on every WRITE, because a
@@ -219,7 +231,7 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     }
 
     /* normal: a WRITE has exactly one handle and a consistent length */
-    if (hits <= 1 && !bad_len) return;
+    if (hits <= 1 && !bad_len) return 0;
 
     log_error("rpc_recv: CORRUPT RECEIVE BUFFER -- WRITE call with 'NFS3'"
               " handle magic x%u (first two at off %u, %u) in a %u-byte"
@@ -261,12 +273,37 @@ static void rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
                         ? "SAME xid: this request captured TWICE"
                         : "DIFFERENT xid: a later request bled in"
                           " (framing desync)");
+            confirmed = 1;      /* structurally proven, not a guess */
         } else {
             log_error("rpc_recv:   no RPC CALL header at the inferred"
                       " embedded start (off %u) -- the second handle is not"
                       " a whole message copied from its beginning", base2);
         }
     }
+
+    /* Reject only on PROOF, never on suspicion.
+     *
+     * Two 'NFS3' magics alone is NOT enough: file data may legitimately
+     * contain those four bytes, and dropping a connection for that would
+     * corrupt a perfectly good transfer.  We reject only when the damage is
+     * structurally certain -- either the length invariant failed, or a
+     * complete RPC CALL header (mtype=0, rpcvers=2, prog=100003) was found
+     * embedded inside the payload.  Neither can occur in valid data.
+     *
+     * Returning -1 makes handle_connection close the socket.  The stream is
+     * unrecoverable at this point anyway: bytes were replayed, so whatever
+     * follows is out of step with the record marks.  An NFS client treats a
+     * dropped TCP connection as a transient error, reconnects and resends --
+     * so the cost is a hiccup, and the benefit is that corrupt data can never
+     * be written to a PDS member. */
+    if (bad_len || confirmed) {
+        log_error("rpc_recv: DROPPING CONNECTION -- refusing to process a"
+                  " corrupt message (the client will reconnect and resend;"
+                  " see spill_corruption_open: a partial recv() on this"
+                  " socket layer can replay data from the start)");
+        return -1;
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -306,7 +343,9 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
     } while (!last);
 
     *msglen = total;
-    rpc_recv_selfcheck(buf, total, nfrag, g_rpc_frag_off, g_rpc_frag_len);
+    if (rpc_recv_selfcheck(buf, total, nfrag,
+                           g_rpc_frag_off, g_rpc_frag_len) < 0)
+        return -1;      /* corrupt: drop the connection */
     return 0;
 }
  
