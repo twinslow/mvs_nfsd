@@ -8,7 +8,7 @@ Sends framed messages to rxtest (running on MVS, or locally as a control):
 
 The payload is self-describing: the 4-byte word at byte offset o holds
 
-    (sequence << 20) | o
+    (sequence << 16) | o
 
 so the receiver can tell from a single wrong word exactly which message and
 which offset the bytes really came from.  A stack that replays a message from
@@ -29,9 +29,15 @@ TCP_NODELAY is essential here: without it Nagle would coalesce the pieces back
 into one segment and no partial read would ever occur.
 
 USAGE
-    python3 sender.py --host 192.168.1.168 [--port 5555] [--count 2000]
+    python3 sender.py --host 192.168.1.168 [--port 5555] [--count 50000]
     python3 sender.py --host mvs --min-size 400 --max-size 2000 --chunks 4
     python3 sender.py --host mvs --seed 42          # reproducible run
+
+To mirror a real RPC server (recommended when hunting the original defect),
+pair --reply/--think with rxtest's -r and -s:
+
+    rxtest -p 5555 -r 64 -s
+    python3 sender.py --host mvs --count 50000 --reply 64 --think 0.001
 
 Send a zero-length message at the end to tell rxtest to stop and print its
 summary; that happens automatically unless --no-eof is given.
@@ -47,12 +53,12 @@ import time
 
 def build_payload(seq, nbytes):
     """nbytes of self-describing data (nbytes is rounded down to a multiple
-    of 4 by the caller).  Word at offset o == (seq << 20) | o."""
-    if seq >= 4096:
-        raise ValueError("sequence must be < 4096 to fit the 12-bit field")
-    if nbytes > 0x100000:
-        raise ValueError("message must be < 1 MiB to fit the 20-bit offset")
-    base = seq << 20
+    of 4 by the caller).  Word at offset o == (seq << 16) | o."""
+    if seq >= 65536:
+        raise ValueError("sequence must be < 65536 to fit the 16-bit field")
+    if nbytes > 65532:
+        raise ValueError("message must be <= 65532 bytes for a 16-bit offset")
+    base = seq << 16
     return b"".join(struct.pack(">I", base | o) for o in range(0, nbytes, 4))
 
 
@@ -78,8 +84,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="rxtest traffic generator")
     ap.add_argument("--host", required=True, help="rxtest host (MVS system)")
     ap.add_argument("--port", type=int, default=5555)
-    ap.add_argument("--count", type=int, default=2000,
-                    help="messages to send (default 2000)")
+    ap.add_argument("--count", type=int, default=50000,
+                    help="messages to send (default 50000; max 65535). The "
+                         "defect is rare -- it needs a TCP segment boundary "
+                         "to land mid-message -- so prefer long runs.")
     ap.add_argument("--min-size", type=int, default=400,
                     help="smallest payload in bytes (default 400)")
     ap.add_argument("--max-size", type=int, default=2000,
@@ -90,15 +98,26 @@ def main(argv=None):
                     help="seconds between pieces (default 0.002)")
     ap.add_argument("--seed", type=int, default=None,
                     help="RNG seed, for a byte-identical repeat run")
+    ap.add_argument("--reply", type=int, default=0, metavar="N",
+                    help="wait for an N-byte reply after each message. Use "
+                         "with rxtest -r N to restore the request/response "
+                         "alternation of a real RPC server; the original "
+                         "corruption was never seen on a one-way stream.")
+    ap.add_argument("--think", type=float, default=0.0, metavar="SEC",
+                    help="pause after each reply, so the server sits idle in "
+                         "select() between requests as it does in production")
+    ap.add_argument("--progress", type=int, default=0, metavar="N",
+                    help="print a progress line every N messages "
+                         "(default: about 50 lines over the whole run)")
     ap.add_argument("--no-eof", action="store_true",
                     help="do not send the zero-length end marker")
     args = ap.parse_args(argv)
 
     if args.seed is not None:
         random.seed(args.seed)
-    if args.count > 4096:
-        print("note: sequence field is 12 bits; capping count at 4096")
-        args.count = 4096
+    if args.count > 65535:
+        print("note: sequence field is 16 bits; capping count at 65535")
+        args.count = 65535
 
     sock = socket.create_connection((args.host, args.port), timeout=30)
     # Without this, Nagle coalesces the pieces and no partial read happens.
@@ -108,6 +127,14 @@ def main(argv=None):
     print("sender: %d messages, %d-%d bytes, %d chunks, %.3fs pause"
           % (args.count, args.min_size, args.max_size, args.chunks,
              args.pause))
+    if args.reply:
+        print("sender: request/response mode, %d-byte replies, %.3fs think"
+              % (args.reply, args.think))
+
+    # Aim for ~50 progress lines however long the run is, so a 500-message
+    # smoke test and a 50000-message hunt both stay informative.
+    # step = args.progress if args.progress > 0 else max(1, args.count // 50)
+    step = 200
 
     total = 0
     t0 = time.time()
@@ -117,8 +144,27 @@ def main(argv=None):
             blob = struct.pack(">I", size) + build_payload(seq, size)
             send_fragmented(sock, blob, args.chunks, args.pause)
             total += size
-            if seq % 200 == 0 and seq:
-                print("  ... %d messages sent" % seq)
+
+            if args.reply:
+                # Read the whole reply before sending the next request, so the
+                # two directions strictly alternate the way NFS RPC does.
+                got = b""
+                while len(got) < args.reply:
+                    chunk = sock.recv(args.reply - len(got))
+                    if not chunk:
+                        raise ConnectionResetError(
+                            "server closed while awaiting reply to msg %d" % seq)
+                    got += chunk
+                if args.think > 0:
+                    time.sleep(args.think)
+            if seq % step == 0 and seq:
+                dt = time.time() - t0
+                rate = seq / dt if dt > 0 else 0.0
+                left = (args.count - seq) / rate if rate > 0 else 0.0
+                print("  ... %6d/%d (%4.1f%%)  %6.0f msg/s  %5.1f MB sent"
+                      "  eta %4.0fs"
+                      % (seq, args.count, 100.0 * seq / args.count, rate,
+                         total / 1048576.0, left))
 
         if not args.no_eof:
             sock.sendall(struct.pack(">I", 0))   # end marker

@@ -1,7 +1,7 @@
 //TONYWRXT JOB (SOCKT),
-//            'Socket recv reproducer',
-//            CLASS=A,NOTIFY=TONYW,REGION=8M,
-//            MSGCLASS=X,MSGLEVEL=(1,1)
+//         'Socket recv test',
+//         CLASS=A,NOTIFY=TONYW,REGION=8M,
+//         MSGCLASS=X,MSGLEVEL=(1,1),COND=(0,LT)
 //*
 //********************************************************************
 //*
@@ -31,7 +31,15 @@
 //*      -p nnnn   port to listen on          (default 5555)
 //*      -f        use the FIONREAD strategy  (never request more
 //*                bytes than are actually available)
+//*      -r nn     reply with nn bytes after each message
+//*      -s        select() before each message, like nfsd.c
 //*      -v        one line per message
+//*
+//* To mirror the real NFS workload (recommended), run with
+//* PARM.GO='-p 5555 -r 64 -s' and start the sender with
+//*      --count 50000 --reply 64 --think 0.001
+//* The defect needs a TCP segment boundary to land mid-message, so
+//* it is rare: expect to need tens of thousands of messages.
 //*
 //* Run it BOTH ways with identical sender settings: the plain loop
 //* first, then with -f.  If the plain loop reports corruption and

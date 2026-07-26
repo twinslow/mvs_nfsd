@@ -47,11 +47,12 @@ no position on which; it just shows the behaviour.
 The payload is **self-describing** — the 4-byte word at byte offset `o` holds
 
 ```
-(sequence << 20) | o
+(sequence << 16) | o
 ```
 
 so any single wrong word identifies exactly which message and which offset the
-bytes really came from. A replay produces words whose encoded offset is
+bytes really came from. The 16/16 split allows **65,535 messages** of up to
+65,532 bytes. A replay produces words whose encoded offset is
 *lower* than their position, and `rxtest` says so in as many words:
 
 ```
@@ -70,6 +71,35 @@ because the bug only appears when `recv()` returns a partial read. Split
 points are randomised so the boundary lands somewhere different each time —
 the original corruption was rare precisely because it needs a segment boundary
 to fall mid-message.
+
+## Reproducing the real workload
+
+The corruption was found in a **request/response** server -- receive a request,
+do slow disk I/O, send a reply, receive the next -- whose main loop `select()`s
+for readability before every read. A one-way firehose with no `send()` on the
+socket may simply never reach the state that breaks, so two options restore
+the real shape of the traffic:
+
+| Option | Effect |
+|---|---|
+| `rxtest -r N` / `sender.py --reply N` | An N-byte reply after each message, so the two directions strictly alternate |
+| `rxtest -s` | `select()` before each message, exactly as `nfsd.c` does before calling `rpc_recv()` |
+| `sender.py --think SEC` | Pause after each reply, so the server sits idle in `select()` between requests |
+
+**Recommended when hunting the original defect:**
+
+```
+rxtest -p 5555 -r 64 -s
+python3 sender.py --host <mvs-host> --count 50000 --reply 64 --think 0.001
+```
+
+## How many messages?
+
+The defect needs a TCP segment boundary to land mid-message, so it is rare --
+in the NFS server it appeared roughly once in several thousand writes. Runs of
+**tens of thousands** of messages are expected before it shows; `--count`
+defaults to 50000 and the protocol allows up to 65535. A clean run of a few
+hundred means nothing.
 
 ## Two receive strategies
 
@@ -96,11 +126,12 @@ Add `-f` via `PARM.GO` for the second run.
 **On Linux (sender)**
 
 ```bash
-python3 sender.py --host <mvs-host> --port 5555 --count 2000
+python3 sender.py --host <mvs-host> --port 5555 --count 50000
 ```
 
 Useful knobs: `--min-size` / `--max-size`, `--chunks` (pieces per message),
-`--pause` (seconds between pieces), `--seed` (byte-identical repeat run).
+`--pause` (seconds between pieces), `--seed` (byte-identical repeat run),
+`--reply` / `--think` (request/response mode, above).
 
 **As a control**, run the receiver on Linux too — it is portable C89 and
 builds with `cc -o rxtest src/rxtest.c`. A healthy stack should report many
@@ -110,11 +141,12 @@ failure on MVS cannot be blamed on the test.
 ## Reading the result
 
 ```
-messages received  : 2000
-recv() calls       : 9873
-partial reads      : 5912
+messages received  : 50000
+recv() calls       : 247512
+partial reads      : 148903
+replies sent       : 50000
 CORRUPT messages   : 0
-RESULT: PASSED - 5912 partial read(s) all handled correctly.
+RESULT: PASSED - 148903 partial read(s) all handled correctly.
 ```
 
 Three outcomes:

@@ -36,11 +36,15 @@
  * The payload is self-describing.  Every 4-byte word encodes both the
  * message number it belongs to and its own offset within that message:
  *
- *     word at byte offset o  ==  (sequence << 20) | o
+ *     word at byte offset o  ==  (sequence << 16) | o
  *
  * So a single mismatched word says exactly where the wrong bytes came from.
- * If word 64 of message 7 reads as (7 << 20) | 0, the stack replayed message
+ * If word 64 of message 7 reads as (7 << 16) | 0, the stack replayed message
  * 7 from its beginning -- which is precisely the failure above.
+ *
+ * The 16/16 split allows 65535 messages of up to 65532 bytes.  The failure is
+ * rare -- it needs a TCP segment boundary to land mid-message -- so runs of
+ * tens of thousands of messages are expected before it shows.
  *
  * The companion sender (sender.py) deliberately splits each message across
  * several TCP segments with small pauses, to force recv() to return partial
@@ -62,14 +66,31 @@
  * Run it both ways: identical traffic, and the difference (if any) localises
  * the fault to the short-read path.
  *
+ * MIMICKING THE REAL WORKLOAD
+ * ---------------------------
+ * The corruption was found in a request/response server, not a one-way
+ * firehose, and a pure receive loop may simply never reach the state that
+ * breaks.  Two options exist to reproduce the real shape of the traffic:
+ *
+ *   -r n   send an n-byte reply after each message (the server actually
+ *          writes to the socket between reads, as an RPC server does)
+ *   -s     select() for readability before each message, exactly as
+ *          nfsd.c's main loop does before calling rpc_recv()
+ *
+ * Both are recommended when hunting the original defect: -r restores the
+ * send/receive alternation, and -s restores the "socket has been idle in
+ * select() then becomes readable" state that precedes every real read.
+ *
  * BUILD
  *   MVS:   see jcl/rxtest.jcl
  *   Linux: cc -o rxtest rxtest.c        (a control run; expect zero replays)
  *
  * USAGE
- *   rxtest [-p port] [-f] [-v]
+ *   rxtest [-p port] [-f] [-r n] [-s] [-v]
  *      -p   port to listen on (default 5555)
  *      -f   use the FIONREAD strategy instead of the plain loop
+ *      -r   reply with n bytes after each message (default 0 = never)
+ *      -s   select() before each message, like nfsd.c does
  *      -v   print a line per message
  *
  * JCC C89: declarations precede statements; block comments only.
@@ -106,7 +127,7 @@ typedef unsigned int        addrlen_t;
 #define ioctlsocket         ioctl
 #endif
 
-#define MAX_MSG      (256u * 1024u)  /* largest payload accepted        */
+#define MAX_MSG      65532u          /* fits the 16-bit offset field    */
 #define MAX_TRACE    512             /* recv() calls recorded per msg   */
 #define MAX_REPORTS  10              /* detailed reports before summary */
 
@@ -131,6 +152,13 @@ static int           g_reports   = 0;
 
 static int g_use_fionread = 0;
 static int g_verbose      = 0;
+static int g_replylen     = 0;   /* bytes to send back per message */
+static int g_use_select   = 0;   /* select() before each message   */
+static unsigned long g_replies = 0;
+
+/* Reply payload.  Its CONTENT is irrelevant -- what matters is that the
+   server writes to the socket between reads, as a real RPC server does. */
+static unsigned char g_reply[256];
 
 /* ------------------------------------------------------------------ */
 static unsigned long be32(const unsigned char *p)
@@ -147,7 +175,7 @@ static long bytes_available(int fd)
 {
 #ifdef FIONREAD
     long navail = 0;
-    if (ioctlsocket(fd, FIONREAD, (char *)&navail) < 0)
+    if (ioctlsocket(fd, FIONREAD, &navail) < 0)
         return -1;
     return navail;
 #else
@@ -244,7 +272,7 @@ static int verify(unsigned long seq, unsigned long len)
     unsigned long first_bad = 0;
 
     for (o = 0; o + 4 <= len; o += 4) {
-        expect = (seq << 20) | o;
+        expect = (seq << 16) | o;
         actual = be32(g_buf + o);
         if (actual != expect) {
             if (nbad == 0) first_bad = o;
@@ -258,8 +286,8 @@ static int verify(unsigned long seq, unsigned long len)
     g_reports++;
 
     actual  = be32(g_buf + first_bad);
-    src_seq = actual >> 20;
-    src_off = actual & 0xFFFFFuL;
+    src_seq = actual >> 16;
+    src_off = actual & 0xFFFFuL;
 
     fprintf(stderr,
         "\n*** CORRUPTION in message %lu (%lu bytes): %lu bad word(s),"
@@ -285,14 +313,38 @@ static int verify(unsigned long seq, unsigned long len)
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Write exactly len bytes.  Returns 0, or -1 on error.                 */
+/* ------------------------------------------------------------------ */
+static int tx_all(int fd, const unsigned char *buf, unsigned long len)
+{
+    unsigned long done = 0;
+    long          n;
+
+    while (done < len) {
+        n = (long)send(fd, (char *)(buf + done), len - done, 0);
+        if (n <= 0) return -1;
+        done += (unsigned long)n;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 static void serve(int cfd)
 {
     unsigned char hdr[4];
     unsigned long len;
     unsigned long seq = 0;
+    int           nrep;
 
     for (;;) {
         g_ntrace = 0;
+
+        /* Reproduce nfsd.c's main loop, which selects for readability and
+           only then calls rpc_recv().  Every real read is preceded by the
+           socket sitting idle in select() -- a state a tight recv() loop
+           never enters, and one the defect may well depend on. */
+        if (g_use_select && wait_readable(cfd) <= 0) break;
 
         if (rx_all(cfd, hdr, 4) < 0) break;      /* clean EOF ends the run */
         len = be32(hdr);
@@ -310,6 +362,18 @@ static void serve(int cfd)
         g_msgs++;
         g_bytes += len;
         (void)verify(seq, len);
+
+        /* Restore the request/response alternation of a real server: the
+           original corruption was never seen on a one-way stream. */
+        if (g_replylen > 0) {
+            nrep = g_replylen;
+            if (nrep > (int)sizeof(g_reply)) nrep = (int)sizeof(g_reply);
+            if (tx_all(cfd, g_reply, (unsigned long)nrep) < 0) {
+                fprintf(stderr, "rxtest: reply failed on message %lu\n", seq);
+                break;
+            }
+            g_replies++;
+        }
 
         if (g_verbose)
             printf("msg %lu: %lu bytes, %d recv() call(s)\n",
@@ -333,19 +397,25 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) port = atoi(argv[++i]);
         else if (strcmp(argv[i], "-f") == 0)            g_use_fionread = 1;
+        else if (strcmp(argv[i], "-s") == 0)            g_use_select = 1;
+        else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
+            g_replylen = atoi(argv[++i]);
         else if (strcmp(argv[i], "-v") == 0)            g_verbose = 1;
         else {
-            fprintf(stderr, "usage: %s [-p port] [-f] [-v]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [-p port] [-f] [-r n] [-s] [-v]\n", argv[0]);
             return 2;
         }
     }
 
     printf("rxtest: listening on port %d, strategy = %s\n",
            port, g_use_fionread ? "FIONREAD-clamped" : "plain recv loop");
+    printf("rxtest: reply = %d byte(s), select-first = %s\n",
+           g_replylen, g_use_select ? "yes" : "no");
 
     lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) { perror("socket"); return 1; }
-    if (SET_REUSE(lfd, (char *)&opt) < 0) perror("setsockopt SO_REUSEADDR");
+    if (SET_REUSE(lfd, &opt) < 0) perror("setsockopt SO_REUSEADDR");
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -374,6 +444,7 @@ int main(int argc, char *argv[])
     printf("bytes received     : %lu\n", g_bytes);
     printf("recv() calls       : %lu\n", g_recvcalls);
     printf("partial reads      : %lu\n", g_partials);
+    printf("replies sent       : %lu\n", g_replies);
     printf("CORRUPT messages   : %lu\n", g_badmsgs);
     printf("================================================\n");
     if (g_badmsgs > 0)
