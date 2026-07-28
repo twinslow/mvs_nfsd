@@ -26,6 +26,7 @@ class Context(object):
         self._to_clean = []          # (key, name) created during a test
         self._preserve = set()       # (key, name) to KEEP for post-mortem
         self._failed = False         # set by the runner when a test fails
+        self._pending_verify = []    # (key, name, text) awaiting the drain
 
     # -- dataset / path mapping -------------------------------------------
     def ds(self, key):
@@ -223,13 +224,50 @@ class Context(object):
             raise AssertionError(msg)
 
     def verify_member(self, key, name, expected_text):
+        """Queue a backend verification for the END of the test.
+
+        Verification is DEFERRED rather than performed here, because the
+        server flushes a member to the PDS only on COMMIT or the idle sweep.
+        Checking immediately after each write means paying that flush latency
+        once per member, serially -- and every premature fetch costs more than
+        a wait: a 550 leaves this FTP server's control connection out of step,
+        so the backend drops and re-logs-in the session (see _reset).  A test
+        that writes five members therefore paid five flush waits and up to
+        five reconnects.
+
+        Deferring means the writes all happen first, so by the time the batch
+        is drained the earlier members are usually already stowed: one wait
+        covers them all and the connection is reused.
+
+        Safe because every verify_member call in the suite is the last
+        operation on that member -- nothing renames or deletes it afterwards.
+        Where an immediate check IS required (asserting a member is readable
+        before the test does something else to it), call verify_now()."""
+        self._pending_verify.append((key, name, expected_text))
+
+    def verify_now(self, key, name, expected_text):
+        """Verify immediately, bypassing the queue.  Use only when the test
+        depends on the check having happened before it continues."""
+        self._verify_one(key, name, expected_text, self._deadline())
+
+    def drain_verifications(self):
+        """Run every queued verification.  Called by the runner once the test
+        body returns, before teardown deletes anything.
+
+        The first member absorbs the flush wait; the rest are normally
+        readable straight away, which is the point of batching."""
+        pending = self._pending_verify
+        self._pending_verify = []
+        for key, name, expected_text in pending:
+            self._verify_one(key, name, expected_text, self._deadline())
+
+    def _verify_one(self, key, name, expected_text, end):
         """Assert the backend's copy of the member matches expected_text.
 
         Retries while the member is not yet fetchable: right after an NFS write
         the flush may not have happened, so the first fetch can legitimately
         fail with 550.  Once it IS fetchable a content mismatch fails at once --
         we only retry the "not there yet" case, never a wrong-content one."""
-        end = self._deadline()
         last = None
         while True:
             try:
@@ -316,3 +354,4 @@ class Context(object):
         self._to_clean = []
         self._preserve = set()
         self._failed   = False
+        self._pending_verify = []

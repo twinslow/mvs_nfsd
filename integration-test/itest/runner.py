@@ -72,6 +72,11 @@ def run_all(ctx, filters=None, sections=None, repeat=1):
             t0 = time.time()
             try:
                 entry["fn"](ctx)
+                # Backend verifications are queued by the test and run here,
+                # after its body but BEFORE teardown deletes anything, so a
+                # failure is still attributed to this test and the offending
+                # member is still on the server to inspect.
+                ctx.drain_verifications()
                 print("PASS %-42s (%.2fs)" % (label, time.time() - t0))
                 passed += 1
             except TestSkip as e:
