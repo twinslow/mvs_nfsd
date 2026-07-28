@@ -412,8 +412,6 @@ int main(int argc, char *argv[])
     log_info("nfsd: MVS local-time offset = %d seconds (0 = no offset)",
              mvs_tz_offset());
 
-    //mvsfsz_load("//DDN:FILESIZE");
-
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p':
@@ -512,8 +510,9 @@ int main(int argc, char *argv[])
             if (g_conns[i].fd > maxfd) maxfd = g_conns[i].fd;
         }
 
-        /* ---- Wait for activity (2-second timeout to poll for STOP) ---- */
-        tv.tv_sec  = 2;
+        /* ------ Wait for activity (1s timeout to work poll loop) ------ */
+        /* Note that the JCC select does not timeout for subsecond values */
+        tv.tv_sec  = 1;
         tv.tv_usec = 0;
         n = select(maxfd + 1, &rfds, NULL, NULL, &tv);
         if (n < 0) {
@@ -525,8 +524,8 @@ int main(int argc, char *argv[])
         }
 
         /* Flush any buffered PDS-member writes that have gone idle.  Runs on
-           every wake-up (activity or the 2s timeout), so flush latency is
-           bounded to a couple of seconds. */
+           every wake-up (activity or the 1s timeout), so flush latency is
+           bounded to around 1 seconds. */
         pww_flush_idle(time(NULL));
 
         if (n == 0) continue;  /* timeout -- go back and check for STOP  */

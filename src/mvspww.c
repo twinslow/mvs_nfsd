@@ -884,6 +884,9 @@ static int pww_flush_slot(pending_member_t *pm)
     int                 want_stats;
     int32_t             line_count;
 
+    log_info("pww_flush_slot: Starting flush for %s(%s)",
+        pm->dsname_ebcdic, pm->member_name);
+
     /* Read the member's current directory entry (if any) BEFORE opening it
        for output, so we never have the PDS open for input and output at once.
        NULL => the member does not yet exist (a new member). */
