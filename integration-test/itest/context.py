@@ -27,6 +27,7 @@ class Context(object):
         self._preserve = set()       # (key, name) to KEEP for post-mortem
         self._failed = False         # set by the runner when a test fails
         self._pending_verify = []    # (key, name, text) awaiting the drain
+        self._dirty_since_settle = True   # an NFS write may hold a slot
 
     # -- dataset / path mapping -------------------------------------------
     def ds(self, key):
@@ -63,6 +64,7 @@ class Context(object):
     # -- NFS-side file IO (always LF line endings on write) ---------------
     def write_member(self, key, name, text, track=True):
         p = self.member_path(key, name)
+        self._dirty_since_settle = True    # may leave a write slot held
         with open(str(p), "w", newline="\n") as f:
             f.write(text)
             self._sync(f)
@@ -72,6 +74,7 @@ class Context(object):
     def touch_member(self, key, name, track=True):
         """Create an empty member (the 'touch' case), synced like a write."""
         p = self.member_path(key, name)
+        self._dirty_since_settle = True    # may leave a write slot held
         with open(str(p), "w", newline="\n") as f:
             self._sync(f)
         if track:
@@ -107,9 +110,26 @@ class Context(object):
     # cannot open the dataset.  These helpers wait that window out.
 
     def settle(self):
-        """Block until the server has certainly released the slot.  Used before
-        an out-of-band FTP write, which needs exclusive access to the PDS."""
+        """Wait until the server has certainly released its write slots.
+
+        Needed before an OUT-OF-BAND FTP write, which wants exclusive access
+        to the PDS while the server may still hold an allocation + SPFEDIT
+        enqueue from a recent NFS write.
+
+        The sleep is SKIPPED when nothing has been written over NFS since the
+        last settle, because only a write creates a pending slot -- reads,
+        stats and deletes do not.  That matters in test 2.1, which settles
+        once per iteration but writes over NFS only when FTP preparation is
+        unavailable: without this it paid the full wait four times over for
+        three settles that had nothing to wait for.
+
+        Deliberately conservative: any NFS write re-arms the wait, so the
+        exclusive-access guarantee is unchanged -- it is only the redundant
+        sleeps that go."""
+        if not self._dirty_since_settle:
+            return
         time.sleep(float(self.opts.get("settle_sec", 5)))
+        self._dirty_since_settle = False
 
     def _deadline(self):
         return time.time() + float(self.opts.get("sync_timeout_sec", 12))
