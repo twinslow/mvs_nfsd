@@ -20,9 +20,10 @@ DEFAULTS = {
                 # legitimately see nothing yet.  sync_timeout_sec bounds how long
                 # a verification polls; settle_sec is the hard wait used before
                 # an FTP write, which needs exclusive access to the PDS.  Both
-                # must exceed the server's PWW_IDLE_TIMEOUT_SECONDS (3).
+                # must exceed the server's PWW_IDLE_TIMEOUT_SECONDS (now 1,
+                # lowered from 3), plus one select wake-up (up to 2s).
                 # 20s comfortably exceeds BOTH the server's idle-flush window
-                # (3s) and its throttled out-of-band change detection (10s),
+                # and its throttled out-of-band change detection (10s),
                 # which is what makes an FTP-created member visible over NFS.
                 "sync_timeout_sec": 20, "settle_sec": 5,
                 # fsync after each write.  OFF by default: a Windows FILE_SYNC

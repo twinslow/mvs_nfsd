@@ -37,17 +37,17 @@
 /* -------------------------------------------------------------------- */
 #define PWW_MAX_PENDING            8                 /* concurrent pending members */
 #define PWW_SPILL_THRESHOLD        (16 * 1024)      /* in-memory prefix; a member
-                                                        larger than this spills to 
+                                                        larger than this spills to
                                                         a temp dataset (mvsspl.c).*/
 #define PWW_SPILL_DS_SPACE_PARMS   "pri=15,sec=15,rlse,unit=sysda"   /* This string
                                                         will be concatenated into
                                                         the file open for the spill
-                                                        temporary dataset at 
+                                                        temporary dataset at
                                                         compile time              */
 #define PWW_MAX_MEMBER_BYTES       (1024 * 1024)     /* absolute per-member cap;
                                                         disk-backed past the
                                                         spill threshold           */
-#define PWW_IDLE_TIMEOUT_SECONDS   3                 /* flush + release the slot
+#define PWW_IDLE_TIMEOUT_SECONDS   1                 /* flush + release the slot
                                                         (dropping the SPFEDIT
                                                         enqueue) this long after
                                                         the last write/commit    */

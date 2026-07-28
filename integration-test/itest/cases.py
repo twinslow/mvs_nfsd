@@ -157,38 +157,56 @@ def upload_invalid_name(ctx):
 
 @testcase("2.1", "download_small_large")
 def download_small_large(ctx):
+    """Prove the DOWNLOAD path: members prepared OUT-OF-BAND are read back
+    correctly over NFS.
+
+    Preparation is BATCHED on purpose.  A member created behind the server's
+    back becomes visible only once that dataset's out-of-band change detection
+    fires, and that is throttled (DIR_REFRESH_THROTTLE_SECS, 10s).  Preparing
+    one member and then waiting for it, four times over, pays the throttle
+    four times -- which was the whole cost of this test.  Preparing everything
+    first means a single refresh per dataset reveals all of its new members,
+    so the test waits once instead of once per member.
+    """
+    items = []
     for key in _text_keys(ctx):
         for kind, name in (("small", "DLS"), ("large", "DLL")):
-            text = ctx.gen(key, kind)
-            ctx.reset(key, name)
-            ctx.track(key, name)
-            # Preferred: prepare out-of-band over FTP, so the member under test
-            # was NOT produced by the NFS write path.  Settle first -- an FTP
-            # STOR wants exclusive access to the PDS.
-            ctx.settle()
-            try:
-                ctx.backend.prepare(ctx, key, name, text)
-            except Exception as e:                        # noqa
-                # Not every MVS FTP server can create a PDS member (this one
-                # answers "550 <mem>: Not opened"), and that is a limitation of
-                # the verification channel, not of the server under test.  Fall
-                # back to preparing over NFS so this test still does its real
-                # job -- proving the DOWNLOAD path -- and say so out loud rather
-                # than quietly weakening the check.
-                print("      note: FTP preparation unavailable (%s);"
-                      " preparing %s over NFS instead" % (str(e).strip(), name))
-                ctx.write_member(key, name, text, track=False)
-            # A member created OUT-OF-BAND is not visible to the NFS client
-            # straight away: the server detects foreign directory changes on a
-            # throttled schedule and only then bumps dir_mtime to invalidate the
-            # client's cached listing.  Wait for it rather than racing it.
-            ctx.check(ctx.wait_visible(key, name),
-                      "member %s was prepared but never became visible over"
-                      " NFS -- out-of-band change detection did not bump"
-                      " dir_mtime in time" % name)
-            got = ctx.read_member(key, name)              # read back through NFS
-            d = textutil.diff_summary(text, got)
-            ctx.check(not d, "NFS download of %s/%s mismatch: %s" % (key, name, d))
+            items.append((key, name, ctx.gen(key, kind)))
+
+    for key, name, _text in items:
+        ctx.reset(key, name)
+        ctx.track(key, name)
+
+    # ---- prepare every member first -------------------------------------
+    for key, name, text in items:
+        # Settle before an FTP STOR, which wants exclusive access to the PDS.
+        # This is free unless something was actually written over NFS since
+        # the last settle -- which happens only on the fallback path below.
+        ctx.settle()
+        try:
+            ctx.backend.prepare(ctx, key, name, text)
+        except Exception as e:                        # noqa
+            # Not every MVS FTP server can create a PDS member (this one
+            # answers "550 <mem>: Not opened"), and that is a limitation of
+            # the verification channel, not of the server under test.  Fall
+            # back to preparing over NFS so this test still does its real
+            # job -- proving the DOWNLOAD path -- and say so out loud rather
+            # than quietly weakening the check.
+            print("      note: FTP preparation unavailable (%s);"
+                  " preparing %s over NFS instead" % (str(e).strip(), name))
+            ctx.write_member(key, name, text, track=False)
+
+    # ---- then read them all back ----------------------------------------
+    # The first member of each dataset absorbs that dataset's throttle wait;
+    # the rest are already visible, because the same refresh saw them too.
+    for key, name, text in items:
+        ctx.check(ctx.wait_visible(key, name),
+                  "member %s was prepared but never became visible over"
+                  " NFS -- out-of-band change detection did not bump"
+                  " dir_mtime in time" % name)
+        got = ctx.read_member(key, name)              # read back through NFS
+        d = textutil.diff_summary(text, got)
+        ctx.check(not d, "NFS download of %s/%s mismatch: %s" % (key, name, d))
 
 
 @testcase("2.2", "upload_then_download")
