@@ -2,7 +2,7 @@
  * tests/tmvsprf.c - Unit tests for mvsprf.c (performance statistics).
  *
  * Suite prefix: /mvsprf
- * Sub-suites  : /init  /record  /get_stat  /dump
+ * Sub-suites  : /init  /record  /record_ms  /get_stat  /dump
  *
  * Each test calls mvsprf_init() to start from a clean slate.
  * mvsprf_dump() is exercised in a smoke-test: we confirm it does not
@@ -229,6 +229,152 @@ static MunitTest record_tests[] = {
 };
 
 /* ==================================================================== */
+/* /record_ms                                                            */
+/*                                                                       */
+/* PERF_PWW_WRITE_GAP holds wall-clock milliseconds rather than clock_t  */
+/* ticks, because it measures the delay BETWEEN client WRITE requests --  */
+/* time the server spends idle in select(), during which clock() does    */
+/* not advance.  These tests pin the arithmetic; whether pww_write feeds  */
+/* it the right samples is a matter for the write-pool tests.            */
+/* ==================================================================== */
+
+/*
+ * The worked example from the original request:
+ *
+ *   WRITE offset 0    count 4096   -- starts the sequence (no sample)
+ *   WRITE offset 4096 count 4096   -- +120 ms  -> gap 120
+ *   WRITE offset 8192 count 350    -- +260 ms  -> gap 140
+ *
+ * so min = 120, max = 140, avg = 130 over two samples.
+ */
+static MunitResult test_record_ms_worked_example(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t s;
+    (void)params; (void)data;
+
+    mvsprf_init();
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 120UL);
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 140UL);
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &s);
+    munit_assert_int((int)s.count, ==, 2);
+    munit_assert_int((int)s.min,   ==, 120);
+    munit_assert_int((int)s.max,   ==, 140);
+    munit_assert_int((int)s.total, ==, 260);
+    /* avg is derived at dump time as total/count */
+    munit_assert_int((int)(s.total / (clock_t)s.count), ==, 130);
+    return MUNIT_OK;
+}
+
+/* A member written by a single request yields no gap at all, so the slot
+   must stay completely untouched -- it cannot skew min/max/avg. */
+static MunitResult test_record_ms_no_samples_leaves_slot_empty(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t s;
+    (void)params; (void)data;
+
+    mvsprf_init();
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &s);
+    munit_assert_int((int)s.count, ==, 0);
+    munit_assert_int((int)s.total, ==, 0);
+    return MUNIT_OK;
+}
+
+static MunitResult test_record_ms_first_sample_sets_min_max(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t s;
+    (void)params; (void)data;
+
+    mvsprf_init();
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 75UL);
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &s);
+    munit_assert_int((int)s.count, ==, 1);
+    munit_assert_int((int)s.min,   ==, 75);
+    munit_assert_int((int)s.max,   ==, 75);
+    return MUNIT_OK;
+}
+
+/* A zero-millisecond gap is real data (two writes inside the same tick),
+   not a missing sample, so it must be counted and must lower min. */
+static MunitResult test_record_ms_zero_gap_counted(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t s;
+    (void)params; (void)data;
+
+    mvsprf_init();
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 50UL);
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 0UL);
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &s);
+    munit_assert_int((int)s.count, ==, 2);
+    munit_assert_int((int)s.min,   ==, 0);
+    munit_assert_int((int)s.max,   ==, 50);
+    return MUNIT_OK;
+}
+
+static MunitResult test_record_ms_invalid_slot_noop(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t s;
+    (void)params; (void)data;
+
+    mvsprf_init();
+    mvsprf_record_ms(-1, 100UL);
+    mvsprf_record_ms(PERF_NUM_SLOTS, 100UL);
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &s);
+    munit_assert_int((int)s.count, ==, 0);
+    return MUNIT_OK;
+}
+
+/* Dumping a millisecond slot must not go through the tick conversion.
+   This only checks it does not crash or disturb the values; the printed
+   figures are eyeballed on the console. */
+static MunitResult test_record_ms_dump_no_crash(
+    const MunitParameter params[], void *data)
+{
+    mvsprf_stat_t before;
+    mvsprf_stat_t after;
+    (void)params; (void)data;
+
+    mvsprf_init();
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 120UL);
+    mvsprf_record_ms(PERF_PWW_WRITE_GAP, 140UL);
+
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &before);
+    mvsprf_dump();
+    mvsprf_get_stat(PERF_PWW_WRITE_GAP, &after);
+
+    munit_assert_int((int)before.count, ==, (int)after.count);
+    munit_assert_int((int)before.total, ==, (int)after.total);
+    munit_assert_int((int)before.min,   ==, (int)after.min);
+    munit_assert_int((int)before.max,   ==, (int)after.max);
+    return MUNIT_OK;
+}
+
+static MunitTest record_ms_tests[] = {
+    { "/worked_example",             test_record_ms_worked_example,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/no_samples_leaves_empty",    test_record_ms_no_samples_leaves_slot_empty,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/first_sample_sets_min_max",  test_record_ms_first_sample_sets_min_max,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/zero_gap_counted",           test_record_ms_zero_gap_counted,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/invalid_slot_noop",          test_record_ms_invalid_slot_noop,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/dump_no_crash",              test_record_ms_dump_no_crash,
+      NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
+};
+
+/* ==================================================================== */
 /* /get_stat                                                             */
 /* ==================================================================== */
 
@@ -394,7 +540,8 @@ static MunitTest dump_tests[] = {
 
 static MunitSuite sub_suites[] = {
     { "/init",     init_tests,     NULL, 1, MUNIT_SUITE_OPTION_NONE },
-    { "/record",   record_tests,   NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/record",    record_tests,    NULL, 1, MUNIT_SUITE_OPTION_NONE },
+    { "/record_ms", record_ms_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/get_stat", get_stat_tests, NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { "/dump",     dump_tests,     NULL, 1, MUNIT_SUITE_OPTION_NONE },
     { NULL, NULL, NULL, 0, MUNIT_SUITE_OPTION_NONE }

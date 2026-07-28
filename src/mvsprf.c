@@ -59,7 +59,8 @@ static const char * const g_names[PERF_NUM_SLOTS] = {
     "MVSFSZ_MISS",    /* PERF_MVSFSZ_MISS   */
     "MVSFSZ_LOAD",    /* PERF_MVSFSZ_LOAD   */
     "MVSPOOL_HIT",    /* PERF_MVSPOOL_HIT   */
-    "MVSPOOL_MISS"    /* PERF_MVSPOOL_MISS  */
+    "MVSPOOL_MISS",   /* PERF_MVSPOOL_MISS  */
+    "PWW_WRITE_GAP"   /* PERF_PWW_WRITE_GAP (milliseconds)  */
 };
 
 /* -------------------------------------------------------------------- */
@@ -93,6 +94,32 @@ static unsigned long ticks_to_ms(clock_t ticks)
         return (t * (1000UL / cps));
 }
 
+/* Advance past run of blanks. */
+static const char *skip_blanks(const char *s)
+{
+    while (*s == ' ')
+        s++;
+    return s;
+}
+
+/*
+ * Copy the next token (uppercased) from s into out, stopping at a blank,
+ * an '=', or end of string.  out is always NUL-terminated and never
+ * overflows outlen.  Returns a pointer to the delimiter that stopped the
+ * scan (the caller inspects it to distinguish "PROC=" from "PROC ").
+ */
+static const char *scan_token(const char *s, char *out, int outlen)
+{
+    int i = 0;
+    while (*s != '\0' && *s != ' ' && *s != '=') {
+        if (i < outlen - 1)
+            out[i++] = (char)toupper((unsigned char)*s);
+        s++;
+    }
+    out[i] = '\0';
+    return s;
+}
+
 /* -------------------------------------------------------------------- */
 /* API                                                                   */
 /* -------------------------------------------------------------------- */
@@ -104,6 +131,32 @@ void mvsprf_init(void)
     memset(g_stats, 0, sizeof(g_stats));
     for (i = 0; i < PERF_NUM_SLOTS; i++)
         g_stats[i].name = g_names[i];
+}
+
+/*
+ * slot_is_ms: does this slot hold wall-clock milliseconds rather than
+ * clock_t ticks?  Written as a predicate rather than a parallel table so
+ * it cannot drift out of step with the enum when slots are added.
+ */
+static int slot_is_ms(int slot)
+{
+    return (slot == PERF_PWW_WRITE_GAP);
+}
+
+void mvsprf_record_ms(int slot, unsigned long ms)
+{
+    mvsprf_stat_t *s;
+
+    if (slot < 0 || slot >= PERF_NUM_SLOTS)
+        return;
+
+    s = &g_stats[slot];
+    s->total += (clock_t)ms;
+    s->count++;
+    if (s->count == 1 || (clock_t)ms < s->min)
+        s->min = (clock_t)ms;
+    if ((clock_t)ms > s->max)
+        s->max = (clock_t)ms;
 }
 
 void mvsprf_record(int slot, clock_t elapsed)
@@ -165,9 +218,16 @@ void mvsprf_dump(void)
         if (s->count == 0)
             continue;
 
-        total_ms = ticks_to_ms(s->total);
-        min_ms   = ticks_to_ms(s->min);
-        max_ms   = ticks_to_ms(s->max);
+        if (slot_is_ms(i)) {
+            /* Already milliseconds -- converting would be wrong. */
+            total_ms = (unsigned long)s->total;
+            min_ms   = (unsigned long)s->min;
+            max_ms   = (unsigned long)s->max;
+        } else {
+            total_ms = ticks_to_ms(s->total);
+            min_ms   = ticks_to_ms(s->min);
+            max_ms   = ticks_to_ms(s->max);
+        }
         avg_ms   = (s->count > 0) ? (total_ms / s->count) : 0UL;
 
         log_info("perf: %-16s %8lu %12lu %10lu %10lu %10lu",
@@ -178,3 +238,78 @@ void mvsprf_dump(void)
              "----------------", "--------",
              "------------", "----------", "----------", "----------");
 }
+
+
+/* -------------------------------------------------------------------- */
+/* Command handling                                                     */
+/* -------------------------------------------------------------------- */
+
+/*
+ * handle_stats_reset: Reset performance stats
+ */
+static int handle_stats_reset(const char *p)
+{
+    log_level_t saved_log_level;
+    log_level_t saved_wto_level;
+
+    saved_log_level = log_get_level();
+    saved_wto_level = log_get_wto_level();
+
+    log_set_level(LOG_INFO);
+    log_set_wto_level(LOG_INFO);
+
+    mvsprf_init();
+    log_info("mvsprf: Statistics have been reset");
+
+    /* Restore previous log/wto level */
+    log_set_level(saved_log_level);
+    log_set_wto_level(saved_wto_level);
+    return 0;
+}
+
+/*
+ * handle_stats_list: List out performance stats to log and console
+ */
+static int handle_stats_list(const char *p)
+{
+    log_level_t saved_log_level;
+    log_level_t saved_wto_level;
+
+    saved_log_level = log_get_level();
+    saved_wto_level = log_get_wto_level();
+    log_set_level(LOG_INFO);
+    log_set_wto_level(LOG_INFO);
+
+    mvsprf_dump();
+
+    /* Restore previous log/wto level */
+    log_set_level(saved_log_level);
+    log_set_wto_level(saved_wto_level);
+    return 0;
+}
+
+int mvsprf_handle_modify(const char *cmd)
+{
+    char        tok[24];
+    const char *p;
+
+    if (cmd == NULL)
+        return 1;
+
+    /* Verb must be "SET" for us to look further. */
+    p = skip_blanks(cmd);
+    p = scan_token(p, tok, (int)sizeof(tok));
+    if (strcmp(tok, "STATS") != 0)
+        return 1;                       /* not a logger command          */
+
+    /* Target keyword selects which threshold we adjust. */
+    p = skip_blanks(p);
+    p = scan_token(p, tok, (int)sizeof(tok));
+    if (strcmp(tok, "LIST") == 0)
+        return handle_stats_list(p);
+    if (strcmp(tok, "RESET") == 0)
+        return handle_stats_reset(p);
+
+    return 1;                           /* "SET" but not one of ours     */
+}
+

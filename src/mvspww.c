@@ -20,6 +20,7 @@
 #include "mvsdol.h"
 #include "ebcdic.h"
 #include "logger.h"
+#include "mvsprf.h"      /* PERF_PWW_WRITE_GAP / mvsprf_record_ms()          */
 #include "asmutils.h"    /* MVS assembler helpers: mvs_dynalloc(), mvs_stow() */
 
 #ifdef __MVS__
@@ -36,6 +37,37 @@ static pending_member_t g_pww_pool[PWW_MAX_PENDING];
    never modify the (ASCII) member buffer -- it must survive across a COMMIT
    in case the client writes more before the slot is released. */
 static uint8_t g_pww_xlate[4096];
+
+/* -------------------------------------------------------------------- */
+/* Wall-clock millisecond timer for PERF_PWW_WRITE_GAP                    */
+/*                                                                       */
+/* Measurement only -- no flush or release decision depends on this.      */
+/* The statistic is the delay BETWEEN client WRITE requests, which is     */
+/* time the server spends idle in select() consuming no CPU, so clock()   */
+/* would report ~0 and is useless for it.                                 */
+/*                                                                       */
+/* Milliseconds since the epoch overflow 32 bits, so the first call fixes */
+/* a base second and everything is relative to it.  Only DIFFERENCES are  */
+/* ever used, so the ~49-day wrap can at worst spoil a single sample.     */
+/* The return value of gettimeofday() is not tested, matching every other */
+/* caller in this codebase (mvsvfs.c, mvspdir.c) -- JCC's convention for  */
+/* it is undocumented.                                                    */
+/* -------------------------------------------------------------------- */
+static unsigned long g_pww_ms_base = 0;   /* tv_sec at first call, 0 = unset */
+
+static unsigned long pww_now_ms(void)
+{
+    struct timeval tv;
+
+    tv.tv_sec  = 0;
+    tv.tv_usec = 0;
+    gettimeofday(&tv, NULL);
+
+    if (g_pww_ms_base == 0)
+        g_pww_ms_base = (unsigned long)tv.tv_sec;
+    return ((unsigned long)tv.tv_sec - g_pww_ms_base) * 1000UL
+         + (unsigned long)(tv.tv_usec / 1000L);
+}
 
 /* -------------------------------------------------------------------- */
 /* Corruption tripwire (TEMPORARY -- see spill_corruption_open)          */
@@ -1091,6 +1123,23 @@ int pww_write(int export_idx, int dataset_idx,
             errno = saved_errno;
             return -1;              /* errno set (EACCES held / EIO alloc) */
         }
+    }
+
+    /* PERF_PWW_WRITE_GAP: time since the previous WRITE for this member.
+       Purely a measurement -- it records a sample and updates two fields,
+       and influences nothing else.  Sampled here (slot known good, data not
+       yet stored) so it reflects request arrival rather than how long we
+       then take to buffer it.  The first write of a sequence has nothing to
+       measure from, so it only primes the timer: a member written by one
+       request contributes no sample and cannot move min/max/avg.  A slot is
+       memset by pww_slot_init, so each new sequence starts clean. */
+    {
+        unsigned long now_ms = pww_now_ms();
+
+        if (pm->nwrites > 0 && now_ms >= pm->last_write_ms)
+            mvsprf_record_ms(PERF_PWW_WRITE_GAP, now_ms - pm->last_write_ms);
+        pm->last_write_ms = now_ms;
+        pm->nwrites++;
     }
 
     /* In memory while the member stays under the spill threshold; once it (or

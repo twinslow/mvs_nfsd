@@ -298,7 +298,90 @@ static int handle_connection(conn_t *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* main                                                                  */
+/* Setup write verifier                                               */
+/* ------------------------------------------------------------------ */
+static void set_write_verifier() {
+    time_t         now;
+
+    /* Write verifier: combine startup time + PID (a hashed JES2 job id on
+     * MVS, getpid() elsewhere) to avoid collision on fast restarts (time()
+     * has only 1-second granularity). */
+#ifdef __MVS__
+
+    /* Get jobid ... e.g. "STC01234".  May be NULL if the PSA->TCB->JSCB
+        ->SSIB chain does not resolve. */
+    char *job_id = get_jes2_jobid();
+
+    /* Convert that to a pseudo-pid via hash.  mvs_fid_ino32() treats a
+        NULL name as zero-length, so this is NULL-safe. */
+    uint32_t pid = mvs_fid_ino32(job_id, NULL);
+
+    log_info("NFSD running as %s ... using pseudo-pid 0x%08X",
+                (job_id != NULL) ? job_id : "(unknown)", pid);
+
+#else
+    pid_t pid = getpid();
+#endif
+    now = time(NULL);
+    g_write_verifier[0] = (uint8_t)((uint32_t)now >> 24);
+    g_write_verifier[1] = (uint8_t)((uint32_t)now >> 16);
+    g_write_verifier[2] = (uint8_t)((uint32_t)now >>  8);
+    g_write_verifier[3] = (uint8_t)((uint32_t)now      );
+    g_write_verifier[4] = (uint8_t)((uint32_t)pid >> 24);
+    g_write_verifier[5] = (uint8_t)((uint32_t)pid >> 16);
+    g_write_verifier[6] = (uint8_t)((uint32_t)pid >>  8);
+    g_write_verifier[7] = (uint8_t)((uint32_t)pid      );
+}
+
+/* ------------------------------------------------------------------ */
+/* Process operator command (MVS only at this time)                   */
+/* ------------------------------------------------------------------ */
+static int process_operator_command() {
+
+#ifdef __MVS__
+    char           modify_buf[128]; /* MODIFY command text (EBCDIC)       */
+    int            modify_len;      /* bytes of command text returned      */
+    int            cib_rc;          /* getcib return code                  */
+    int            handle_rc;
+    modify_len = 0;
+    cib_rc = getcib(modify_buf, (size_t)(sizeof(modify_buf) - 1),
+                    &modify_len);
+    if (cib_rc == 2) {
+        /* STOP (P) command received -- exit RC = 2 for shutdown */
+        log_set_wto_level(LOG_INFO);
+        log_info("MVS STOP command received, shutting down");
+        return 2;
+    } else if (cib_rc == 1) {
+        /* MODIFY (F) command received.  Hand the operand text to the
+         * logger, which claims "SET LOGLVL ..." commands; anything it
+         * does not recognise (return 1) is reported as unhandled. */
+        if (modify_len > 0) {
+            modify_buf[modify_len] = '\0';
+
+            handle_rc = log_handle_modify(modify_buf);
+            if ( handle_rc <= 0 )
+                /* Return if cmd recognized */
+                return 0;
+
+            handle_rc = mvsprf_handle_modify(modify_buf);
+            if ( handle_rc == 1 ) {
+                /* If cmd unrecognized then write out warning */
+                log_warn("MVS MODIFY ignored (unrecognised): %s",
+                            modify_buf);
+                return 0;
+            }
+
+        } else {
+            log_error("MVS MODIFY received (no data)");
+        }
+    }
+#endif
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* main                                                               */
 /* ------------------------------------------------------------------ */
 int main(int argc, char *argv[])
 {
@@ -309,12 +392,6 @@ int main(int argc, char *argv[])
     int            maxfd, n, i, opt;
     fd_set         rfds;
     struct timeval tv;      /* select() timeout -- re-set each iteration  */
-    time_t         now;
-#ifdef __MVS__
-    char           modify_buf[128]; /* MODIFY command text (EBCDIC)       */
-    int            modify_len;      /* bytes of command text returned      */
-    int            cib_rc;          /* getcib return code                  */
-#endif
 
     log_set_level(LOG_DEBUG);
     log_set_timestamps(1);
@@ -334,9 +411,9 @@ int main(int argc, char *argv[])
     mvs_tz_init();
     log_info("nfsd: MVS local-time offset = %d seconds (0 = no offset)",
              mvs_tz_offset());
-    
+
     //mvsfsz_load("//DDN:FILESIZE");
-    
+
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p':
@@ -387,36 +464,8 @@ int main(int argc, char *argv[])
     g_port_mount = port_mount;
     g_port_nfs   = port_nfs;
 
-    /* Write verifier: combine startup time + PID (a hashed JES2 job id on
-     * MVS, getpid() elsewhere) to avoid collision on fast restarts (time()
-     * has only 1-second granularity). */
-    {
-#ifdef __MVS__
+    set_write_verifier();
 
-        /* Get jobid ... e.g. "STC01234".  May be NULL if the PSA->TCB->JSCB
-           ->SSIB chain does not resolve. */
-        char *job_id = get_jes2_jobid();
-
-        /* Convert that to a pseudo-pid via hash.  mvs_fid_ino32() treats a
-           NULL name as zero-length, so this is NULL-safe. */
-        uint32_t pid = mvs_fid_ino32(job_id, NULL);
-
-        log_info("NFSD running as %s ... using pseudo-pid 0x%08X",
-                 (job_id != NULL) ? job_id : "(unknown)", pid);
-
-#else
-        pid_t pid = getpid();
-#endif
-        now = time(NULL);
-        g_write_verifier[0] = (uint8_t)((uint32_t)now >> 24);
-        g_write_verifier[1] = (uint8_t)((uint32_t)now >> 16);
-        g_write_verifier[2] = (uint8_t)((uint32_t)now >>  8);
-        g_write_verifier[3] = (uint8_t)((uint32_t)now      );
-        g_write_verifier[4] = (uint8_t)((uint32_t)pid >> 24);
-        g_write_verifier[5] = (uint8_t)((uint32_t)pid >> 16);
-        g_write_verifier[6] = (uint8_t)((uint32_t)pid >>  8);
-        g_write_verifier[7] = (uint8_t)((uint32_t)pid      );
-    }
 
 #ifndef __MVS__
     signal(SIGPIPE, SIG_IGN);
@@ -433,17 +482,9 @@ int main(int argc, char *argv[])
     /* ---- Main select() event loop ---- */
     for (;;) {
 
-        /* ---- Check for MVS operator commands ---- */
-#ifdef __MVS__
-        modify_len = 0;
-        cib_rc = getcib(modify_buf, (size_t)(sizeof(modify_buf) - 1),
-                        &modify_len);
-        if (cib_rc == 2) {
-            /* STOP (P) command received -- exit the loop cleanly */
-            log_info("MVS STOP command received, shutting down");
+        /* ---- Check for and process operator commands ---- */
+        if ( process_operator_command() == 2 )
             break;
-        }
-#endif
 
         /* ---- Fatal abend in the write path? (design_nfs_write.md Sec 7.3) --
          * The flush traps out-of-space abends and keeps serving, but anything
@@ -455,22 +496,6 @@ int main(int argc, char *argv[])
             log_error("unrecoverable abend in the write path -- shutting down");
             break;
         }
-
-#ifdef __MVS__
-        if (cib_rc == 1) {
-            /* MODIFY (F) command received.  Hand the operand text to the
-             * logger, which claims "SET LOGLVL ..." commands; anything it
-             * does not recognise (return 1) is reported as unhandled. */
-            if (modify_len > 0) {
-                modify_buf[modify_len] = '\0';
-                if (log_handle_modify(modify_buf) == 1)
-                    log_warn("MVS MODIFY ignored (unrecognised): %s",
-                             modify_buf);
-            } else {
-                log_error("MVS MODIFY received (no data)");
-            }
-        }
-#endif
 
         /* ---- Build the fd_set ---- */
         FD_ZERO(&rfds);

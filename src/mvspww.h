@@ -90,6 +90,25 @@ typedef struct {
     uint32_t  spill_size;          /* bytes on disk (== high_water spilled) */
     int       spill_slot;          /* slot index -> &&PWWSP<nn>, for reopen */
     uint8_t   spill_dirty;         /* writes pending since the last commit  */
+
+    /*
+     * Inter-write timing for PERF_PWW_WRITE_GAP.  Measurement only -- nothing
+     * here influences when a member is flushed or released.
+     *
+     * A "write sequence" is the life of this slot: every WRITE that lands here
+     * before the member is flushed and the slot released.  nwrites counts the
+     * requests so far, so the FIRST write has nothing to measure from and
+     * contributes no sample -- a member written by a single request therefore
+     * never affects min/max/avg.  Milliseconds relative to a server-lifetime
+     * base (see pww_now_ms), so the value fits 32 bits.
+     *
+     * DELIBERATELY LAST in the struct: fields added in the middle change the
+     * offsets of everything after them, so a module compiled against an older
+     * header would read high_water/dirty/spill_fp from the wrong place.  Keep
+     * new fields here.
+     */
+    uint32_t      nwrites;         /* WRITE requests so far this sequence   */
+    unsigned long last_write_ms;   /* arrival of the previous WRITE         */
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */

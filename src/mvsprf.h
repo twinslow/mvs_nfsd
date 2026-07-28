@@ -69,6 +69,21 @@ typedef enum {
     PERF_MVSPOOL_HIT,   /* mvsvfs_find_cached_member(): pool cache hit     */
     PERF_MVSPOOL_MISS,  /* mvsvfs_find_cached_member(): miss -> PDS rescan */
 
+    /*
+     * Gap between consecutive NFS WRITE requests for the SAME pending
+     * member -- i.e. how fast the client streams a file at us, measured
+     * from one WRITE arriving to the next.  One sample per gap, so a
+     * member written by N requests contributes N-1 samples and a member
+     * written by a single request contributes none.
+     *
+     * This slot is WALL-CLOCK MILLISECONDS, not clock_t ticks: the
+     * interval is time the server spends idle in select() waiting for the
+     * client, which consumes no CPU, so clock() would report ~0.  Record
+     * it with mvsprf_record_ms(), never mvsprf_record().
+     */
+    PERF_PWW_WRITE_GAP,
+
+
     /* Sentinel -- must remain last */
     PERF_NUM_SLOTS
 
@@ -114,6 +129,21 @@ void mvsprf_init(void);
 void mvsprf_record(int slot, clock_t elapsed);
 
 /*
+ * mvsprf_record_ms: add one sample already expressed in WALL-CLOCK
+ * MILLISECONDS.
+ *
+ * For intervals that clock() cannot measure because the server is idle
+ * (not burning CPU) for the duration -- the gap between two client
+ * requests, for instance.  Such a slot stores milliseconds directly and
+ * mvsprf_dump() prints it without the usual tick conversion.
+ *
+ * Use this ONLY for slots documented as millisecond slots (currently
+ * PERF_PWW_WRITE_GAP); mixing the two units in one slot would make its
+ * totals meaningless.  Out-of-range slots are silently ignored.
+ */
+void mvsprf_record_ms(int slot, unsigned long ms);
+
+/*
  * mvsprf_get_stat: copy the statistics for slot into *stat_out.
  *
  * Returns  0 on success.
@@ -128,5 +158,19 @@ int mvsprf_get_stat(int slot, mvsprf_stat_t *stat_out);
  * milliseconds (total, average, min, max).  Call at program shutdown.
  */
 void mvsprf_dump(void);
+
+/*
+ * mvsprf_handle_modify: parse and apply a MVS MODIFY command that targets
+ * the performance stats module.  Currently recognises:
+ *
+ *     STATS LIST                        -- List out stats to console
+ *     STATS RESET                       -- Reset (re-init) stats counters
+ *
+ * Returns:
+ *    0  recognised as a stats command and applied,
+ *   -1  recognised as a stats command but malformed (diagnostic logged),
+ *    1  not a stats command (the caller should report it as unhandled).
+ */
+int mvsprf_handle_modify(const char * cmd);
 
 #endif /* MVSPRF_H_INCLUDED */
