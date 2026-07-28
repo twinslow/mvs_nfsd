@@ -9,8 +9,8 @@
 //*
 //* DESC: COMPILE AND LINK DINO NFSD, USING JCC COMPILER
 //*
-//* NOTE the lower case -o in the JCC compiler options. If this 
-//* is upper case -O, then compiler outputs ASM source and not object 
+//* NOTE the lower case -o in the JCC compiler options. If this
+//* is upper case -O, then compiler outputs ASM source and not object
 //* code.
 //********************************************************************
 //*-------------------------------------------------------------------
@@ -50,30 +50,30 @@
 //          LOADLIB='TONYW.DINONFS.LOAD',
 //          MODULE='XXXXX'
 //*
-//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K                    
-//SYSLIB   DD   DSN=&MAC,DISP=SHR                                  
-//         DD   DSN=&MAC1,DISP=SHR                                 
-//         DD   DSN=&MAC2,DISP=SHR                                 
-//         DD   DSN=&MAC3,DISP=SHR                                 
-//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),    
-//             SEP=(SYSLIB)                                        
-//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),     
-//             SEP=(SYSLIB,SYSUT1)                                 
-//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))      
-//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089                      
-//SYSPUNCH DD   SYSOUT=&SOUT                                           
-//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),       
+//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K
+//SYSLIB   DD   DSN=&MAC,DISP=SHR
+//         DD   DSN=&MAC1,DISP=SHR
+//         DD   DSN=&MAC2,DISP=SHR
+//         DD   DSN=&MAC3,DISP=SHR
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),
+//             SEP=(SYSLIB)
+//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),
+//             SEP=(SYSLIB,SYSUT1)
+//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))
+//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089
+//SYSPUNCH DD   SYSOUT=&SOUT
+//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),
 //             DISP=(MOD,PASS)
-//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)             
-//*                                     
-//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,    
-//             COND=(8,LT,ASM)                                     
-//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)                     
-//*         DD   DDNAME=SYSIN                                       
-//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),    
-//             SPACE=(1024,(50,20))                                
+//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)
+//*
+//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,
+//             COND=(8,LT,ASM)
+//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)
+//*         DD   DDNAME=SYSIN
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),
+//             SPACE=(1024,(50,20))
 //SYSPRINT DD   SYSOUT=&SOUT
-//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)          
+//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)
 //*
 //ASMMOD   PEND
 //*
@@ -83,89 +83,90 @@
 //*
 //********************************************************************
 //*
+//MVSDSCB  EXEC ASMMOD,MODULE=MVSDSCB
 //GETCIB   EXEC ASMMOD,MODULE=GETCIB
 //MVSDALC  EXEC ASMMOD,MODULE=MVSDALC
 //MVSSTOW  EXEC ASMMOD,MODULE=MVSSTOW
-//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ 
+//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ
 //*
 //********************************************************************
 //*
 //* COMPILE C MODULES
 //*
 //********************************************************************
-//EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC                                
-//LOGGER   EXEC JCCCMOD,MODNAME=LOGGER                               
-//EXPORTS  EXEC JCCCMOD,MODNAME=EXPORTS                               
-//CFGOPTS  EXEC JCCCMOD,MODNAME=CFGOPTS                               
-//FHANDLE  EXEC JCCCMOD,MODNAME=FHANDLE                               
-//MOUNT3   EXEC JCCCMOD,MODNAME=MOUNT3                                
+//EBCDIC   EXEC JCCCMOD,MODNAME=EBCDIC
+//LOGGER   EXEC JCCCMOD,MODNAME=LOGGER
+//EXPORTS  EXEC JCCCMOD,MODNAME=EXPORTS
+//CFGOPTS  EXEC JCCCMOD,MODNAME=CFGOPTS
+//FHANDLE  EXEC JCCCMOD,MODNAME=FHANDLE
+//MOUNT3   EXEC JCCCMOD,MODNAME=MOUNT3
 //NFS3     EXEC JCCCMOD,MODNAME=NFS3
-//PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP                               
-//RPC      EXEC JCCCMOD,MODNAME=RPC                                   
-//XDR      EXEC JCCCMOD,MODNAME=XDR                                   
-//HEXDUMP  EXEC JCCCMOD,MODNAME=HEXDUMP     
-//*                          
-//MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL                                
-//MVSFID   EXEC JCCCMOD,MODNAME=MVSFID                                
-//MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL                                 
-//MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                               
-//MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
-//MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR                               
+//PORTMAP  EXEC JCCCMOD,MODNAME=PORTMAP
+//RPC      EXEC JCCCMOD,MODNAME=RPC
+//XDR      EXEC JCCCMOD,MODNAME=XDR
+//HEXDUMP  EXEC JCCCMOD,MODNAME=HEXDUMP
+//*
+//MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL
+//MVSFID   EXEC JCCCMOD,MODNAME=MVSFID
+//MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL
+//MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ
+//MVSIO    EXEC JCCCMOD,MODNAME=MVSIO
+//MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
 //MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
 //*
 //* This is a mock VFS module that returns fixed files and contents.
-//MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS                               
-//*                                                                   
-//* This is the real VFS module that is reading PDS dir and content   
-//MVSVFS   EXEC JCCCMOD,MODNAME=MVSVFS                                
-//*                                                                   
+//MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS
+//*
+//* This is the real VFS module that is reading PDS dir and content
+//MVSVFS   EXEC JCCCMOD,MODNAME=MVSVFS
+//*
 //********************************************************************
-//*                                                                   
-//* COMPILE AND LINK MAIN NFSD                                        
-//*                                                                   
+//*
+//* COMPILE AND LINK MAIN NFSD
+//*
 //********************************************************************
-//NFSD    EXEC JCCCL,INFILE='TONYW.DINONFS.C(NFSD)',                  
-//        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',                  
-//        OUTFILE='TONYW.DINONFS.LOAD(NFSD)',                         
-//        JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__'                   
-//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H                     
-//* Below prelink was to merge in ASM modules as used in              
-//* FTPD build.                                                       
-//* PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)                       
-//PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(CFGOPTS)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOUNT3)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFID)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL) 
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ) 
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)               
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)             
+//NFSD    EXEC JCCCL,INFILE='TONYW.DINONFS.C(NFSD)',
+//        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
+//        OUTFILE='TONYW.DINONFS.LOAD(NFSD)',
+//        JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__'
+//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
+//* Below prelink was to merge in ASM modules as used in
+//* FTPD build.
+//* PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)
+//PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(CFGOPTS)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOUNT3)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFID)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFSZ)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSIO)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)                 
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)                 
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(HEXDUMP)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSVFS)              
-//*         DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)             
-//          DD DSN=&&OBJ,DISP=(OLD,DELETE)                            
-//LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)                       
-//          DD  DDNAME=SYSIN                                         
-//LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD                    
-//LKED.SYSIN DD *                                                    
-    INCLUDE SYSLMOD(GETCIB)                                          
-    INCLUDE SYSLMOD(MVSDALC)                                         
-    INCLUDE SYSLMOD(MVSSTOW)                                         
-    INCLUDE SYSLMOD(MVSENQ)                                         
-    NAME NFSD(R)                                                     
-//                                                                    
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(HEXDUMP)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSVFS)
+//*         DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)
+//          DD DSN=&&OBJ,DISP=(OLD,DELETE)
+//LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)
+//          DD  DDNAME=SYSIN
+//LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD
+//LKED.SYSIN DD *
+    INCLUDE SYSLMOD(GETCIB)
+    INCLUDE SYSLMOD(MVSDALC)
+    INCLUDE SYSLMOD(MVSSTOW)
+    INCLUDE SYSLMOD(MVSENQ)
+    NAME NFSD(R)
+//

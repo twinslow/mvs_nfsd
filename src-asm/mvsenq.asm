@@ -12,10 +12,10 @@
 ***********************************************************************
 MVSENQ   CSECT
          JCCPROLG
-         LR    R12,R15          establish module addressability       
+         LR    R12,R15          establish module addressability
          USING MVSENQ,R12
 *
-         ST    R1,PARMLIST      Save the callers parameter list addr 
+         ST    R1,PARMLIST      Save the callers parameter list addr
 ***********************************************************************
 * MVSENQ processing                                                   *
 *                                                                     *
@@ -48,12 +48,12 @@ MVSENQ   CSECT
          LA    R3,RNAME     Destination
          LA    R4,L'RNAME   Length of destination field
          BAL   R6,STRCOPY   Copy string
-         ST    R0,RNAMELEN  Save length of the rname value 
+         ST    R0,RNAMELEN  Save length of the rname value
 *
 *---------------------------------------------------------------------*
 * Process request type                                                *
 *---------------------------------------------------------------------*
-         L     R2,0(R1)      Load request type. Even though it 
+         L     R2,0(R1)      Load request type. Even though it
 *                            is defined as an unsigned char, JCC
 *                            will pass the value as a 32 bit value in
 *                            the parm list.
@@ -75,10 +75,10 @@ DO@TEST  DS    0H
 *        WTO   'MVSENQ: Starting ENQ/TEST request'
          L     R1,PARMLIST
 *
-         L     R4,RNAMELEN   Load length of RNAME      
+         L     R4,RNAMELEN   Load length of RNAME
          L     R2,4(R1)      Get options from 2nd parm
          N     R2,=XL4'00000001' AND for low bit
-         BNZ   DOTSTEXC      It was set ... we want exclusive control        
+         BNZ   DOTSTEXC      It was set ... we want exclusive control
 *
 *---------------------------------------------------------------------*
 * Execute a shared ENQ                                                *
@@ -86,7 +86,7 @@ DO@TEST  DS    0H
 *
 DOTSTSHR DS    0H
          ENQ   (QNAME,RNAME,S,(R4),SYSTEMS),RET=TEST
-         B     DOTSTRC 
+         B     DOTSTRC
 *
 *---------------------------------------------------------------------*
 * Execute an exclusive ENQ                                            *
@@ -111,7 +111,7 @@ DOTSTRC  DS    0H           Test return code
 *        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
-         B     RETURN       Return error code to caller         
+         B     RETURN       Return error code to caller
 *
 ***********************************************************************
 ***********************************************************************
@@ -119,14 +119,14 @@ DOTSTRC  DS    0H           Test return code
 ***********************************************************************
 ***********************************************************************
 DO@ENQ   DS    0H
-*     
+*
 *        WTO   'MVSENQ: Starting ENQ request'
 *
-         L     R4,RNAMELEN   Load length of RNAME      
+         L     R4,RNAMELEN   Load length of RNAME
          L     R1,PARMLIST
          L     R2,4(R1)      Get options
          N     R2,=XL4'00000001' And for low bit
-         BNZ   DOENQEXC      It was set ... we want exclusive control        
+         BNZ   DOENQEXC      It was set ... we want exclusive control
 *
 *---------------------------------------------------------------------*
 * Execute a shared ENQ                                                *
@@ -162,7 +162,7 @@ DOENQRC  DS    0H           Test return code
 *        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
-         B     RETURN       Return error code to caller         
+         B     RETURN       Return error code to caller
 *
 ***********************************************************************
 ***********************************************************************
@@ -175,7 +175,7 @@ DO@DEQ   DS    0H
 *---------------------------------------------------------------------*
 * Execute DEQ                                                         *
 *---------------------------------------------------------------------*
-         L     R4,RNAMELEN   Load length of RNAME      
+         L     R4,RNAMELEN   Load length of RNAME
          DEQ   (QNAME,RNAME,(R4),SYSTEMS),RET=HAVE
          LTR   R15,R15       Was RC = 0
          BZ    RETC@0        Yes ... exit
@@ -190,7 +190,7 @@ DO@DEQ   DS    0H
 *        BAL   R7,DEBUGWTO
 *
          LR    R15,R3
-         B     RETURN       Return error code to caller         
+         B     RETURN       Return error code to caller
 *
 ***********************************************************************
 ***********************************************************************
@@ -203,8 +203,8 @@ DO@DEQ   DS    0H
 *---------------------------------------------------------------------*
 *
 RETC@M1  DS    0H
-         L     R15,=F'-1'            
-         B     RETURN 
+         L     R15,=F'-1'
+         B     RETURN
 *
 RETC@0   DS    0H
          SR    R15,R15               R15=0 and fall through
@@ -217,39 +217,7 @@ RETURN   JCCRETRN                    R15 has return value
 ***********************************************************************
 ***********************************************************************
 *
-*---------------------------------------------------------------------*
-* Copy a null terminated string to destination and pad with blanks    *
-* On entry ...                                                        *
-*    R2 - Source address                                              *
-*    R3 - Destination address                                         *
-*    R4 - Length of destination field                                 *
-*    R6 - Return address                                              *
-* On exit                                                             *
-*    R0 - Length of string copied                                     * 
-*---------------------------------------------------------------------*
-STRCOPY  LR    R5,R4          R5 = remaining destination length
-         SR    R8,R8          R0 = count of chars copied (return value)
-         LTR   R5,R5          destination length zero?
-         BZ    STRCEND        yes - nothing to do
-*
-STRCLP   CLI   0(R2),X'00'    end of source string?
-         BE    STRCPAD        yes - go pad remainder
-         MVC   0(1,R3),0(R2)  copy one byte
-         LA    R2,1(R2)       bump source pointer
-         LA    R3,1(R3)       bump destination pointer
-         LA    R8,1(R8)       bump count of chars copied
-         BCT   R5,STRCLP      decrement remaining, loop if > 0
-         B     STRCEND        dest full - truncated, done
-*
-STRCPAD  LTR   R5,R5          any destination space left?
-         BZ    STRCEND        no - done
-         MVI   0(R3),C' '     blank fill
-         LA    R3,1(R3)       bump destination pointer
-         BCT   R5,STRCPAD     decrement remaining, loop if > 0
-*
-STRCEND  DS    0H
-         LR    R0,R8          return copied (real) len in R0  
-         BR    R6             return to caller (R0 = chars copied)
+         COPY  STRCOPY
 *
 *---------------------------------------------------------------------*
 * Debug output WTO                                                    *
@@ -266,18 +234,18 @@ DBGX4WTO DS    0H
          STCM  R3,B'1111',WORK     Store 4 bytes of R3 into work area
          UNPK  HEXOUT(9),WORK(5)   Unpack 4 bytes into 9 bytes
 *                                  (zones/digits)
-         TR    HEXOUT(8),HEXTAB-240 Translate the zones into 
+         TR    HEXOUT(8),HEXTAB-240 Translate the zones into
 *                                  EBCDIC hex chars
          MVC   WTOVAL(2),=CL2'0x'
          MVC   WTOVAL+2(8),HEXOUT
          WTO   MF=(E,WTOPLIST)     Execute the Write-To-Operator
-         BR    R7        
+         BR    R7
 *
 CONVFW2X DS    0H
          STCM  R3,B'1111',WORK     Store 4 bytes of R3 into work area
          UNPK  HEXOUT(9),WORK(5)   Unpack 4 bytes into 9 bytes
 *                                  (zones/digits)
-         TR    HEXOUT(8),HEXTAB-240 Translate the zones into 
+         TR    HEXOUT(8),HEXTAB-240 Translate the zones into
 *                                  EBCDIC hex chars
          BR    R7
 *
@@ -290,8 +258,8 @@ CONVFW2X DS    0H
 PARMLIST DS    F           Address of callers parm list (a full word!)
 *
 QNAME    DS    CL8         QNAME value for ENQ/DEQ/TEST
-RNAME    DS    CL255       RNAME value for ENQ/DEQ/TEST 
-RNAMELEN DS    F           Length of the rname parameter 
+RNAME    DS    CL255       RNAME value for ENQ/DEQ/TEST
+RNAMELEN DS    F           Length of the rname parameter
 *
 *---------------------------------------------------------------------*
 * Debug WTO list form equivalent                                      *

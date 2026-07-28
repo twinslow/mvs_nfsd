@@ -54,7 +54,7 @@ set ftp_host  "192.168.1.168"
 set ftp_port  "2121"
 
 set script_dir     [file dirname [file normalize [info script]]]
-set asm_dir        [file join $script_dir src]
+set asm_dir        [file join $script_dir src-asm]
 set src_dir        [file join $script_dir src]
 set jcl_dir        [file join $script_dir jcl]
 set tests_dir      [file join $script_dir tests]
@@ -73,9 +73,10 @@ set ftp_log        [file join $script_dir .mvs_upload_ftp.log]
 # Add, remove or reorder entries here -- no other changes are needed.
 #
 set upload_jobs [list \
+    [list $asm_dir "*.asm" "/TONYW.DINONFS.ASM"] \
     [list $src_dir "*.c" "/TONYW.DINONFS.C"] \
-    [list $src_dir "*.asm" "/TONYW.DINONFS.ASM"] \
     [list $src_dir "*.h" "/TONYW.DINONFS.H"] \
+    [list $src_dir "*.asm" "/TONYW.DINONFS.ASM"] \
     [list $jcl_dir "*.jcl" "/TONYW.DINONFS.CNTL"] \
     [list $tests_dir "*.c" "/TONYW.DINONFS.TESTS.C"] \
     [list $tests_dir "*.h" "/TONYW.DINONFS.TESTS.H"] \

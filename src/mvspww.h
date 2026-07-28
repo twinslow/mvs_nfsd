@@ -33,7 +33,7 @@
 #endif
 
 /* -------------------------------------------------------------------- */
-/* Phase 1 parameters                                                    */
+/* Phase 1 parameters                                                   */
 /* -------------------------------------------------------------------- */
 #define PWW_MAX_PENDING            8                 /* concurrent pending members */
 #define PWW_SPILL_THRESHOLD        (16 * 1024)      /* in-memory prefix; a member
@@ -56,7 +56,7 @@
 #define PWW_STATUS_USED            1
 
 /* -------------------------------------------------------------------- */
-/* One pending (being-written) PDS member                                */
+/* One pending (being-written) PDS member                               */
 /* -------------------------------------------------------------------- */
 typedef struct {
     uint8_t   status;              /* FREE / USED                          */
@@ -112,7 +112,7 @@ typedef struct {
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */
-/* API                                                                   */
+/* API                                                                  */
 /* -------------------------------------------------------------------- */
 
 /* Initialise the pool (call once at startup). */

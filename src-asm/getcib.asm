@@ -1,7 +1,7 @@
          TITLE 'GETCIB - MVS STOP Command Checker'
          PRINT GEN
          YREGS
-GETCIB   CSECT 
+GETCIB   CSECT
 ***********************************************************************
 *                                                                     *
 * GETCIB - Inspect the MVS CIB queue for a STOP (P) command           *
@@ -20,7 +20,7 @@ GETCIB   CSECT
 *          R15 =  entry point address                                 *
 *          R1  =  Address of parameter list                           *
 *                 Parm 1 - Address of callers command save buffer     *
-*                 Parm 2 - Length of callers command save buffer      *  
+*                 Parm 2 - Length of callers command save buffer      *
 *                 Parm 3 - An address of an int32 to receive length   *
 *                          of CIB data                                *
 *   Exit   R15 =  integer return code                                 *
@@ -40,9 +40,9 @@ GETCIB   CSECT
 *  Entry and stack frame linkage                                      *
 ***********************************************************************
          JCCPROLG FRAME=96
-         LR    R12,R15          establish module addressability       
-         USING GETCIB,R12       tell assembler of base                
-         ST    R1,PARMLIST      Save the callers parameter list addr 
+         LR    R12,R15          establish module addressability
+         USING GETCIB,R12       tell assembler of base
+         ST    R1,PARMLIST      Save the callers parameter list addr
 *
 ***********************************************************************
 *  Verify that this address space is a started task.                  *
@@ -54,7 +54,7 @@ GETCIB   CSECT
 ***********************************************************************
 * This code is not working on MVS 3.8J. The macro does not define
 * JSCBSFLG, although it does not define JSCBSWT1. The bit masks
-* in the macro do not list a bit for STC (they are all "reserved"). 
+* in the macro do not list a bit for STC (they are all "reserved").
 *
 * TODO: More investigation needed.
 *
@@ -89,13 +89,13 @@ CIBACCES DS    0H
 *
          L     R11,COMCIBPT          Load addr of CIB
          USING CIB,R11
-*CIBSTART EQU   X'04' -  COMMAND CODE FOR START  
-*CIBMODFY EQU   X'44' -  COMMAND CODE FOR MODIFY 
-*CIBSTOP  EQU   X'40' -  COMMAND CODE FOR STOP            
+*CIBSTART EQU   X'04' -  COMMAND CODE FOR START
+*CIBMODFY EQU   X'44' -  COMMAND CODE FOR MODIFY
+*CIBSTOP  EQU   X'40' -  COMMAND CODE FOR STOP
          CLI   CIBVERB,CIBSTART      Is this for the start command?
          BNE   NOTSTART              No, not the start command CIB
 *        WTO   'CIBGET: Found CIB for START command'
-         BAL   R6,DOSTART            Yes, we'll free it. 
+         BAL   R6,DOSTART            Yes, we'll free it.
          BAL   R6,SETCIBN            Set CIB limit
          B     CIBACCES              Check for other verbs
 *
@@ -104,7 +104,7 @@ NOTSTART DS    0H
          BNE   NOTMODFY              No, not the modify command CIB
 *        WTO   'CIBGET: Found CIB for MODIFY command'
          BAL   R6,DOMODIFY           Yes ... process
-         B     RETONE                Return 1 - MODIFY cmd processed   
+         B     RETONE                Return 1 - MODIFY cmd processed
 *
 NOTMODFY DS    0H
          CLI   CIBVERB,CIBSTOP       Is this a STOP command?
@@ -114,7 +114,7 @@ NOTMODFY DS    0H
          B     RETTWO                Return 2 - STOP cmd processed
 *
 * It is something else -- we will ignore
-* 
+*
 NOTSTOP  DS    0H
          B     RETZ                  Return 0 - no STOP/MODIFY pending
 *
@@ -156,12 +156,12 @@ DOMODIFY DS    0H
 *
          LH    R5,CIBDATLN           Load length of data field in CIB
          CR    R4,R5                 Is caller's buffer big enough?
-         BNL   DMSAVE                Yes         
+         BNL   DMSAVE                Yes
          LR    R5,R4                 No, we'll truncate the data
-* 
+*
 DMSAVE   DS    0H
          L     R7,8(R2)              Load address of caller's int32 for
-*                                    length of data 
+*                                    length of data
          ST    R5,0(R7)              Return length of data being copied
 *        WTO   'CIBGET: Copying modify command data'
          BCTR  R5,0                  Decrement length for EX/MVC
@@ -177,7 +177,7 @@ DOMFREE  DS    0H
 *  Have stop command ... free the CIB                                 *
 ***********************************************************************
 *
-DOSTOP   DS    0H 
+DOSTOP   DS    0H
 *        WTO   'CIBGET: Found stop command CIB - freeing it'
          QEDIT ORIGIN=COMCIBPT,BLOCK=(R11)  Free processed CIB
          BR    R6                    Return to caller
@@ -235,7 +235,7 @@ CSCLADDR DS    F                     CSCL addr from EXTRACT
 *CIBADDR  DS    F                     CIB chain head ptr (EXTRACT o/p)
 *
          LTORG                       Assemble any deferred literals
-CSCL     DSECT                       
+CSCL     DSECT
          IEZCOM                      Macro for CSCL DSECT
 CIB      DSECT
          IEZCIB                      Macro for CIB DSECT
@@ -243,6 +243,6 @@ CIB      DSECT
          PRINT NOGEN
          CVT DSECT=YES               Mapping for CVT
          IHAPSA                      Macro for PSA
-         IEZJSCB                     Macro for JSCB 
-         IKJTCB                      Macro for TCB 
+         IEZJSCB                     Macro for JSCB
+         IKJTCB                      Macro for TCB
          END   GETCIB
