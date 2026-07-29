@@ -109,6 +109,11 @@ typedef struct {
      */
     uint32_t      nwrites;         /* WRITE requests so far this sequence   */
     unsigned long last_write_ms;   /* arrival of the previous WRITE         */
+
+    /* Arrival of the FIRST write, so an eviction can report how long the
+       member had been accumulating (PERF_PWW_EVICT_AGE).  Zero means
+       nothing has been written to this slot yet. */
+    unsigned long first_write_ms;
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */

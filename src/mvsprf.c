@@ -60,7 +60,10 @@ static const char * const g_names[PERF_NUM_SLOTS] = {
     "MVSFSZ_LOAD",    /* PERF_MVSFSZ_LOAD   */
     "MVSPOOL_HIT",    /* PERF_MVSPOOL_HIT   */
     "MVSPOOL_MISS",   /* PERF_MVSPOOL_MISS  */
-    "PWW_WRITE_GAP"   /* PERF_PWW_WRITE_GAP (milliseconds)  */
+    "PWW_WRITE_GAP",  /* PERF_PWW_WRITE_GAP (milliseconds)  */
+    "PWW_LATE_GAP",   /* PERF_PWW_LATE_GAP  (milliseconds)  */
+    "PWW_NZSTART",    /* PERF_PWW_NZSTART   (count only)    */
+    "PWW_EVICT_AGE"   /* PERF_PWW_EVICT_AGE (milliseconds)  */
 };
 
 /* -------------------------------------------------------------------- */
@@ -140,7 +143,10 @@ void mvsprf_init(void)
  */
 static int slot_is_ms(int slot)
 {
-    return (slot == PERF_PWW_WRITE_GAP);
+    return (slot == PERF_PWW_WRITE_GAP) ||
+           (slot == PERF_PWW_LATE_GAP)  ||
+           (slot == PERF_PWW_NZSTART)   ||
+           (slot == PERF_PWW_EVICT_AGE);
 }
 
 void mvsprf_record_ms(int slot, unsigned long ms)

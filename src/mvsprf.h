@@ -83,6 +83,71 @@ typedef enum {
      */
     PERF_PWW_WRITE_GAP,
 
+    /*
+     * The censored tail of PERF_PWW_WRITE_GAP: a pause so long that the
+     * idle sweep gave up, flushed the member and released the slot --
+     * after which the client carried on writing where it left off.  One
+     * sample per such event, valued at the gap that caused it.
+     *
+     * Every sample is a member STOWed more than once, which permanently
+     * abandons the blocks of the earlier copy (dead space until the PDS
+     * is compressed).  So this is the statistic that says whether
+     * PWW_IDLE_TIMEOUT_SECONDS is set too low: count == 0 means no write
+     * sequence was ever cut short, and max says how much higher the
+     * timeout would have had to be to avoid them all.
+     *
+     * It matters most for clients this system has never measured.  A
+     * Linux client on a LAN peaks around 27 ms between writes, but
+     * Windows clients are FILE_SYNC -- they never send COMMIT, so the
+     * idle sweep is their ONLY flush trigger.
+     *
+     * Wall-clock MILLISECONDS -- record with mvsprf_record_ms().
+     */
+    PERF_PWW_LATE_GAP,
+
+    /*
+     * Write sequences that began at a NON-ZERO offset.  A normal client
+     * writes a member from offset 0, so a first write anywhere else means
+     * one of three things:
+     *
+     *   a) the idle sweep flushed and released the slot while the client
+     *      was merely pausing, and it has now resumed -- the member gets
+     *      STOWed twice and the earlier copy's blocks are abandoned;
+     *   b) writes simply arrived out of order, which is HARMLESS: the
+     *      zero-filled gap is overwritten when the earlier offsets turn
+     *      up;
+     *   c) a genuine random-access write that never fills the gap, which
+     *      leaves binary zeros in the member.
+     *
+     * This slot counts all three, and needs no state to do it, so it can
+     * never miss one.  The subset confirmed as (a) is also recorded in
+     * PERF_PWW_LATE_GAP; the difference between the two counts is the
+     * (b)+(c) population, which is worth investigating if it is not zero.
+     *
+     * COUNT is the only meaningful column here -- the recorded value is
+     * always 0, so total/avg/min/max will read zero.
+     */
+    PERF_PWW_NZSTART,
+
+    /*
+     * How long an evicted member had been accumulating, measured from its
+     * first write to the moment the pool evicted it.
+     *
+     * Eviction is worse than an idle-sweep flush: the sweep only takes
+     * slots that have gone quiet, whereas eviction can cut a sequence
+     * that is still being actively written.  It happens when all
+     * PWW_MAX_PENDING slots are busy.
+     *
+     * count -- how often the pool is under pressure at all.
+     * min   -- the alarming number: a YOUNG eviction means a member was
+     *          cut off mid-write purely because the pool was full.
+     * max   -- old evictions are benign; the idle sweep would have taken
+     *          them shortly anyway.
+     *
+     * Wall-clock MILLISECONDS -- record with mvsprf_record_ms().
+     */
+    PERF_PWW_EVICT_AGE,
+
 
     /* Sentinel -- must remain last */
     PERF_NUM_SLOTS
@@ -137,9 +202,11 @@ void mvsprf_record(int slot, clock_t elapsed);
  * requests, for instance.  Such a slot stores milliseconds directly and
  * mvsprf_dump() prints it without the usual tick conversion.
  *
- * Use this ONLY for slots documented as millisecond slots (currently
- * PERF_PWW_WRITE_GAP); mixing the two units in one slot would make its
- * totals meaningless.  Out-of-range slots are silently ignored.
+ * Use this ONLY for slots documented as millisecond slots -- currently
+ * PERF_PWW_WRITE_GAP, PERF_PWW_LATE_GAP and PERF_PWW_EVICT_AGE, plus
+ * PERF_PWW_NZSTART which records a value of 0 because only its count is
+ * meaningful.  Mixing the two units in one slot would make its totals
+ * meaningless.  Out-of-range slots are silently ignored.
  */
 void mvsprf_record_ms(int slot, unsigned long ms);
 

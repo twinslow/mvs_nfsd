@@ -70,6 +70,138 @@ static unsigned long pww_now_ms(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* "Cut short by the idle sweep" detector (PERF_PWW_LATE_GAP)            */
+/*                                                                       */
+/* When the sweep flushes a member the slot is released and every trace  */
+/* of the write sequence is gone.  So if the client was merely pausing   */
+/* and then carries on, nothing notices that the member has been STOWed  */
+/* twice and the first copy's blocks abandoned -- the dataset quietly    */
+/* accumulates dead space and nobody is any the wiser.                   */
+/*                                                                       */
+/* This remembers what the sweep flushed, and if a later WRITE resumes   */
+/* EXACTLY where that member ended, records the gap that caused it.      */
+/*                                                                       */
+/* Keying on "offset == the high_water we flushed at" is what keeps this */
+/* honest: a genuine rewrite of the same member starts again at offset   */
+/* 0 and is not counted, so the statistic only ever reports true         */
+/* continuations -- sequences the timeout really did cut in half.        */
+/*                                                                       */
+/* This is the one measurement PERF_PWW_WRITE_GAP cannot make: gaps      */
+/* longer than the timeout are censored by construction, because the     */
+/* slot is gone before the next write arrives.                           */
+/* -------------------------------------------------------------------- */
+#define PWW_RECENT_FLUSH      8      /* members remembered              */
+#define PWW_RECENT_EXPIRY_SEC 300    /* forget after five minutes       */
+
+static struct {
+    char          dsname[MAX_DSNAME_LEN];
+    char          member[9];
+    uint32_t      high_water;    /* size we flushed at                  */
+    unsigned long last_write_ms; /* arrival of its final WRITE          */
+    time_t        when;          /* when we flushed it (0 = unused)     */
+} g_pww_recent[PWW_RECENT_FLUSH];
+
+/* Record that the idle sweep has just cut this member's write sequence. */
+static void pww_remember_idle_flush(const pending_member_t *pm, time_t now)
+{
+    int i;
+    int oldest = 0;
+
+    if (pm->high_water == 0)
+        return;                  /* nothing was ever written to it      */
+
+    for (i = 0; i < PWW_RECENT_FLUSH; i++) {
+        if (g_pww_recent[i].when == 0) { oldest = i; break; }
+        if (g_pww_recent[i].when < g_pww_recent[oldest].when)
+            oldest = i;
+    }
+
+    strncpy(g_pww_recent[oldest].dsname, pm->dsname_ebcdic,
+            MAX_DSNAME_LEN - 1);
+    g_pww_recent[oldest].dsname[MAX_DSNAME_LEN - 1] = '\0';
+    strncpy(g_pww_recent[oldest].member, pm->member_name,
+            sizeof(g_pww_recent[oldest].member) - 1);
+    g_pww_recent[oldest].member[sizeof(g_pww_recent[oldest].member) - 1] = '\0';
+    g_pww_recent[oldest].high_water    = pm->high_water;
+    g_pww_recent[oldest].last_write_ms = pm->last_write_ms;
+    g_pww_recent[oldest].when          = now;
+}
+
+/*
+ * A write sequence has begun at a NON-ZERO offset.  Count it, and try to
+ * work out which of the three causes it was.
+ *
+ * The COUNT is the reliable part and needs no state at all, so it can
+ * never be missed.  The ring is only used to CLASSIFY: if it still holds
+ * an idle flush of this member at exactly this offset, the cause is
+ * certain -- the sweep cut the sequence and the client has resumed --
+ * and the gap that caused it can be reported too.
+ *
+ * That division matters.  The ring is finite and members churn, so on a
+ * busy system an entry may have been evicted before the client resumes.
+ * Structured this way, ring pressure costs us the DIAGNOSIS, never the
+ * DETECTION -- which is the wrong way round if the count is what you
+ * check to decide the timeout is safe.
+ */
+static void pww_nonzero_start(const char *dsname_ebcdic,
+                              const char *member_name,
+                              uint64_t offset, unsigned long now_ms,
+                              time_t now)
+{
+    int i;
+
+    /* Always counted, whatever the cause.  The value is unused: only the
+       count column of this slot means anything. */
+    mvsprf_record_ms(PERF_PWW_NZSTART, 0UL);
+
+    for (i = 0; i < PWW_RECENT_FLUSH; i++) {
+        if (g_pww_recent[i].when == 0)
+            continue;
+        if (now - g_pww_recent[i].when > (time_t)PWW_RECENT_EXPIRY_SEC) {
+            g_pww_recent[i].when = 0;
+            continue;
+        }
+        if (strcmp(g_pww_recent[i].dsname, dsname_ebcdic) != 0 ||
+            strcmp(g_pww_recent[i].member, member_name) != 0)
+            continue;
+
+        /* Same member.  Only a write that continues from exactly where
+           we flushed is a severed sequence; anything else is a rewrite
+           and must not be counted as one. */
+        if (offset == (uint64_t)g_pww_recent[i].high_water &&
+            now_ms >= g_pww_recent[i].last_write_ms) {
+            unsigned long gap = now_ms - g_pww_recent[i].last_write_ms;
+
+            mvsprf_record_ms(PERF_PWW_LATE_GAP, gap);
+            log_warn("pww_write: %s(%s) resumed at offset %lu after a"
+                     " %lu ms pause -- the idle sweep had already flushed"
+                     " it, so the member is STOWed again and the earlier"
+                     " copy's blocks are abandoned.  Raise"
+                     " PWW_IDLE_TIMEOUT_SECONDS if this recurs.",
+                     dsname_ebcdic, member_name,
+                     (unsigned long)offset, gap);
+            /* One severed sequence yields exactly one sample. */
+            g_pww_recent[i].when = 0;
+            return;
+        }
+        g_pww_recent[i].when = 0;
+        break;
+    }
+
+    /* Not attributable to a remembered flush.  Either the writes simply
+       arrived out of order -- harmless, the zero-filled gap is overwritten
+       when the earlier offsets turn up -- or it is a genuine random-access
+       write, which this server does not support and which would leave
+       binary zeros in the member.  Reported so the difference between the
+       NZSTART and LATE_GAP counts can be accounted for. */
+    log_warn("pww_write: %s(%s) began a write sequence at offset %lu, not"
+             " 0, and no recent idle flush explains it -- either writes"
+             " arrived out of order (harmless) or this is a random-access"
+             " write, which is unsupported and leaves zeros in the member.",
+             dsname_ebcdic, member_name, (unsigned long)offset);
+}
+
+/* -------------------------------------------------------------------- */
 /* Corruption tripwire (TEMPORARY -- see spill_corruption_open)          */
 /*                                                                       */
 /* Members intermittently end up with an inbound RPC WRITE message       */
@@ -520,6 +652,20 @@ static pending_member_t *pww_slot_acquire(const char *dsname_ebcdic,
         if (g_pww_pool[i].last_write_time < g_pww_pool[lru].last_write_time)
             lru = i;
     }
+    /* PERF_PWW_EVICT_AGE: how long this member had been accumulating.
+       An eviction is worse than an idle-sweep flush -- the sweep only
+       takes slots that have gone quiet, whereas this can cut a sequence
+       that is still being actively written -- so a YOUNG age here is the
+       warning sign that PWW_MAX_PENDING is too small.  Slots that never
+       took a write have nothing to measure and are not sampled. */
+    if (g_pww_pool[lru].first_write_ms != 0) {
+        unsigned long now_ms = pww_now_ms();
+
+        if (now_ms >= g_pww_pool[lru].first_write_ms)
+            mvsprf_record_ms(PERF_PWW_EVICT_AGE,
+                             now_ms - g_pww_pool[lru].first_write_ms);
+    }
+
     log_warn("pww_slot_acquire: pool full, evicting %s(%s)",
         g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
     if (g_pww_pool[lru].dirty)
@@ -1139,8 +1285,17 @@ int pww_write(int export_idx, int dataset_idx,
     {
         unsigned long now_ms = pww_now_ms();
 
-        if (pm->nwrites > 0 && now_ms >= pm->last_write_ms)
+        if (pm->nwrites > 0 && now_ms >= pm->last_write_ms) {
             mvsprf_record_ms(PERF_PWW_WRITE_GAP, now_ms - pm->last_write_ms);
+        } else if (pm->nwrites == 0) {
+            /* First write of a sequence.  Remember when, so an eviction
+               can report the member's age, and flag the case where it
+               did not start at offset 0 -- see pww_nonzero_start. */
+            pm->first_write_ms = now_ms;
+            if (offset != 0)
+                pww_nonzero_start(dsname_ebcdic, member_name, offset,
+                                  now_ms, time(NULL));
+        }
         pm->last_write_ms = now_ms;
         pm->nwrites++;
     }
@@ -1311,6 +1466,14 @@ void pww_flush_idle(time_t now)
                 log_error("pww_flush_idle: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
         }
+
+        /* Remember it BEFORE the release wipes the slot, so a client that
+           was only pausing can be recognised when it resumes.  Only the
+           idle sweep is instrumented: an eviction also severs a sequence,
+           but that means the pool is too small, which is a different
+           problem from the timeout being too short. */
+        pww_remember_idle_flush(pm, now);
+
         pww_slot_release(pm);
     }
 }
