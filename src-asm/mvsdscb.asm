@@ -35,9 +35,14 @@ SFEND    DS    0F
 SFSIZE   EQU   SFEND-SFSTART
 *
 ***********************************************************************
-* Layout of ONE returned dataset entry.  This must match the C side   *
-* exactly; note the fullword lands on offset 52 naturally, so a C     *
-* struct of the same fields needs no padding and no packing pragma.   *
+* Layout of ONE returned dataset entry, 96 bytes.  This must match    *
+* mvs_dscb_info_t in src/asmutils.h byte for byte.                    *
+*                                                                     *
+* The three fullwords land on offsets 52, 88 and 92, all of which are *
+* already aligned, so a C struct of the same fields needs no padding  *
+* and no packing pragma.  asmutils.h carries a compile time assertion *
+* that sizeof() really is 96, so a repacked struct fails the build    *
+* rather than silently reading the wrong fields.                      *
 ***********************************************************************
 DSCBOUT  DSECT
 OUTSTAT  DS    CL1              0=found, 8=not found, 12=multi-volume
@@ -137,13 +142,14 @@ EXTUPHH  EQU   8
 EXTLEN   EQU   10
 *
 ***********************************************************************
-* Format 4 DSCB (the VTOC's own entry), read to obtain the device     *
-* geometry.  Only the two fields we need are named; OBTAIN CAMLST     *
-* SEARCH again returns the data portion only, so these offsets are    *
-* relative to the WORK AREA, not to the start of the DSCB.            *
+* Format 4 DSCB (the VTOC's own entry), read for the device geometry. *
+* Only the fields we need are named.  OBTAIN CAMLST SEARCH again      *
+* returns the data portion only, so these offsets are relative to the *
+* WORK AREA, not to the start of the DSCB -- subtract 44 from the     *
+* DSCB offset to get the work area offset.                            *
 *                                                                     *
-*      DSCB offset 62 = DS4DSCYL, cylinders per volume  -> work + 18  *
-*      DSCB offset 64 = DS4DSTRK, tracks per cylinder   -> work + 20  *
+* The format 4 DSCB is found by SEARCHing for its KEY, which is 44    *
+* bytes of X'04' -- see F4DSN below.                                  *
 ***********************************************************************
 F4DSCYL  EQU   18               DSCB+62 cylinders per volume  (HW)
 F4DSTRK  EQU   20               DSCB+64 tracks per cylinder   (HW)
@@ -200,29 +206,77 @@ MVSDSCB  CSECT
 *                          dsnlist. Each dataset will have an         *
 *                          a set of fields as below.                  *
 *                                                                     *
-*    Each dataset will have a set of fields as below                  *
+*    Each dataset entry is 96 bytes, laid out as below.  This must    *
+*    match the DSCBOUT DSECT further down AND mvs_dscb_info_t in      *
+*    src/asmutils.h byte for byte.                                    *
 *                                                                     *
-*    DS    CL1     - 0 = Dataset found, 8 = Not found                 *
-*                    12 = Multi-volume dataset, which is not supported*
-*    DS    CL44    - Dataset name                                     *
-*    DS    CL6     - Volume serial                                    *
-*    DS    CL1     - Number of extents                                *
-*    DS    F       - The number of tracks in the current allocation   *
-*                    from all extents                                 *
-*    DS    CL3     - Dataset creation date                            *
-*    DS    CL3     - Dataset expiration date                          *
-*    DS    CL3     - Last referenced date                             *
-*    DS    CL2     - DSORG field value from VTOC DSCB 1               *
-*    DS    CL1     - RECFM field value from VTOC DSCB 1               *
-*    DS    CL2     - Block size                                       *
-*    DS    CL2     - Logical record length                            *
+*    off                                                              *
+*      0  DS  CL1   0 = Dataset found, 8 = Not found,                 *
+*                   12 = Multi-volume dataset, which is not supported *
+*      1  DS  CL44  Dataset name, blank padded                        *
+*     45  DS  CL6   Volume serial                                     *
+*     51  DS  CL1   Number of extents                                 *
+*     52  DS  F     The number of tracks in the current allocation    *
+*                   from all extents                                  *
+*     56  DS  CL3   Dataset creation date                             *
+*     59  DS  CL3   Dataset expiration date                           *
+*     62  DS  CL3   Last referenced date                              *
+*     65  DS  CL2   DSORG field value from VTOC DSCB 1                *
+*     67  DS  CL1   RECFM field value from VTOC DSCB 1                *
+*     68  DS  CL2   Block size                                        *
+*     70  DS  CL2   Logical record length                             *
+*                                                                     *
+*    Device characteristics.  The first comes from the catalog, the   *
+*    rest from the volume's format 4 DSCB.                            *
+*                                                                     *
+*     72  DS  CL4   UCB device type.  Low byte identifies the model:  *
+*                   X'0F'=3390, X'0E'=3380, X'0B'=3350                *
+*     76  DS  CL2   Bytes per track (DS4DEVTK).  This is the PHYSICAL *
+*                   track length, not the usable data capacity, and   *
+*                   also identifies the model: 58786=3390,            *
+*                   47968=3380, 19254=3350                            *
+*     78  DS  CL2   Tracks per cylinder (DS4DSTRK)                    *
+*     80  DS  CL1   DS4DEVI - block overhead, not last block          *
+*     81  DS  CL1   DS4DEVL - block overhead, last block              *
+*     82  DS  CL1   DS4DEVK - extra overhead when the record is keyed *
+*     83  DS  CL1   DS4DEVFG - device flags                           *
+*                                                                     *
+*    NOTE on the four DS4DEV* values: they are returned for           *
+*    completeness but are NOT a usable basis for track capacity       *
+*    arithmetic.  MVS 3.8 predates the 3380 and 3390, so on those     *
+*    volumes they are all zero, and even where they are populated     *
+*    they do not mean what they appear to -- a 3350 reports           *
+*    DS4DEVI = 11 against a true overhead of 185 bytes per record.    *
+*    Use mvs_blocks_per_track() in src/mvsutl.c instead, which is     *
+*    exact for 3390, 3380 and 3350.                                   *
+*                                                                     *
+*    Secondary allocation -- what the dataset may EXTEND by, which    *
+*    the extents it currently holds cannot tell you.                  *
+*                                                                     *
+*     84  DS  CL1   DS1SCAL1.  Top two bits give the units of the     *
+*                   quantity at offset 88:                            *
+*                       X'C0' cylinders                               *
+*                       X'80' tracks                                  *
+*                       X'40' average block length                    *
+*                       X'00' absolute track address                  *
+*     85  DS  CL3   Unused, aligns the fullwords that follow          *
+*     88  DS  F     Secondary quantity, in the units above            *
+*     92  DS  F     The same quantity converted to TRACKS, or 0 when  *
+*                   it could not be converted here.  Cylinders and    *
+*                   tracks are converted; average block length is     *
+*                   NOT, because that needs the device's track        *
+*                   capacity -- the caller finishes that case with    *
+*                   mvs_blocks_per_track() and the block size.        *
 *                                                                     *
 *    Second and subsequent datasets repeat the above fields           *
 *                                                                     *
 * Returns --                                                          *
 *     0     - All dataset info retrieved                              *
 *     4     - One or more of the listed datasets could not have its   *
-*             information retrieved.                                  *
+*             information retrieved.  Check each entry's status.      *
+*             Also returned when a volume's geometry could not be     *
+*             read, in which case that entry's track count is zero    *
+*             but every other field is still valid.                   *
 *     8     - Parameter list error                                    *
 *    16     - Other error                                             *
 *                                                                     *
