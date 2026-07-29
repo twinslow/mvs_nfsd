@@ -2,6 +2,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "types.h"    /* uint8_t / uint16_t / uint32_t */
 #include "mvsutl.h"
 
 typedef unsigned char  BYTE;
@@ -130,3 +131,159 @@ time_t mvs_utc_to_local_epoch(time_t utc_epoch)
     return utc_epoch + (time_t)g_tz_offset;
 }
 
+/* ==================================================================== */
+/* DASD track capacity                                                  */
+/*                                                                      */
+/* How many physical blocks of a given size fit on one track.  This is  */
+/* per DEVICE, not per dataset, because it depends entirely on the      */
+/* recording geometry.                                                  */
+/*                                                                      */
+/* Note that the format 4 DSCB's own overhead constants (DS4DEVI etc.)  */
+/* are NOT used.  They are unpopulated on this system for 3380 and 3390 */
+/* -- MVS 3.8 predates both, and those volumes were initialised by      */
+/* tooling that filled in only the geometry -- and even where they ARE  */
+/* present they do not mean what a naive reading suggests: a 3350       */
+/* reports DS4DEVI = 11, yet its true per-record overhead is 185 bytes. */
+/* So each device is handled from published figures instead, and every  */
+/* case below is checked against a known boundary value.                */
+/* ==================================================================== */
+
+/*
+ * 3390: no simple formula reproduces IBM's published capacities -- the
+ * successive block-size steps share no common cell size -- so the table
+ * from the documentation is transcribed directly.  Rows are ordered by
+ * DESCENDING minimum length, and each row's range is contiguous with the
+ * next, so the first row whose minimum a block reaches is its answer.
+ *
+ * Source: IBM z/OS "Basic access methods - track capacity", table
+ * "3390 track capacity without keys".
+ */
+typedef struct {
+    uint32_t min_len;    /* smallest block length that yields nrec */
+    uint16_t nrec;       /* blocks per track                       */
+} trkcap_row_t;
+
+static const trkcap_row_t g_cap_3390[] = {
+    { 27999,  1 },   /* 27999 - 56664 */
+    { 18453,  2 },   /* 18453 - 27998 */
+    { 13683,  3 },   /* 13683 - 18452 */
+    { 10797,  4 },   /* 10797 - 13682 */
+    {  8907,  5 },   /*  8907 - 10796 */
+    {  7549,  6 },   /*  7549 -  8906 */
+    {  6519,  7 },   /*  6519 -  7548 */
+    {  5727,  8 },   /*  5727 -  6518 */
+    {  5065,  9 },   /*  5065 -  5726 */
+    {  4567, 10 },   /*  4567 -  5064 */
+    {  4137, 11 },   /*  4137 -  4566 */
+    {  3769, 12 },   /*  3769 -  4136 */
+    {  3441, 13 },   /*  3441 -  3768 */
+    {  3175, 14 },   /*  3175 -  3440 */
+    {  2943, 15 },   /*  2943 -  3174 */
+    {  2711, 16 },   /*  2711 -  2942 */
+    {  2547, 17 },   /*  2547 -  2710 */
+    {  2377, 18 },   /*  2377 -  2546 */
+    {  2213, 19 },   /*  2213 -  2376 */
+    {  2083, 20 },   /*  2083 -  2212 */
+    {  1947, 21 },   /*  1947 -  2082 */
+    {  1851, 22 },   /*  1851 -  1946 */
+    {  1749, 23 },   /*  1749 -  1850 */
+    {  1647, 24 },   /*  1647 -  1748 */
+    {  1551, 25 },   /*  1551 -  1646 */
+    {  1483, 26 },   /*  1483 -  1550 */
+    {  1387, 27 },   /*  1387 -  1482 */
+    {  1319, 28 },   /*  1319 -  1386 */
+    {  1251, 29 },   /*  1251 -  1318 */
+    {  1183, 30 },   /*  1183 -  1250 */
+    {  1155, 31 },   /*  1155 -  1182 */
+    {  1087, 32 },   /*  1087 -  1154 */
+    {  1019, 33 },   /*  1019 -  1086 */
+    {   985, 34 },   /*   985 -  1018 */
+    {   951, 35 },   /*   951 -   984 */
+    {   889, 36 },   /*   889 -   950 */
+    {   855, 37 },   /*   855 -   888 */
+    {   821, 38 },   /*   821 -   854 */
+    {   787, 39 },   /*   787 -   820 */
+    {   753, 40 },   /*   753 -   786 */
+    {   719, 41 },   /*   719 -   752 */
+    {   691, 42 },   /*   691 -   718 */
+    {   657, 43 },   /*   657 -   690 */
+    {   623, 44 },   /*   623 -   656 */
+    {   589, 45 },   /*   589 -   622 */
+    {   555, 46 },   /*   555 -   588 */
+    {   521, 48 },   /*   521 -   554 */
+    {   487, 49 },   /*   487 -   520 */
+    {   459, 50 },   /*   459 -   486 */
+    {   425, 52 },   /*   425 -   458 */
+    {   391, 54 },   /*   391 -   424 */
+    {   357, 55 },   /*   357 -   390 */
+    {   323, 57 },   /*   323 -   356 */
+    {   289, 59 },   /*   289 -   322 */
+    {   255, 61 },   /*   255 -   288 */
+    {   227, 64 },   /*   227 -   254 */
+    {   193, 66 },   /*   193 -   226 */
+    {   159, 69 },   /*   159 -   192 */
+    {   125, 72 },   /*   125 -   158 */
+    {    91, 75 },   /*    91 -   124 */
+    {    57, 78 },   /*    57 -    90 */
+    {    23, 82 },   /*    23 -    56 */
+    {     1, 86 },   /*     1 -    22 */
+};
+
+#define CAP_3390_ROWS  (sizeof(g_cap_3390) / sizeof(g_cap_3390[0]))
+
+int mvs_blocks_per_track(uint8_t devcode, uint32_t trklen, uint32_t blksize)
+{
+    unsigned i;
+
+    if (blksize == 0)
+        return 0;
+
+    switch (devcode) {
+
+    case MVS_DEV_3390:
+        /* Longer than the largest supported block: nothing fits. */
+        if (blksize > 56664u)
+            return 0;
+        for (i = 0; i < CAP_3390_ROWS; i++) {
+            if (blksize >= g_cap_3390[i].min_len)
+                return (int)g_cap_3390[i].nrec;
+        }
+        return 0;
+
+    case MVS_DEV_3380:
+        /*
+         * 1499 cells of 32 bytes (1499 * 32 = 47968, which matches the
+         * track length reported by the VTOC).  Each record costs 15
+         * cells of overhead -- 8 for the count field, 7 for the data --
+         * plus its data rounded UP to whole cells.  Verified exact at
+         * every published boundary from 1 to 7 blocks per track.
+         */
+        return (int)(1499u / (15u + ((blksize + 12u + 31u) / 32u)));
+
+    case MVS_DEV_3350:
+        /*
+         * Not cell based.  A flat 185 bytes of overhead per record, and
+         * n * (185 + blksize) fills the 19254 byte track EXACTLY at
+         * each published boundary (1 block of 19069, 2 of 9442, 3 of
+         * 6233), which is a strong confirmation of the constant.
+         */
+        return (int)(19254u / (185u + blksize));
+
+    default:
+        /*
+         * Unknown device.  Fall back to an overhead-free estimate, which
+         * is an UPPER BOUND and can be one block high.  mvs_blocks_exact()
+         * reports that this happened so a caller can refuse to rely on it.
+         */
+        if (trklen == 0)
+            return 0;
+        return (int)(trklen / blksize);
+    }
+}
+
+int mvs_blocks_exact(uint8_t devcode)
+{
+    return (devcode == MVS_DEV_3390 ||
+            devcode == MVS_DEV_3380 ||
+            devcode == MVS_DEV_3350) ? 1 : 0;
+}

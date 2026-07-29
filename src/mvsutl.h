@@ -2,6 +2,7 @@
 #define _MVSUTL_H_INCLUDED
 
 #include <time.h>    /* time_t for the timezone conversion helpers */
+#include "types.h"   /* uint8_t / uint32_t for the capacity helpers */
 
 char *get_jes2_jobid(void);
 int get_int_cvt_val(int cvt_offset);
@@ -44,5 +45,36 @@ time_t mvs_local_epoch_to_utc(time_t local_epoch);
    of the result yields the local wall clock for encoding back into ISPF
    stats. */
 time_t mvs_utc_to_local_epoch(time_t utc_epoch);
+
+
+/* -------------------------------------------------------------------- */
+/* DASD track capacity                                                   */
+/*                                                                       */
+/* Device codes are the low byte of the UCB device type, which is what   */
+/* mvs_dscb() returns in mvs_dscb_info_t.devtype[3].  Confirmed against  */
+/* live 3390, 3380 and 3350 volumes.                                     */
+/* -------------------------------------------------------------------- */
+#define MVS_DEV_3350   0x0B
+#define MVS_DEV_3375   0x0C
+#define MVS_DEV_3380   0x0E
+#define MVS_DEV_3390   0x0F
+
+/*
+ * Physical blocks of 'blksize' bytes that fit on one track of the given
+ * device.  EXACT for 3390, 3380 and 3350 -- each is derived from IBM's
+ * published capacities and checked at every documented boundary.
+ *
+ * For any other device the answer is an overhead-free estimate from
+ * trklen, which is an UPPER BOUND and may be one block high; pass the
+ * VTOC's track length for that case (it is ignored for the three known
+ * devices).  Use mvs_blocks_exact() to find out which you got.
+ *
+ * Returns 0 if nothing fits, or blksize is 0.
+ */
+int mvs_blocks_per_track(uint8_t devcode, uint32_t trklen, uint32_t blksize);
+
+/* Non-zero if mvs_blocks_per_track() is exact for this device rather
+   than an upper-bound estimate. */
+int mvs_blocks_exact(uint8_t devcode);
 
 #endif
