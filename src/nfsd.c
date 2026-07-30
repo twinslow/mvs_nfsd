@@ -380,19 +380,31 @@ static int process_operator_command() {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* main                                                               */
-/* ------------------------------------------------------------------ */
-int main(int argc, char *argv[])
-{
-    int            pmap_sock, mount_sock, nfs_sock;
-    int            port_pmap  = PORT_PORTMAP;
-    int            port_mount = PORT_MOUNT;
-    int            port_nfs   = PORT_NFS;
-    int            maxfd, n, i, opt;
-    fd_set         rfds;
-    struct timeval tv;      /* select() timeout -- re-set each iteration  */
+/* ==================================================================== */
+/* Server startup / event loop / shutdown                              */
+/*                                                                      */
+/* The phases of main(), each with the reasoning that justifies it, so  */
+/* main() reads as the sequence it performs.                            */
+/* ==================================================================== */
 
+/* What the command line asked for. */
+typedef struct {
+    int         port_pmap;
+    int         port_mount;
+    int         port_nfs;
+    const char *config_path;
+} server_opts_t;
+
+/* The three listening sockets, passed around as one thing. */
+typedef struct {
+    int pmap;
+    int mount;
+    int nfs;
+} listeners_t;
+
+/* Bring up every subsystem that must be ready before the first request. */
+static void server_init_subsystems(void)
+{
     log_set_level(LOG_DEBUG);
     log_set_timestamps(1);
     log_proc_init();       /* per-procedure log levels -> inherit global */
@@ -411,23 +423,31 @@ int main(int argc, char *argv[])
     mvs_tz_init();
     log_info("nfsd: MVS local-time offset = %d seconds (0 = no offset)",
              mvs_tz_offset());
+}
+
+/* Parse argv into *opts, which arrives holding the defaults.
+   Returns 0 on success, or the non-zero EXIT CODE main() should return
+   (the distinct codes 101-105 identify which argument was at fault). */
+static int parse_args(int argc, char *argv[], server_opts_t *opts)
+{
+    int opt;
 
     while ((opt = getopt(argc, argv, "p:m:n:v")) != -1) {
         switch (opt) {
         case 'p':
-            if (parse_port(optarg, &port_pmap)  < 0) {
+            if (parse_port(optarg, &opts->port_pmap)  < 0) {
                 log_error("nfsd: invalid port: %s", optarg);
                 return 101;
             }
             break;
         case 'm':
-            if (parse_port(optarg, &port_mount) < 0) {
+            if (parse_port(optarg, &opts->port_mount) < 0) {
                 log_error("nfsd: invalid port: %s", optarg);
                 return 102;
             }
             break;
         case 'n':
-            if (parse_port(optarg, &port_nfs)   < 0) {
+            if (parse_port(optarg, &opts->port_nfs)   < 0) {
                 log_error("nfsd: invalid port: %s", optarg);
                 return 103;
             }
@@ -445,70 +465,165 @@ int main(int argc, char *argv[])
             argv[0]);
         return 105;
     }
+    opts->config_path = argv[optind];
+    return 0;
+}
+
+/* Create the three listening sockets and publish the ports we are actually
+   serving on, which is what the portmapper hands back to clients.
+   make_listen_sock() exits on failure, so there is no error path here. */
+static void open_listeners(const server_opts_t *opts, listeners_t *lsn)
+{
+    g_port_pmap  = opts->port_pmap;
+    g_port_mount = opts->port_mount;
+    g_port_nfs   = opts->port_nfs;
+
+    lsn->pmap  = make_listen_sock(opts->port_pmap);
+    lsn->mount = make_listen_sock(opts->port_mount);
+    lsn->nfs   = make_listen_sock(opts->port_nfs);
+
+    log_info("Listening -- portmapper=%d  mount=%d  nfs=%d",
+        opts->port_pmap, opts->port_mount, opts->port_nfs);
+}
+
+/* Fatal abend in the write path? (design_nfs_write.md Sec 7.3)
+   The flush traps out-of-space abends and keeps serving, but anything else is
+   a probable program error: it has been reported loudly and we now shut down
+   rather than carry on from state we no longer trust.  Ending the task also
+   lets MVS reclaim any allocation or SPFEDIT enqueue the cleanup could not
+   release.  Returns 1 when the loop should exit. */
+static int write_path_is_fatal(void)
+{
+    if (!pww_fatal_abend())
+        return 0;
+    log_error("unrecoverable abend in the write path -- shutting down");
+    return 1;
+}
+
+/* Build the read set: the three listeners plus every live connection.
+   *maxfd_out receives the highest descriptor, for select(). */
+static void build_read_set(const listeners_t *lsn, fd_set *rfds, int *maxfd_out)
+{
+    int maxfd;
+    int i;
+
+    FD_ZERO(rfds);
+    FD_SET(lsn->pmap,  rfds);
+    FD_SET(lsn->mount, rfds);
+    FD_SET(lsn->nfs,   rfds);
+
+    maxfd = lsn->pmap;
+    if (lsn->mount > maxfd) maxfd = lsn->mount;
+    if (lsn->nfs   > maxfd) maxfd = lsn->nfs;
+
+    for (i = 0; i < g_nconns; i++) {
+        FD_SET(g_conns[i].fd, rfds);
+        if (g_conns[i].fd > maxfd) maxfd = g_conns[i].fd;
+    }
+    *maxfd_out = maxfd;
+}
+
+/* Accept anything new on the listeners, then service every connection that
+   select() marked readable.  A connection whose handler fails is closed and
+   removed from the table. */
+static void service_ready(const listeners_t *lsn, fd_set *rfds)
+{
+    int i;
+
+    if (FD_ISSET(lsn->pmap,  rfds)) accept_conn(lsn->pmap,  PROTO_PORTMAP);
+    if (FD_ISSET(lsn->mount, rfds)) accept_conn(lsn->mount, PROTO_MOUNT);
+    if (FD_ISSET(lsn->nfs,   rfds)) accept_conn(lsn->nfs,   PROTO_NFS);
+
+    for (i = 0; i < g_nconns; ) {
+        if (FD_ISSET(g_conns[i].fd, rfds)) {
+            if (handle_connection(&g_conns[i]) < 0) {
+                /* Peer closed (or the RPC failed): close OUR half so a FIN
+                   goes back and the descriptor is released.  Must be
+                   sock_close() -- see its comment. */
+                log_warn("nfsd: closing connection fd=%d (proto=%d)",
+                         g_conns[i].fd, g_conns[i].proto);
+                sock_close(g_conns[i].fd);
+                g_conns[i] = g_conns[--g_nconns];
+                continue;   /* the slot now holds a DIFFERENT connection */
+            }
+        }
+        i++;
+    }
+}
+
+/* Flush what is still buffered, then close everything down in the order that
+   leaves no peer hanging: client connections first (each gets a FIN), then
+   the listeners. */
+static void server_shutdown(const listeners_t *lsn)
+{
+    int i;
+
+    pww_flush_all();
+
+    log_info("Closing sockets");
+
+    for (i = 0; i < g_nconns; i++)
+        sock_close(g_conns[i].fd);
+    g_nconns = 0;
+
+    sock_close(lsn->pmap);
+    sock_close(lsn->mount);
+    sock_close(lsn->nfs);
+
+    mvsprf_dump();
+    log_info("Shutting down");
+}
+
+/* ------------------------------------------------------------------ */
+/* main                                                               */
+/* ------------------------------------------------------------------ */
+int main(int argc, char *argv[])
+{
+    server_opts_t  opts;
+    listeners_t    lsn;
+    int            maxfd, n, rc;
+    fd_set         rfds;
+    struct timeval tv;      /* select() timeout -- re-set each iteration  */
+
+    server_init_subsystems();
+
+    opts.port_pmap   = PORT_PORTMAP;
+    opts.port_mount  = PORT_MOUNT;
+    opts.port_nfs    = PORT_NFS;
+    opts.config_path = NULL;
+
+    rc = parse_args(argc, argv, &opts);
+    if (rc != 0)
+        return rc;
 
     /* Load export configuration */
-    n = exports_load(argv[optind]);
+    n = exports_load(opts.config_path);
     if (n < 0) {
-        log_error("nfsd: cannot open config: %s", argv[optind]);
+        log_error("nfsd: cannot open config: %s", opts.config_path);
         return 106;
     }
-    log_info("nfsd: loaded %d export(s) from %s",
-            n, argv[optind]);
+    log_info("nfsd: loaded %d export(s) from %s", n, opts.config_path);
 
     /* File handles are self-describing -- no handle cache to initialise. */
 
-    /* Publish actual ports for portmapper responses */
-    g_port_pmap  = port_pmap;
-    g_port_mount = port_mount;
-    g_port_nfs   = port_nfs;
-
     set_write_verifier();
-
 
 #ifndef __MVS__
     signal(SIGPIPE, SIG_IGN);
 #endif
 
-    pmap_sock  = make_listen_sock(port_pmap);
-    mount_sock = make_listen_sock(port_mount);
-    nfs_sock   = make_listen_sock(port_nfs);
-
-    log_info(
-        "Listening -- portmapper=%d  mount=%d  nfs=%d",
-        port_pmap, port_mount, port_nfs);
+    open_listeners(&opts, &lsn);
 
     /* ---- Main select() event loop ---- */
     for (;;) {
 
-        /* ---- Check for and process operator commands ---- */
-        if ( process_operator_command() == 2 )
+        if (process_operator_command() == 2)
             break;
 
-        /* ---- Fatal abend in the write path? (design_nfs_write.md Sec 7.3) --
-         * The flush traps out-of-space abends and keeps serving, but anything
-         * else is a probable program error: it has been reported loudly and we
-         * now shut down rather than carry on from state we no longer trust.
-         * Ending the task also lets MVS reclaim any allocation or SPFEDIT
-         * enqueue the cleanup could not release. */
-        if (pww_fatal_abend()) {
-            log_error("unrecoverable abend in the write path -- shutting down");
+        if (write_path_is_fatal())
             break;
-        }
 
-        /* ---- Build the fd_set ---- */
-        FD_ZERO(&rfds);
-        FD_SET(pmap_sock,  &rfds);
-        FD_SET(mount_sock, &rfds);
-        FD_SET(nfs_sock,   &rfds);
-
-        maxfd = pmap_sock;
-        if (mount_sock > maxfd) maxfd = mount_sock;
-        if (nfs_sock   > maxfd) maxfd = nfs_sock;
-
-        for (i = 0; i < g_nconns; i++) {
-            FD_SET(g_conns[i].fd, &rfds);
-            if (g_conns[i].fd > maxfd) maxfd = g_conns[i].fd;
-        }
+        build_read_set(&lsn, &rfds, &maxfd);
 
         /* ------ Wait for activity (1s timeout to work poll loop) ------ */
         /* Note that the JCC select does not timeout for subsecond values */
@@ -530,44 +645,9 @@ int main(int argc, char *argv[])
 
         if (n == 0) continue;  /* timeout -- go back and check for STOP  */
 
-        if (FD_ISSET(pmap_sock,  &rfds)) accept_conn(pmap_sock,  PROTO_PORTMAP);
-        if (FD_ISSET(mount_sock, &rfds)) accept_conn(mount_sock, PROTO_MOUNT);
-        if (FD_ISSET(nfs_sock,   &rfds)) accept_conn(nfs_sock,   PROTO_NFS);
-
-        for (i = 0; i < g_nconns; ) {
-            if (FD_ISSET(g_conns[i].fd, &rfds)) {
-                if (handle_connection(&g_conns[i]) < 0) {
-                    /* Peer closed (or the RPC failed): close OUR half so a
-                       FIN goes back and the descriptor is released.  Must be
-                       sock_close() -- see its comment. */
-                    log_warn("nfsd: closing connection fd=%d (proto=%d)",
-                             g_conns[i].fd, g_conns[i].proto);
-                    sock_close(g_conns[i].fd);
-                    g_conns[i] = g_conns[--g_nconns];
-                    continue;
-                }
-            }
-            i++;
-        }
+        service_ready(&lsn, &rfds);
     }
 
-    /* Flush any outstanding buffered member writes before we exit. */
-    pww_flush_all();
-
-    log_info("Closing sockets");
-
-    /* Close any still-open client connections before the listeners, so each
-       peer gets a FIN rather than being left hanging. */
-    for (i = 0; i < g_nconns; i++)
-        sock_close(g_conns[i].fd);
-    g_nconns = 0;
-
-    sock_close(pmap_sock);
-    sock_close(mount_sock);
-    sock_close(nfs_sock);
-
-    mvsprf_dump();
-    log_info("Shutting down");
-
+    server_shutdown(&lsn);
     return 0;
 }
