@@ -105,6 +105,7 @@
 //RPC      EXEC JCCCMOD,MODNAME=RPC
 //XDR      EXEC JCCCMOD,MODNAME=XDR
 //HEXDUMP  EXEC JCCCMOD,MODNAME=HEXDUMP
+//NFSERR   EXEC JCCCMOD,MODNAME=NFSERR
 //*
 //MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL
 //MVSFID   EXEC JCCCMOD,MODNAME=MVSFID
@@ -118,9 +119,12 @@
 //MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
 //*
 //* This is a mock VFS module that returns fixed files and contents.
+//*
 //MOCKVFS  EXEC JCCCMOD,MODNAME=MOCKVFS
 //*
-//* This is the real VFS module that is reading PDS dir and content
+//* This is the real VFS module that is reading/writing PDS dirs
+//* and content
+//*
 //MVSVFS   EXEC JCCCMOD,MODNAME=MVSVFS
 //*
 //********************************************************************
@@ -132,16 +136,35 @@
 //        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
 //        OUTFILE='TONYW.DINONFS.LOAD(NFSD)',
 //        JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__'
+//*
 //COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
-//* Below prelink was to merge in ASM modules as used in
-//* FTPD build.
-//* PRELINK.L DD DSN=&&ALLOBJ,DISP=(OLD,DELETE)
+//*
 //PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(CFGOPTS)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EXPORTS)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOUNT3)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFSERR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(HEXDUMP)
+//*
+//* MOCKVFS was a way to implement a set of VFS functions that
+//* would operate on MVS, just returning dummy data in
+//* directory content and file content. Its exported symbols
+//* match what is also in MVSVFS, so it is commented out.
+//*
+//*         DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)
+//*
+//* The real VFS functions for execution on MVS
+/*
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSVFS)
+//*
+//* Everything that MVSVFS will pull in for the platform.
+//*
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFID)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSDOL)
@@ -152,14 +175,11 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(NFS3)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(PORTMAP)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(RPC)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(XDR)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(HEXDUMP)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSVFS)
-//*         DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MOCKVFS)
+//*
+//* And lastly, the compiled object from NFSD compile above.
+//*
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
+//*
 //LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)
 //          DD  DDNAME=SYSIN
 //LKED.SYSLMOD DD DISP=SHR,DSN=TONYW.DINONFS.LOAD

@@ -76,6 +76,46 @@ static int cfg_kw_match(char *tok, const char *key, char **val)
     return 1;
 }
 
+/*
+ * Validate and store a 'fileext=<ext>' value.  The only keyword whose value
+ * needs more than a range check, so it lives here rather than inline, leaving
+ * every arm of the keyword ladder in cfg_parse_keywords short enough to scan.
+ *
+ * Rejects an empty value, one that would overflow the field, and one
+ * containing '.' or '/'.  A dot is fatal because the member-name parser takes
+ * the extension to be the text after the LAST dot, so "fileext=a.b" would not
+ * round-trip; a slash would break the path split.  Stored lower-case to match
+ * the dsname-derived default.
+ *
+ * Returns 0, or -1 having logged the reason.
+ */
+static int cfg_set_fileext(const char *val, cfg_opts_t *out, const char *ctx)
+{
+    int j;
+
+    if (val[0] == '\0') {
+        log_error("exports_load: %s: 'fileext' needs a value"
+                  " (e.g. fileext=jcl)", ctx);
+        return -1;
+    }
+    if ((int)strlen(val) > CFG_FILEEXT_MAX - 1) {
+        log_error("exports_load: %s: fileext '%s' too long"
+                  " (max %d chars)", ctx, val, CFG_FILEEXT_MAX - 1);
+        return -1;
+    }
+    for (j = 0; val[j] != '\0'; j++) {
+        if (val[j] == '.' || val[j] == '/') {
+            log_error("exports_load: %s: fileext '%s' must not contain"
+                      " '.' or '/'", ctx, val);
+            return -1;
+        }
+        out->fileext[j] = (char)tolower((unsigned char)val[j]);
+    }
+    out->fileext[j]  = '\0';
+    out->has_fileext = 1;
+    return 0;
+}
+
 int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
                        int level, const char *ctx)
 {
@@ -120,30 +160,8 @@ int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
             }
             out->has_rootperm = 1;
         } else if (cfg_kw_match(t, "FILEEXT", &val)) {
-            int j;
-            if (val[0] == '\0') {
-                log_error("exports_load: %s: 'fileext' needs a value"
-                          " (e.g. fileext=jcl)", ctx);
+            if (cfg_set_fileext(val, out, ctx) < 0)
                 return -1;
-            }
-            if ((int)strlen(val) > CFG_FILEEXT_MAX - 1) {
-                log_error("exports_load: %s: fileext '%s' too long"
-                          " (max %d chars)", ctx, val, CFG_FILEEXT_MAX - 1);
-                return -1;
-            }
-            /* A '.' or '/' breaks member-name parsing (the extension is the
-               text after the LAST dot), so reject it rather than fail silently.
-               Store lower-case, matching the dsname-derived default. */
-            for (j = 0; val[j] != '\0'; j++) {
-                if (val[j] == '.' || val[j] == '/') {
-                    log_error("exports_load: %s: fileext '%s' must not contain"
-                              " '.' or '/'", ctx, val);
-                    return -1;
-                }
-                out->fileext[j] = (char)tolower((unsigned char)val[j]);
-            }
-            out->fileext[j]  = '\0';
-            out->has_fileext = 1;
         } else if (cfg_stricmp(t, "NOFILEEXT") == 0) {
             out->has_nofileext = 1;
         } else {

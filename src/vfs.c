@@ -254,35 +254,6 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 }
  
 /* -------------------------------------------------------------------- */
-/* vfs_errno_to_nfs3: map a POSIX errno to an NFSv3 error code.         */
-/* -------------------------------------------------------------------- */
-uint32_t vfs_errno_to_nfs3(int err)
-{
-    switch (err) {
-        case 0:             return NFS3_OK;
-        case EPERM:         return NFS3ERR_PERM;
-        case ENOENT:        return NFS3ERR_NOENT;
-        case EIO:           return NFS3ERR_IO;
-        case ENXIO:         return NFS3ERR_NXIO;
-        case EACCES:        return NFS3ERR_ACCES;
-        case EEXIST:        return NFS3ERR_EXIST;
-        case EXDEV:         return NFS3ERR_XDEV;
-        case ENODEV:        return NFS3ERR_NODEV;
-        case ENOTDIR:       return NFS3ERR_NOTDIR;
-        case EISDIR:        return NFS3ERR_ISDIR;
-        case EINVAL:        return NFS3ERR_INVAL;
-        case EFBIG:         return NFS3ERR_FBIG;
-        case ENOSPC:        return NFS3ERR_NOSPC;
-        case EROFS:         return NFS3ERR_ROFS;
-        case EMLINK:        return NFS3ERR_MLINK;
-        case ENAMETOOLONG:  return NFS3ERR_NAMETOOLONG;
-        case ENOTEMPTY:     return NFS3ERR_NOTEMPTY;
-        case EDQUOT:        return NFS3ERR_DQUOT;
-        default:            return NFS3ERR_IO;
-    }
-}
- 
-/* -------------------------------------------------------------------- */
 /* vfs_opendir: open a directory for iteration.                         */
 /* Returns a handle from the static pool, or NULL on error.             */
 /* Positions the next read operation as per cookie value.               */

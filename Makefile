@@ -25,7 +25,7 @@ SRCDIR   = src
 BUILDDIR = build
 TARGET   = $(BUILDDIR)/nfsd
 
-SRCS = nfsd.c xdr.c rpc.c exports.c fhandle.c vfs.c \
+SRCS = nfsd.c xdr.c rpc.c exports.c fhandle.c vfs.c nfserr.c \
        portmap.c mount3.c nfs3.c
 
 # Map each bare .c name to a build/.o path

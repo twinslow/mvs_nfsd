@@ -43,31 +43,9 @@
 #define PATH_SEPARATOR_ASCII  (char)0x2f
 #define PATH_SEPARATOR_EBCDIC (char)0x61
 
-/* -------------------------------------------------------------------- */
-/* errno compatibility                                                   */
-/*                                                                       */
-/* JCC's <errno.h> follows standard POSIX errno numbering but OMITS      */
-/* several values, leaving their slots unused -- it defines 17 EEXIST    */
-/* and then jumps to 20 ENOTDIR, and 28 ENOSPC / 29 ESPIPE then jumps to */
-/* 33 EDOM.  So the canonical numbers for the ones we need are free and  */
-/* can simply be supplied.                                               */
-/*                                                                       */
-/* The #ifndef defers to the platform (POSIX defines these already), and */
-/* because JCC follows POSIX numbering it would add them at these very   */
-/* values anyway -- so this cannot collide, now or later.                */
-/*                                                                       */
-/* Do NOT replace this with an "#ifdef EXDEV ... #else errno = EINVAL"   */
-/* fallback: on JCC that silently always takes the fallback, and the     */
-/* client then receives NFS3ERR_INVAL, which Windows renders as the      */
-/* famously misleading "The volume for a file has been externally        */
-/* altered".                                                             */
-/* -------------------------------------------------------------------- */
-#ifndef EXDEV
-#define EXDEV   18    /* Cross-device link / rename -> NFS3ERR_XDEV     */
-#endif
-#ifndef EROFS
-#define EROFS   30    /* Read-only file system      -> NFS3ERR_ROFS     */
-#endif
+/* EXDEV / EROFS and the other errno values JCC omits are supplied by the
+   errno compatibility block in nfsd.h, so the value this module SETS and the
+   value nfserr.c TRANSLATES can never disagree. */
 
 /* -------------------------------------------------------------------- */
 /* vfs_stat: fill a vfs_stat_t as appropriate for a PDS dataset         */
@@ -976,37 +954,6 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
     return 0;
 #endif
 }
-
-/* -------------------------------------------------------------------- */
-/* vfs_errno_to_nfs3: map a POSIX errno to an NFSv3 error code.         */
-/* -------------------------------------------------------------------- */
-uint32_t vfs_errno_to_nfs3(int err)
-{
-    switch (err) {
-        case 0:             return NFS3_OK;
-//        case EPERM:         return NFS3ERR_PERM;
-        case ENOENT:        return NFS3ERR_NOENT;
-        case EIO:           return NFS3ERR_IO;
-//        case ENXIO:         return NFS3ERR_NXIO;
-        case EACCES:        return NFS3ERR_ACCES;
-        case EEXIST:        return NFS3ERR_EXIST;
-        case EXDEV:         return NFS3ERR_XDEV;
-        case EROFS:         return NFS3ERR_ROFS;
-//        case ENODEV:        return NFS3ERR_NODEV;
-        case ENOTDIR:       return NFS3ERR_NOTDIR;
-        case EISDIR:        return NFS3ERR_ISDIR;
-        case EINVAL:        return NFS3ERR_INVAL;
-/*      case EFBIG:         return NFS3ERR_FBIG;   -- EFBIG not in JCC */
-        case ENOSPC:        return NFS3ERR_NOSPC;
-//        case EROFS:         return NFS3ERR_ROFS;
-//        case EMLINK:        return NFS3ERR_MLINK;
-        case ENAMETOOLONG:  return NFS3ERR_NAMETOOLONG;
-        case ENOTEMPTY:     return NFS3ERR_NOTEMPTY;
-        case EDQUOT:        return NFS3ERR_DQUOT;
-        default:            return NFS3ERR_IO;
-    }
-}
-
 
 /*
 

@@ -57,8 +57,8 @@
 #include "ebcdic.h"
 #include "hexdump.h"
 
-// The following is not defined by JCC
-#define EPERM 1
+/* EPERM and the other errno values JCC omits come from the errno
+   compatibility block in nfsd.h. */
 
 /* -------------------------------------------------------------------- */
 /* Layout constants                                                     */
@@ -561,36 +561,6 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
     fs->avail_files = 0u;
     fs->invarsec    = 3600u; /* statistics stable for one hour           */
     return 0;
-}
-
-/* -------------------------------------------------------------------- */
-/* vfs_errno_to_nfs3: map POSIX errno to an NFSv3 status code.          */
-/* -------------------------------------------------------------------- */
-
-uint32_t vfs_errno_to_nfs3(int err)
-{
-    switch (err) {
-        case 0:             return NFS3_OK;
-        case EPERM:         return NFS3ERR_PERM;
-        case ENOENT:        return NFS3ERR_NOENT;
-        case EIO:           return NFS3ERR_IO;
-//        case ENXIO:         return NFS3ERR_NXIO;
-        case EACCES:        return NFS3ERR_ACCES;
-        case EEXIST:        return NFS3ERR_EXIST;
-//        case EXDEV:         return NFS3ERR_XDEV;
-//        case ENODEV:        return NFS3ERR_NODEV;
-        case ENOTDIR:       return NFS3ERR_NOTDIR;
-        case EISDIR:        return NFS3ERR_ISDIR;
-        case EINVAL:        return NFS3ERR_INVAL;
-//        case EFBIG:         return NFS3ERR_FBIG;
-        case ENOSPC:        return NFS3ERR_NOSPC;
-//        case EROFS:         return NFS3ERR_ROFS;
-//        case EMLINK:        return NFS3ERR_MLINK;
-        case ENAMETOOLONG:  return NFS3ERR_NAMETOOLONG;
-        case ENOTEMPTY:     return NFS3ERR_NOTEMPTY;
-        case EDQUOT:        return NFS3ERR_DQUOT;
-        default:            return NFS3ERR_IO;
-    }
 }
 
 /* -------------------------------------------------------------------- */

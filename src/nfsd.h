@@ -24,7 +24,55 @@
  * below and commenting out the #include.
  */
 #include "types.h"
-#include "mvsio.h" 
+#include "mvsio.h"
+
+#include <errno.h>
+/* -------------------------------------------------------------------- */
+/* errno compatibility                                                   */
+/*                                                                       */
+/* JCC's <errno.h> follows standard POSIX errno numbering but OMITS      */
+/* several values, leaving their slots unused -- it defines 17 EEXIST    */
+/* and then jumps to 20 ENOTDIR, and 28 ENOSPC / 29 ESPIPE then jumps to */
+/* 33 EDOM.  So the canonical numbers for the ones we need are free and  */
+/* can simply be supplied.                                               */
+/*                                                                       */
+/* The #ifndef defers to the platform (POSIX defines these already), and */
+/* because JCC follows POSIX numbering it would add them at these very   */
+/* values anyway -- so this cannot collide, now or later.                */
+/*                                                                       */
+/* Do NOT replace this with an "#ifdef EXDEV ... #else errno = EINVAL"   */
+/* fallback: on JCC that silently always takes the fallback, and the     */
+/* client then receives NFS3ERR_INVAL, which Windows renders as the      */
+/* famously misleading "The volume for a file has been externally        */
+/* altered".  For the same reason the errno -> NFS3 mapper (nfserr.c)    */
+/* guards no case: every value it maps is defined here, so the mapping   */
+/* is identical on every platform and cannot silently lose an entry.     */
+/*                                                                       */
+/* Defined in this shared header rather than per-module so the value a   */
+/* backend SETS and the value the mapper TRANSLATES can never disagree.  */
+/* -------------------------------------------------------------------- */
+#ifndef EPERM
+#define EPERM    1    /* Operation not permitted    -> NFS3ERR_PERM     */
+#endif
+#ifndef ENXIO
+#define ENXIO    6    /* No such device or address  -> NFS3ERR_NXIO     */
+#endif
+#ifndef EXDEV
+#define EXDEV   18    /* Cross-device link / rename -> NFS3ERR_XDEV     */
+#endif
+#ifndef ENODEV
+#define ENODEV  19    /* No such device             -> NFS3ERR_NODEV    */
+#endif
+#ifndef EFBIG
+#define EFBIG   27    /* File too large             -> NFS3ERR_FBIG     */
+#endif
+#ifndef EROFS
+#define EROFS   30    /* Read-only file system      -> NFS3ERR_ROFS     */
+#endif
+#ifndef EMLINK
+#define EMLINK  31    /* Too many links             -> NFS3ERR_MLINK    */
+#endif
+
 /*
  * For MVS, we use short aliases for all functions and globals to
  * avoid name mangling issues with the C runtime. The aliases are defined
@@ -80,12 +128,13 @@
 #define vfs_truncate            vfsTrunc
 #define vfs_set_times           vfsSetTm
 #define vfs_fsstat              vfsFsSt
-#define vfs_errno_to_nfs3       vfsErrN3
 #define vfs_opendir             vfsOpDir
 #define vfs_readdir_next        vfsRdNxt
 #define vfs_seekdir_to          vfsSekTo
 #define vfs_closedir            vfsClDir
 #define vfs_commit              vfsCommt
+/* nfserr.c */
+#define vfs_errno_to_nfs3       vfsErrN3
 /* handlers */
 #define handle_portmap          hndPmap
 #define handle_mount            hndMount

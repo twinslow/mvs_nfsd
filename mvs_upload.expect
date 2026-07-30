@@ -489,15 +489,33 @@ foreach job $upload_jobs {
 }
 
 # -----------------------------------------------------------------------
-# Save the run timestamp for future -incremental runs
+# Save the run timestamp for future incremental runs
+#
+# ONLY when every file transferred cleanly.  A partial success must NOT
+# advance the timestamp: the files that failed are older than the new
+# timestamp, so the next incremental run would judge them up to date and
+# silently skip them, leaving MVS holding a stale copy of exactly the
+# files that did not make it.  That is the worst outcome available --
+# a build that looks current but is not.
+#
+# Holding the old value instead costs a redundant re-upload of the files
+# that DID succeed on the next run, which is harmless.
+#
+# Files SKIPPED for having no valid MVS member name are not counted as
+# errors: that is a permanent property of the filename rather than a
+# transient failure, so blocking on it would pin the timestamp forever.
 # -----------------------------------------------------------------------
-if {[catch {
+if {$total_err > 0} {
+    send_user "Run timestamp NOT updated -- $total_err file(s) failed.\n"
+    send_user "  $timestamp_file keeps its previous value, so the next\n"
+    send_user "  incremental run will retry the failed files.\n\n"
+} elseif {[catch {
     set _fh [open $timestamp_file w]
     puts $_fh $g_run_start_time
     close $_fh
 } _err]} {
     send_user "Warning: could not save run timestamp ($_err).\n"
-    send_user "         Next -incremental run will upload all files.\n"
+    send_user "         Next incremental run will upload all files.\n"
 }
 
 # -----------------------------------------------------------------------

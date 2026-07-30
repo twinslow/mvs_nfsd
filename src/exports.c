@@ -487,12 +487,98 @@ static void cfg_do_export_line(char *p)
 /*                                                                    */
 /* Returns number of exports loaded, or -1 if the file cannot be read. */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* cfg_strip_line: reduce one raw input line to the text that matters. */
+/*                                                                     */
+/* Strips the trailing newline / CR (so a CRLF config edited on Windows */
+/* parses identically), then skips leading whitespace.                 */
+/*                                                                     */
+/* Returns a pointer to the first significant character, or NULL if the */
+/* line carries nothing -- blank, or a '#' comment.  The buffer is      */
+/* modified in place.                                                   */
+/* ------------------------------------------------------------------ */
+static char *cfg_strip_line(char *line)
+{
+    char *p;
+    int   len;
+
+    len = (int)strlen(line);
+    while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+        line[--len] = '\0';
+
+    p = line;
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    if (*p == '\0' || *p == '#')
+        return NULL;
+    return p;
+}
+
+/* ------------------------------------------------------------------ */
+/* cfg_enter_section: act on a "[Name]" header line.                   */
+/*                                                                     */
+/* A header may not appear inside an open '{' block: the block's body   */
+/* would otherwise be silently reinterpreted as another section's       */
+/* content, so the export owning that block is failed.                  */
+/*                                                                     */
+/* Returns the new section id.  *warned_unknown is raised (never        */
+/* lowered) when the name is not recognised, so the end-of-load summary */
+/* can mention it once rather than per line.                            */
+/* ------------------------------------------------------------------ */
+static int cfg_enter_section(char *p, int *warned_unknown)
+{
+    int section;
+
+    if (g_blk_open) {
+        log_error("exports_load: new section started inside an open"
+                  " '{' block -- failing that export");
+        cfg_fail_export(g_blk_exp_idx);
+        g_blk_open = 0;
+    }
+
+    section = cfg_parse_section(p);
+    if (section == CFG_SECT_UNKNOWN) {
+        log_warn("exports_load: ignoring unknown section: %s", p + 1);
+        *warned_unknown = 1;
+    } else {
+        log_debug("exports_load: entering section %s", p + 1);
+    }
+    return section;
+}
+
+/* ------------------------------------------------------------------ */
+/* cfg_drop_failed_exports: fail-closed cleanup (design §10.1).        */
+/*                                                                     */
+/* Any export that hit a config error is dropped WHOLE -- a partially   */
+/* applied export is worse than a missing one, because it would serve   */
+/* real data under rules the administrator never approved.              */
+/*                                                                     */
+/* Compacts the table in place; safe because nothing holds an export    */
+/* index until loading has finished.                                    */
+/* ------------------------------------------------------------------ */
+static void cfg_drop_failed_exports(void)
+{
+    int i;
+    int j = 0;
+
+    for (i = 0; i < g_nexports; i++) {
+        if (g_exports[i].failed) {
+            log_error("exports_load: DROPPING export '%s' due to config"
+                      " error(s) above", g_exports[i].export_path_ebcdic);
+            continue;
+        }
+        if (j != i)
+            g_exports[j] = g_exports[i];   /* struct copy */
+        j++;
+    }
+    g_nexports = j;
+}
+
 int exports_load(const char *config_file)
 {
     FILE *fp;
     char  line[512];
     char *p;
-    int   len;
     int   section;
     int   warned_unknown;
 
@@ -511,35 +597,13 @@ int exports_load(const char *config_file)
     g_blk_exp_idx = -1;
 
     while (fgets(line, (int)sizeof(line), fp)) {
-        /* strip trailing newline / CR */
-        len = (int)strlen(line);
-        while (len > 0 &&
-               (line[len-1] == '\n' || line[len-1] == '\r'))
-            line[--len] = '\0';
-
-        /* skip leading whitespace */
-        p = line;
-        while (*p && isspace((unsigned char)*p)) p++;
-
-        /* skip blank lines and comments */
-        if (*p == '\0' || *p == '#') continue;
+        p = cfg_strip_line(line);
+        if (p == NULL)
+            continue;   /* blank or comment */
 
         /* A section header switches context and consumes the line. */
         if (*p == CFG_SECT_OPEN) {
-            /* A section may not begin inside an open export block. */
-            if (g_blk_open) {
-                log_error("exports_load: new section started inside an open"
-                          " '{' block -- failing that export");
-                cfg_fail_export(g_blk_exp_idx);
-                g_blk_open = 0;
-            }
-            section = cfg_parse_section(p);
-            if (section == CFG_SECT_UNKNOWN) {
-                log_warn("exports_load: ignoring unknown section: %s", p + 1);
-                warned_unknown = 1;
-            } else {
-                log_debug("exports_load: entering section %s", p + 1);
-            }
+            section = cfg_enter_section(p, &warned_unknown);
             continue;
         }
 
@@ -571,24 +635,7 @@ int exports_load(const char *config_file)
     if (warned_unknown)
         log_warn("exports_load: one or more unknown sections were skipped");
 
-    /* Fail-closed (design §10.1): drop any export that hit a config error,
-       whole -- a partially-applied export is worse than a missing one.
-       Compact the table in place; nothing holds an export index yet. */
-    {
-        int i;
-        int j = 0;
-        for (i = 0; i < g_nexports; i++) {
-            if (g_exports[i].failed) {
-                log_error("exports_load: DROPPING export '%s' due to config"
-                          " error(s) above", g_exports[i].export_path_ebcdic);
-                continue;
-            }
-            if (j != i)
-                g_exports[j] = g_exports[i];   /* struct copy */
-            j++;
-        }
-        g_nexports = j;
-    }
+    cfg_drop_failed_exports();
 
     return g_nexports;
 }
