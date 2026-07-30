@@ -25,7 +25,7 @@
 
 #include "munit.h"
 #include "types.h"
-#include "mvspww.h"    /* pending_member_t (spill_fp / spill_size) */
+#include "mvspww.h"    /* pending_member_t, pww_spill_t (pm->spill) */
 #include "mvsspl.h"
 
 /* Big enough to exceed any plausible JCC stream buffer and span many blocks. */
@@ -75,18 +75,18 @@ static void spl_begin(int slot)
     g_rng      = 0x2545F491u;   /* fixed seed -> reproducible test data */
 
     munit_assert_int(spill_open(&g_pm, slot), ==, 0);
-    munit_assert_ptr_not_null(g_pm.spill_fp);
-    munit_assert_int((int)g_pm.spill_size, ==, 0);
+    munit_assert_ptr_not_null(g_pm.spill.fp);
+    munit_assert_int((int)g_pm.spill.size, ==, 0);
 }
 
 static void spl_end(void)
 {
     spill_close(&g_pm);
-    munit_assert_ptr_null(g_pm.spill_fp);
+    munit_assert_ptr_null(g_pm.spill.fp);
 }
 
 /* Apply one write to BOTH the spill and the reference, and check the size
-   invariant (spill_size must track the logical high-water). */
+   invariant (spill.size must track the logical high-water). */
 static void do_write(uint32_t off, const uint8_t *data, uint32_t len)
 {
     munit_assert_int((int)((uint64_t)off + len <= REF_MAX), ==, 1);
@@ -100,7 +100,7 @@ static void do_write(uint32_t off, const uint8_t *data, uint32_t len)
         g_ref_size = off + len;
 
     munit_assert_int(spill_write(&g_pm, off, data, len), ==, 0);
-    munit_assert_int((int)g_pm.spill_size, ==, (int)g_ref_size);
+    munit_assert_int((int)g_pm.spill.size, ==, (int)g_ref_size);
 }
 
 /* Read [off,off+len) from the spill and compare to the reference. */
@@ -122,7 +122,7 @@ static void check_range(uint32_t off, uint32_t len)
 /* Read the entire spill and compare to the reference. */
 static void verify_all(void)
 {
-    munit_assert_int((int)g_pm.spill_size, ==, (int)g_ref_size);
+    munit_assert_int((int)g_pm.spill.size, ==, (int)g_ref_size);
     if (g_ref_size > 0)
         check_range(0, g_ref_size);
 }
@@ -136,10 +136,10 @@ static MunitResult test_open_close(const MunitParameter p[], void *d)
 {
     (void)p; (void)d;
     spl_begin(0);
-    munit_assert_ptr_not_null(g_pm.spill_fp);
+    munit_assert_ptr_not_null(g_pm.spill.fp);
     spl_end();
-    munit_assert_ptr_null(g_pm.spill_fp);
-    munit_assert_int((int)g_pm.spill_size, ==, 0);
+    munit_assert_ptr_null(g_pm.spill.fp);
+    munit_assert_int((int)g_pm.spill.size, ==, 0);
     return MUNIT_OK;
 }
 
@@ -276,10 +276,10 @@ static MunitResult test_zero_extend(const MunitParameter p[], void *d)
     fill(a, sizeof(a));
     do_write(0, a, sizeof(a));
     do_write(20000, NULL, 0);                     /* extend to 20000, zeros */
-    munit_assert_int((int)g_pm.spill_size, ==, 20000);
+    munit_assert_int((int)g_pm.spill.size, ==, 20000);
     verify_all();
     do_write(10000, NULL, 0);                     /* off < size: no-op      */
-    munit_assert_int((int)g_pm.spill_size, ==, 20000);
+    munit_assert_int((int)g_pm.spill.size, ==, 20000);
     verify_all();
     spl_end();
     return MUNIT_OK;
@@ -363,7 +363,7 @@ static MunitResult test_reuse_truncates(const MunitParameter p[], void *d)
     spl_begin(0);                                /* resets g_ref to empty      */
     fill(small, sizeof(small));
     do_write(0, small, sizeof(small));
-    munit_assert_int((int)g_pm.spill_size, ==, (int)sizeof(small));
+    munit_assert_int((int)g_pm.spill.size, ==, (int)sizeof(small));
     verify_all();                                /* must be ONLY the small data */
     spl_end();
     return MUNIT_OK;

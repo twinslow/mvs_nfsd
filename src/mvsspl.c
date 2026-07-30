@@ -22,8 +22,6 @@
  * truncate) to commit the EOF.  It runs lazily (only when writes are pending),
  * so a run of consecutive reads -- the flush read pass -- pays one reopen, and
  * the sequential-append RMW of just the tail block (buffer-resident) pays none.
- * On the dev host tmpfile() is anonymous (cannot be reopened) and reads see
- * writes after fflush, so there spill_sync() is just an fflush.
  *
  * JCC C89 compliance: declarations precede statements; block comments only.
  */
@@ -48,17 +46,17 @@ static uint8_t g_spill_block[SPILL_BLK];
 
 int spill_open(pending_member_t *pm, int slot_id)
 {
-    if (pm->spill_fp != NULL)      /* already spilled -- should not happen */
+    if (pm->spill.fp != NULL)      /* already spilled -- should not happen */
         return 0;
 
     {
         char name[24];
 
         sprintf(name, "//DSN:&&PWWSP%02d", slot_id);
-        pm->spill_fp = fopen(name,
+        pm->spill.fp = fopen(name,
             "w+b," PWW_SPILL_DS_SPACE_PARMS ","
             "dsorg=ps,recfm=fb,blksize=4096,lrecl=4096");
-        if (pm->spill_fp == NULL) {
+        if (pm->spill.fp == NULL) {
             log_error("spill_open: fopen %s failed: %s",
                       name, strerror(errno));
             errno = EIO;
@@ -68,9 +66,9 @@ int spill_open(pending_member_t *pm, int slot_id)
             pm->dsname_ebcdic, pm->member_name, name);
     }
 
-    pm->spill_size  = 0;
-    pm->spill_slot  = slot_id;
-    pm->spill_dirty = 0;
+    pm->spill.size  = 0;
+    pm->spill.slot  = slot_id;
+    pm->spill.dirty = 0;
     return 0;
 }
 
@@ -83,29 +81,29 @@ int spill_open(pending_member_t *pm, int slot_id)
  * first read after a run of writes pays for it. */
 static int spill_sync(pending_member_t *pm)
 {
-    if (!pm->spill_dirty)
+    if (!pm->spill.dirty)
         return 0;
 
     {
         char name[24];
 
-        fflush(pm->spill_fp);
-        if (fclose(pm->spill_fp) != 0) {
+        fflush(pm->spill.fp);
+        if (fclose(pm->spill.fp) != 0) {
             log_error("spill_sync: fclose failed: %s", strerror(errno));
-            pm->spill_fp = NULL;
+            pm->spill.fp = NULL;
             errno = EIO;
             return -1;
         }
-        sprintf(name, "//DSN:&&PWWSP%02d", pm->spill_slot);
-        pm->spill_fp = fopen(name, "r+b");    /* committed; no truncate */
-        if (pm->spill_fp == NULL) {
+        sprintf(name, "//DSN:&&PWWSP%02d", pm->spill.slot);
+        pm->spill.fp = fopen(name, "r+b");    /* committed; no truncate */
+        if (pm->spill.fp == NULL) {
             log_error("spill_sync: reopen %s failed: %s", name, strerror(errno));
             errno = EIO;
             return -1;
         }
     }
 
-    pm->spill_dirty = 0;
+    pm->spill.dirty = 0;
     return 0;
 }
 
@@ -114,7 +112,7 @@ static int spill_sync(pending_member_t *pm)
    zero-initialised blocks, so an in-extent block is always a full 4096. */
 static int spill_load_block(pending_member_t *pm, uint32_t b)
 {
-    uint32_t phys = (pm->spill_size + SPILL_BLK - 1) / SPILL_BLK;
+    uint32_t phys = (pm->spill.size + SPILL_BLK - 1) / SPILL_BLK;
     size_t   r;
 
     if (b >= phys) {
@@ -126,13 +124,13 @@ static int spill_load_block(pending_member_t *pm, uint32_t b)
        than that -- a reopen -- but spill_write does that once up front when the
        write reaches below the highest block; the highest (tail) block read here
        during a sequential append is buffer-resident and reads fine. */
-    fflush(pm->spill_fp);
-    if (fseek(pm->spill_fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
+    fflush(pm->spill.fp);
+    if (fseek(pm->spill.fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
         log_error("spill: fseek(load) block %u failed: %s", b, strerror(errno));
         errno = EIO;
         return -1;
     }
-    r = fread(g_spill_block, 1, SPILL_BLK, pm->spill_fp);
+    r = fread(g_spill_block, 1, SPILL_BLK, pm->spill.fp);
     if (r < SPILL_BLK)                       /* short read -- should not happen */
         memset(g_spill_block + r, 0, SPILL_BLK - (size_t)r);
     return 0;
@@ -144,19 +142,19 @@ static int spill_store_block(pending_member_t *pm, uint32_t b)
 {
     size_t w;
 
-    if (fseek(pm->spill_fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
+    if (fseek(pm->spill.fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
         log_error("spill: fseek(store) block %u failed: %s", b, strerror(errno));
         errno = EIO;
         return -1;
     }
-    w = fwrite(g_spill_block, 1, SPILL_BLK, pm->spill_fp);
+    w = fwrite(g_spill_block, 1, SPILL_BLK, pm->spill.fp);
     if (w != SPILL_BLK) {
         log_error("spill: store block %u short write (%u of %d)",
                   b, (unsigned)w, SPILL_BLK);
         errno = EIO;
         return -1;
     }
-    pm->spill_dirty = 1;    /* a read must commit (reopen) before it can see this */
+    pm->spill.dirty = 1;    /* a read must commit (reopen) before it can see this */
     return 0;
 }
 
@@ -164,7 +162,7 @@ int spill_write(pending_member_t *pm, uint32_t off,
                 const uint8_t *data, uint32_t len)
 {
     uint32_t end      = off + len;
-    uint32_t new_size = pm->spill_size;
+    uint32_t new_size = pm->spill.size;
     uint32_t cur_blocks;
     uint32_t need_blocks;
     uint32_t first;
@@ -175,10 +173,10 @@ int spill_write(pending_member_t *pm, uint32_t off,
         new_size = end;
     else if (len == 0 && off > new_size)
         new_size = off;
-    if (new_size == pm->spill_size && len == 0)
+    if (new_size == pm->spill.size && len == 0)
         return 0;                            /* nothing to extend or write */
 
-    cur_blocks  = (pm->spill_size + SPILL_BLK - 1) / SPILL_BLK;
+    cur_blocks  = (pm->spill.size + SPILL_BLK - 1) / SPILL_BLK;
     need_blocks = (new_size      + SPILL_BLK - 1) / SPILL_BLK;
 
     /* First block to (re)write: the data's first block if it reaches into
@@ -190,7 +188,7 @@ int spill_write(pending_member_t *pm, uint32_t off,
     else
         first = cur_blocks;
 
-    if (new_size > pm->spill_size)
+    if (new_size > pm->spill.size)
         last = need_blocks - 1;
     else
         last = (end - 1) / SPILL_BLK;        /* pure overwrite (len > 0) */
@@ -225,8 +223,19 @@ int spill_write(pending_member_t *pm, uint32_t off,
             return -1;
     }
 
-    pm->spill_size = new_size;
+    pm->spill.size = new_size;
     return 0;
+}
+
+void spill_shrink(pending_member_t *pm, uint32_t size)
+{
+    /* Lowering the logical extent is all that is needed: the blocks stay on
+       disk but nothing reads them, because every reader is bounded by the
+       member's high_water.  A later write back into the freed region goes
+       through spill_write, which zero-fills any hole it finds ahead of the
+       current extent -- so the stale bytes can never resurface. */
+    if (size < pm->spill.size)
+        pm->spill.size = size;
 }
 
 int spill_read(pending_member_t *pm, uint32_t off,
@@ -242,13 +251,13 @@ int spill_read(pending_member_t *pm, uint32_t off,
        is pending, so a run of consecutive reads pays the reopen only once. */
     if (spill_sync(pm) != 0)
         return -1;
-    if (fseek(pm->spill_fp, (long)off, SEEK_SET) != 0) {
+    if (fseek(pm->spill.fp, (long)off, SEEK_SET) != 0) {
         log_error("spill_read: fseek to %u failed: %s",
                   off, strerror(errno));
         errno = EIO;
         return -1;
     }
-    r = fread(dst, 1, (size_t)len, pm->spill_fp);
+    r = fread(dst, 1, (size_t)len, pm->spill.fp);
     if (r != (size_t)len) {
         log_error("spill_read: short read at %u (%u of %u)",
                   off, (unsigned)r, len);
@@ -260,10 +269,10 @@ int spill_read(pending_member_t *pm, uint32_t off,
 
 void spill_close(pending_member_t *pm)
 {
-    if (pm->spill_fp != NULL) {
-        fclose(pm->spill_fp);        /* on the dev host this deletes tmpfile */
-        pm->spill_fp = NULL;
+    if (pm->spill.fp != NULL) {
+        fclose(pm->spill.fp);        /* on the dev host this deletes tmpfile */
+        pm->spill.fp = NULL;
     }
-    pm->spill_size  = 0;
-    pm->spill_dirty = 0;
+    pm->spill.size  = 0;
+    pm->spill.dirty = 0;
 }

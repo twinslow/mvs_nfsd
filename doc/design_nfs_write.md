@@ -123,6 +123,14 @@ mirroring the `mvsprw` read cache), owns a small fixed pool of
 pool (`mvsdol`) and read cache (`mvsprw`):
 
 ```c
+/* Spill state -- owned by mvsspl.c (§8.6). */
+typedef struct {
+    FILE     *fp;                  /* open scratch dataset, or NULL       */
+    uint32_t  size;                /* bytes on disk (== high_water spilled)*/
+    int       slot;                /* slot index -> &&PWWSP<nn>, to reopen */
+    uint8_t   dirty;               /* writes pending since last commit     */
+} pww_spill_t;
+
 typedef struct {
     uint8_t   status;              /* FREE / USED                        */
     int       export_idx;
@@ -144,12 +152,12 @@ typedef struct {
     char      ddname[9];           /* ddname of that allocation           */
 
     /* Phase 2 spill (§8.1): once the byte stream passes PWW_SPILL_THRESHOLD it
-       lives in a temporary dataset and buf is freed.  spill_fp != NULL is the
-       "this member is spilled" flag. */
-    FILE     *spill_fp;            /* open scratch dataset, or NULL       */
-    uint32_t  spill_size;          /* bytes on disk (== high_water spilled)*/
-    int       spill_slot;          /* slot index -> &&PWWSP<nn>, to reopen */
-    uint8_t   spill_dirty;         /* writes pending since last commit     */
+       lives in a temporary dataset and buf is freed.  spill.fp != NULL is the
+       "this member is spilled" flag.  Grouped into its own sub-struct so the
+       ownership boundary is visible: mvsspl.c is the ONLY module that assigns
+       to these fields; mvspww.c reads spill.fp to choose a path and otherwise
+       goes through the spill_* API (§8.6). */
+    pww_spill_t spill;
 } pending_member_t;
 ```
 
@@ -270,9 +278,6 @@ set ISPF stats (§9.1); bump dir mtime + invalidate readdir cache (§7.1)
 mark slot clean; buffer + allocation + enqueue retained until slot release
 ```
 
-On the non-MVS (dev/mock) build there is no enqueue or dynamic allocation, and
-the flush opens `//DSN:dsname(member)` directly.
-
 ### 7.1 Directory-change visibility (after a STOW)
 
 The READDIRPLUS-loop fix (a *stable* directory mtime) has a flip side: clients
@@ -384,8 +389,7 @@ completion code is:
 
 The shape is proven by the prototype in `jcl/t#stae1.jcl` (`protected_write`
 traps an abend raised inside `write_lines`).  Needs `<mvsutils.h>` and
-`<setjmp.h>`, and is **MVS-only** — the non-MVS build calls the unprotected
-function directly, so the wrapper's signature is identical on both platforms.
+`<setjmp.h>`.
 
 **Where the boundary goes — two regions, not one.**  Both PDS-mutating steps of
 a flush need protection, but they fail with *different meanings*, so each gets
@@ -404,7 +408,6 @@ the weaker recovery described further down:
 ```c
 static int pww_flush_guarded(pending_member_t *pm)
 {
-#ifdef __MVS__
     jmp_buf      env;
     unsigned int sdwa[26];          /* 104-byte SDWA copy */
     long         rc;
@@ -429,9 +432,6 @@ static int pww_flush_guarded(pending_member_t *pm)
         break;
     }
     return frc;
-#else
-    return pww_flush_worker(pm);
-#endif
 }
 ```
 
@@ -611,8 +611,8 @@ for the first cut; the ways out, in rough order of value:
    The memory expires (`PWW_FULL_EXPIRY_SEC`, 60s) so the server recovers on its
    own once an operator adds space, and any successful flush to that dataset
    clears it immediately.  A small fixed table (`PWW_FULL_REMEMBER`) holds the
-   recent offenders; nothing marks a dataset full off-MVS, so the check is
-   inert there.
+   recent offenders.  The predicate is `pww_dataset_is_full()` — named for the
+   *dataset*, never the slot pool (§5), which is a separate concern.
 4. **Check space before accepting.**  Consult the dataset's free extents at
    CREATE / first write and refuse early with `ENOSPC` on the (synchronous)
    WRITE.  Preventative rather than reactive, and it cannot know the eventual
@@ -696,7 +696,7 @@ slot *spills*:
 1. open the slot's temporary dataset (`spill_open`);
 2. copy the in-memory buffer `[0 .. high_water]` to it at offset 0
    (`spill_write`);
-3. `free()` the in-memory buffer and mark the slot spilled (`spill_fp != NULL`).
+3. `free()` the in-memory buffer and mark the slot spilled (`spill.fp != NULL`).
 
 From then on every WRITE for that member goes straight to disk — the server
 never holds more than ~16 KB of member data in memory, whatever the member's
@@ -726,7 +726,7 @@ fp = fopen(name, "w+b,pri=15,sec=15,rlse,unit=sysda,"
 
 - **binary** (`b`): the stream is stored untranslated — ASCII→EBCDIC conversion
   happens only at flush (§9).  JCC zero-pads the trailing partial 4 KB block,
-  which is harmless: the slot tracks the logical length (`spill_size`) itself
+  which is harmless: the slot tracks the logical length (`spill.size`) itself
   and never reads past it.
 - `"w+b"` is create/truncate **and** read/write: the full DCB is required to
   create (`dsorg`/`recfm`/`blksize`/`lrecl`, `unit=sysda`, and `pri`/`sec` TRK
@@ -753,12 +753,12 @@ block-aligned offsets.
 
 ```
 spill_write(pm, off, data, len):                 /* len==0 = zero-extend to off */
-    new_size = max(spill_size, off+len or off)
+    new_size = max(spill.size, off+len or off)
     for each 4 KB block b that the write or the fill-to-new_size touches:
         load block b            /* fread if b already on disk, else zero-fill */
         overlay data bytes that land in block b
         store block b           /* full 4096-byte fwrite */
-    spill_size = new_size
+    spill.size = new_size
 ```
 
 Two useful consequences fall out for free:
@@ -781,17 +781,17 @@ copy corrupting where a smaller one didn't; then caught deterministically by
 `tmvsspl`'s reference model, which failed with a zero-length read at exactly
 byte 49 152.)  So before a read that could reach committed-but-beyond-EOF data,
 `spill_sync()` **closes and reopens** the scratch `"r+b"` (no truncate) to commit
-the EOF.  It runs **lazily** — a `spill_dirty` flag, set by every block write and
+the EOF.  It runs **lazily** — a `spill.dirty` flag, set by every block write and
 cleared by the reopen — so a run of consecutive reads (the flush's read pass)
 pays a single reopen, and the sequential-append RMW of just the tail block
-(still buffer-resident, so it reads fine after a plain `fflush`) pays none.  On
-the dev host `tmpfile()` is anonymous and cannot be reopened, and reads see
-writes after `fflush`, so there `spill_sync()` is just an `fflush`.
+(still buffer-resident, so it reads fine after a plain `fflush`) pays none.
 
 A `SETATTR` truncate (§12.1) on a spilled member needs no special file surgery:
 growing it zero-extends through the same `spill_write` path, and shrinking it
-just lowers `high_water` — the flush reads only `[0 .. high_water]`, so bytes
-beyond it on disk are ignored (and overwritten if the member grows again).
+goes through `spill_shrink()`, which only lowers the recorded extent — the
+flush reads only `[0 .. high_water]`, so bytes beyond it on disk are ignored
+(and overwritten if the member grows again, because `spill_write` zero-fills
+any hole ahead of the current extent).
 
 #### 8.4 Reading it back — pending reads and the flush
 
@@ -842,15 +842,23 @@ member):
 
 | Function | Role |
 |---|---|
-| `spill_open(pm)` | Create/truncate + open the slot's scratch dataset in one `"w+b"`+DCB `fopen`; set `spill_fp`, `spill_size = 0` |
+| `spill_open(pm)` | Create/truncate + open the slot's scratch dataset in one `"w+b"`+DCB `fopen`; set `spill.fp`, `spill.size = 0` |
 | `spill_write(pm, off, data, len)` | Place a segment at `off`, zero-extending past EOF first (§8.3) |
+| `spill_shrink(pm, size)` | Lower the logical extent (a shrink only; grow via `spill_write`).  Cannot fail |
 | `spill_read(pm, off, dst, len)` | Read `len` bytes from `off` (for `pww_read_range` and the flush) |
-| `spill_close(pm)` | `fclose` the scratch dataset; clear `spill_fp` / `spill_size` |
+| `spill_close(pm)` | `fclose` the scratch dataset; clear `spill.fp` / `spill.size` |
 
-`mvspww.c` calls these when a slot is (or is becoming) spilled.  The two new
-`pending_member_t` fields it needs — `FILE *spill_fp` and `uint32_t spill_size`
-(§5) — mean `mvspww.h` gains `#include <stdio.h>`; the scratch *name* is derived
-from the slot index at `spill_open` time and need not be stored.
+`mvspww.c` calls these when a slot is (or is becoming) spilled.  The state they
+maintain lives in the `pww_spill_t spill` sub-struct of `pending_member_t`
+(§5), which means `mvspww.h` gains `#include <stdio.h>`; the scratch *name* is
+derived from the slot index at `spill_open` time and need not be stored.
+
+**This API is the boundary.**  `mvsspl.c` is the only module that assigns to
+`pm->spill.*`; `mvspww.c` reads `spill.fp` to decide whether a write or read
+takes the memory or the disk path, and changes the state only by calling the
+functions above.  The pairing to keep in mind is `pww_store_range()` /
+`pww_read_range()` in `mvspww.c` — between them they are the only two places
+that care where a member is backed, so nothing else has to.
 
 #### 8.7 Parameters and open items
 
@@ -942,8 +950,8 @@ member's own TTR first means the entry is rewritten **in place** — same TTR, n
 member rewrite, no orphaned blocks — while the user data is replaced. (`STOW
 TYPE=C` is a rename, not a user-data edit, so it can't be used here.)
 
-MVS-only (`#ifdef __MVS__`); a failure is logged once and is not fatal — the
-member content is still valid, it just lacks stats. The MVS external names are
+A failure is logged once and is not fatal — the member content is still valid,
+it just lacks stats. The MVS external names are
 `MVSDALC`/`MVSSTOW` (aliased from the C names in `asmutils.h`).
 
 **Format** — 30-byte non-extended ISPF user data, the strict inverse of

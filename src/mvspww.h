@@ -54,6 +54,26 @@
 #define PWW_STATUS_USED            1
 
 /* -------------------------------------------------------------------- */
+/* Spill state -- OWNED BY mvsspl.c                                     */
+/*                                                                      */
+/* Phase 2 spill: once the byte stream passes PWW_SPILL_THRESHOLD the   */
+/* content lives in a temporary dataset and pm->buf is freed.           */
+/* fp != NULL is the "this member is spilled" flag.                     */
+/*                                                                      */
+/* These fields are grouped so the ownership boundary is visible rather */
+/* than merely observed: mvsspl.c writes them, mvspww.c only READS them */
+/* (it tests fp to decide which path a write or read takes) and calls   */
+/* spill_open / spill_write / spill_read / spill_close to change them.  */
+/* Nothing outside mvsspl.c should assign to this sub-struct.           */
+/* -------------------------------------------------------------------- */
+typedef struct {
+    FILE     *fp;                  /* open scratch dataset, or NULL         */
+    uint32_t  size;                /* bytes on disk (== high_water spilled) */
+    int       slot;                /* slot index -> &&PWWSP<nn>, for reopen */
+    uint8_t   dirty;               /* writes pending since the last commit  */
+} pww_spill_t;
+
+/* -------------------------------------------------------------------- */
 /* One pending (being-written) PDS member                               */
 /* -------------------------------------------------------------------- */
 typedef struct {
@@ -79,15 +99,8 @@ typedef struct {
     uint8_t   allocated;           /* 1 = the DSN(member) is allocated      */
     char      ddname[9];           /* ddname of that allocation (NUL-term)  */
 
-    /*
-     * Phase 2 spill (mvsspl.c): once the byte stream passes
-     * PWW_SPILL_THRESHOLD the content lives in a temporary dataset and buf is
-     * freed.  spill_fp != NULL is the "this member is spilled" flag.
-     */
-    FILE     *spill_fp;            /* open scratch dataset, or NULL         */
-    uint32_t  spill_size;          /* bytes on disk (== high_water spilled) */
-    int       spill_slot;          /* slot index -> &&PWWSP<nn>, for reopen */
-    uint8_t   spill_dirty;         /* writes pending since the last commit  */
+    /* Spill state -- see pww_spill_t above.  Owned by mvsspl.c. */
+    pww_spill_t spill;
 
     /*
      * Inter-write timing for PERF_PWW_WRITE_GAP.  Measurement only -- nothing
@@ -102,7 +115,7 @@ typedef struct {
      *
      * DELIBERATELY LAST in the struct: fields added in the middle change the
      * offsets of everything after them, so a module compiled against an older
-     * header would read high_water/dirty/spill_fp from the wrong place.  Keep
+     * header would read high_water/dirty/spill from the wrong place.  Keep
      * new fields here.
      */
     uint32_t      nwrites;         /* WRITE requests so far this sequence   */

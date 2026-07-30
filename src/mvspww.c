@@ -547,7 +547,7 @@ static void pww_unlock(pending_member_t *pm)
 static void pww_slot_release_inner(pending_member_t *pm)
 {
     pww_unlock(pm);        /* DEQ + unallocate whatever the slot still holds */
-    if (pm->spill_fp != NULL)
+    if (pm->spill.fp != NULL)
         log_debug("pww_slot_release: closing spill for %s(%s) ...",
                   pm->dsname_ebcdic, pm->member_name);
     spill_close(pm);       /* close the scratch dataset if the member spilled */
@@ -732,7 +732,7 @@ static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
    buffer into it at offset 0, and free the buffer.  On any failure the slot is
    rolled back to in-memory (buffer intact, scratch closed) and -1 is returned
    with errno set, so the caller can fail the write and the slot stays coherent.
-   Caller must have checked pm->spill_fp == NULL. */
+   Caller must have checked pm->spill.fp == NULL. */
 static int pww_spill_transition(pending_member_t *pm)
 {
     int slot = (int)(pm - g_pww_pool);
@@ -875,7 +875,7 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
 {
     uint64_t end = offset + (uint64_t)count;
 
-    if (pm->spill_fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
+    if (pm->spill.fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
         if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
             return -1;    /* errno set (ENOSPC/ENOMEM) */
 
@@ -890,7 +890,7 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
         /* Spill path: transition on the write that first crosses the threshold,
            then place this segment in the scratch dataset (spill_write handles
            the hole zero-fill and the "cannot fseek past EOF" extension). */
-        if (pm->spill_fp == NULL) {
+        if (pm->spill.fp == NULL) {
             if (pww_spill_transition(pm) != 0)
                 return -1;    /* errno set; slot rolled back to in-memory */
         }
@@ -915,7 +915,7 @@ int pww_read_range(pending_member_t *pm, uint32_t off,
 {
     if (len == 0)
         return 0;
-    if (pm->spill_fp == NULL) {
+    if (pm->spill.fp == NULL) {
         memcpy(dst, pm->buf + off, (size_t)len);
         return 0;
     }
@@ -1397,15 +1397,15 @@ int pww_truncate(int export_idx, int dataset_idx,
 
     /* Adjust the existing pending member to exactly 'size' bytes, spilling if
        the new size crosses the in-memory threshold. */
-    if (pm->spill_fp != NULL) {
-        /* Already spilled: grow by zero-extending the scratch; shrink just
-           lowers the logical extent so a later write into the freed region
-           zero-fills again (the flush reads only [0..high_water]). */
+    if (pm->spill.fp != NULL) {
+        /* Already spilled: grow by zero-extending the scratch, shrink by
+           lowering its logical extent.  Both are spill-store operations, so
+           both go through mvsspl.c -- see pww_spill_t on the ownership rule. */
         if (size > pm->high_water) {
             if (spill_write(pm, size, NULL, 0) != 0)
                 return -1;               /* errno set (EIO) */
         } else {
-            pm->spill_size = size;
+            spill_shrink(pm, size);
         }
     } else if (size <= (uint32_t)PWW_SPILL_THRESHOLD) {
         /* Stays in memory. */
