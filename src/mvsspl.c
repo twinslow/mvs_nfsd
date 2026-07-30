@@ -51,7 +51,6 @@ int spill_open(pending_member_t *pm, int slot_id)
     if (pm->spill_fp != NULL)      /* already spilled -- should not happen */
         return 0;
 
-#ifdef __MVS__
     {
         char name[24];
 
@@ -68,15 +67,6 @@ int spill_open(pending_member_t *pm, int slot_id)
         log_info("spill_open: %s(%s) spilled to %s",
             pm->dsname_ebcdic, pm->member_name, name);
     }
-#else
-    (void)slot_id;
-    pm->spill_fp = tmpfile();      /* dev/test host: anonymous binary temp */
-    if (pm->spill_fp == NULL) {
-        log_error("spill_open: tmpfile() failed: %s", strerror(errno));
-        errno = EIO;
-        return -1;
-    }
-#endif
 
     pm->spill_size  = 0;
     pm->spill_slot  = slot_id;
@@ -90,15 +80,12 @@ int spill_open(pending_member_t *pm, int slot_id)
  * NOT advance past ~one track until the dataset is closed -- a block written
  * beyond that and then read back returns 0, even after fflush.  So we close and
  * reopen it "r+b" (no truncate) to commit the EOF.  Called lazily: only the
- * first read after a run of writes pays for it.  On the dev host a tmpfile()
- * is anonymous (cannot be reopened) and reads see writes after fflush, so there
- * a plain fflush suffices. */
+ * first read after a run of writes pays for it. */
 static int spill_sync(pending_member_t *pm)
 {
     if (!pm->spill_dirty)
         return 0;
 
-#ifdef __MVS__
     {
         char name[24];
 
@@ -117,9 +104,6 @@ static int spill_sync(pending_member_t *pm)
             return -1;
         }
     }
-#else
-    fflush(pm->spill_fp);
-#endif
 
     pm->spill_dirty = 0;
     return 0;

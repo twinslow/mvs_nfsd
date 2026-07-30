@@ -23,10 +23,8 @@
 #include "mvsprf.h"      /* PERF_PWW_WRITE_GAP / mvsprf_record_ms()          */
 #include "asmutils.h"    /* MVS assembler helpers: mvs_dynalloc(), mvs_stow() */
 
-#ifdef __MVS__
 #include <setjmp.h>      /* jmp_buf                                          */
 #include <mvsutils.h>    /* _setjmp_stae / _setjmp_canc -- STAE abend trap   */
-#endif
 
 /* -------------------------------------------------------------------- */
 /* Static pool of pending members                                        */
@@ -255,9 +253,10 @@ static int pww_find_rpc_header(const uint8_t *p, uint32_t len)
 /* idle-sweep flush failure does.                                        */
 /*                                                                       */
 /* The memory expires so the server recovers by itself once an operator  */
-/* adds space, and any successful flush clears it immediately.  Nothing  */
-/* marks a dataset full off-MVS (no abends there), so pww_is_full() is   */
-/* simply always false and the check costs a few compares.               */
+/* adds space, and any successful flush clears it immediately.           */
+/*                                                                       */
+/* "Full" here always means THE DATASET is out of space -- never the     */
+/* slot pool, which is a separate concern handled by pww_slot_take().    */
 /* -------------------------------------------------------------------- */
 #define PWW_FULL_REMEMBER    4     /* datasets remembered as full       */
 #define PWW_FULL_EXPIRY_SEC  60    /* forget after this many seconds    */
@@ -269,7 +268,7 @@ static struct {
 
 /* Remember that 'dsname' is out of space (refresh if already known; else take
    the oldest / an unused entry). */
-static void pww_mark_full(const char *dsname, time_t now)
+static void pww_dataset_mark_full(const char *dsname, time_t now)
 {
     int i;
     int oldest = 0;
@@ -289,7 +288,7 @@ static void pww_mark_full(const char *dsname, time_t now)
 }
 
 /* Forget 'dsname' -- a flush to it has just succeeded, so it has room again. */
-static void pww_clear_full(const char *dsname)
+static void pww_dataset_clear_full(const char *dsname)
 {
     int i;
     for (i = 0; i < PWW_FULL_REMEMBER; i++) {
@@ -301,7 +300,7 @@ static void pww_clear_full(const char *dsname)
 
 /* Is 'dsname' known to be out of space?  Expired entries are dropped here, so
    the table needs no separate sweep. */
-static int pww_is_full(const char *dsname, time_t now)
+static int pww_dataset_is_full(const char *dsname, time_t now)
 {
     int i;
     for (i = 0; i < PWW_FULL_REMEMBER; i++) {
@@ -317,7 +316,6 @@ static int pww_is_full(const char *dsname, time_t now)
     return 0;
 }
 
-#ifdef __MVS__
 /* -------------------------------------------------------------------- */
 /* Abend protection for the flush (design_nfs_write.md Sec 7.3)          */
 /*                                                                       */
@@ -388,9 +386,6 @@ static int g_fatal_abend = 0;
 
 /* Publish / clear the in-flight member stream for the recovery path. */
 #define PWW_FLUSH_FP(f)   (g_flush_fp = (f))
-#else
-#define PWW_FLUSH_FP(f)   ((void)0)   /* no STAE off-MVS: nothing to publish */
-#endif /* __MVS__ */
 
 /* ==================================================================== */
 /* Slot pool internals                                                   */
@@ -400,11 +395,10 @@ static int g_fatal_abend = 0;
 /* and the public API below operate through these.                       */
 /* ==================================================================== */
 
-/* Defined in the flush-machinery section below; pww_slot_acquire calls it
+/* Defined in the flush-machinery section below; pww_slot_take calls it
    to flush a dirty slot before evicting it. */
 static int pww_flush_slot(pending_member_t *pm);
 
-#ifdef __MVS__
 /* Build the SPFEDIT enqueue RNAME: dsname(44) + member(8), blank-padded --
    the resource ISPF/EDIT (and REVIEW) hold while a member is being edited. */
 static void pww_spfedit_rname(const char *dsname_ebcdic,
@@ -547,13 +541,9 @@ static void pww_unlock(pending_member_t *pm)
     log_debug("pww_unlock: released %s(%s)",
               pm->dsname_ebcdic, pm->member_name);
 }
-#else
-static int  pww_lock(pending_member_t *pm)   { (void)pm; return 0; }
-static void pww_unlock(pending_member_t *pm) { (void)pm; }
-#endif
 
 /* The actual release work.  Never call this directly -- go through
-   pww_slot_release(), which protects it on MVS. */
+   pww_slot_release(), which protects it under a STAE. */
 static void pww_slot_release_inner(pending_member_t *pm)
 {
     pww_unlock(pm);        /* DEQ + unallocate whatever the slot still holds */
@@ -567,7 +557,6 @@ static void pww_slot_release_inner(pending_member_t *pm)
     pm->status = PWW_STATUS_FREE;
 }
 
-#ifdef __MVS__
 /* Release a slot under a STAE.
  *
  * EVERY release is protected, not just the one after a failed flush: the most
@@ -605,12 +594,6 @@ static void pww_slot_release(pending_member_t *pm)
              " releasing unprotected", rc);
     pww_slot_release_inner(pm);
 }
-#else
-static void pww_slot_release(pending_member_t *pm)
-{
-    pww_slot_release_inner(pm);
-}
-#endif /* __MVS__ */
 
 /* Find the USED slot for (dsname, member), or NULL. */
 static pending_member_t *pww_slot_find(const char *dsname_ebcdic,
@@ -627,19 +610,15 @@ static pending_member_t *pww_slot_find(const char *dsname_ebcdic,
     return NULL;
 }
 
-/* Obtain a slot to use for (dsname, member): the existing one if present,
-   otherwise a FREE slot, otherwise evict (flush if dirty) the least
-   recently used slot.  Never returns NULL. */
-static pending_member_t *pww_slot_acquire(const char *dsname_ebcdic,
-                                          const char *member_name)
+/* Claim a slot for a member that is NOT already pending: a FREE one if the
+   pool has one, otherwise the least-recently-used slot, which is flushed and
+   released to make room.  Never returns NULL.
+   The returned slot is FREE and uninitialised -- pww_slot_new() is what turns
+   it into a usable pending member, and is the only caller. */
+static pending_member_t *pww_slot_take(void)
 {
-    pending_member_t *pm;
     int i;
     int lru;
-
-    pm = pww_slot_find(dsname_ebcdic, member_name);
-    if (pm != NULL)
-        return pm;
 
     for (i = 0; i < PWW_MAX_PENDING; i++) {
         if (g_pww_pool[i].status == PWW_STATUS_FREE)
@@ -666,7 +645,7 @@ static pending_member_t *pww_slot_acquire(const char *dsname_ebcdic,
                              now_ms - g_pww_pool[lru].first_write_ms);
     }
 
-    log_warn("pww_slot_acquire: pool full, evicting %s(%s)",
+    log_warn("pww_slot_take: pool full, evicting %s(%s)",
         g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
     if (g_pww_pool[lru].dirty)
         (void)pww_flush_slot(&g_pww_pool[lru]);
@@ -689,6 +668,31 @@ static void pww_slot_init(pending_member_t *pm, int export_idx, int dataset_idx,
     pm->high_water      = 0;
     pm->dirty           = 0;
     pm->last_write_time = time(NULL);
+}
+
+/* Begin a new pending member: claim a slot, initialise it, and acquire the
+   SPFEDIT enqueue + dynamic allocation the slot holds for its lifetime.
+   Returns a slot ready to be written, or NULL with errno set -- EACCES if the
+   member is held elsewhere (open in ISPF, say), EIO if allocation failed.  On
+   failure the slot has been released, so nothing is left held.
+
+   Call ONLY when pww_slot_find() has returned NULL for this member: the slot
+   is memset by pww_slot_init, so calling it for a member that IS pending
+   would discard the buffered writes and leak its enqueue and allocation. */
+static pending_member_t *pww_slot_new(int export_idx, int dataset_idx,
+                                      const char *dsname_ebcdic,
+                                      const char *member_name)
+{
+    pending_member_t *pm = pww_slot_take();
+
+    pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
+    if (pww_lock(pm) != 0) {
+        int saved_errno = errno;
+        pww_slot_release(pm);
+        errno = saved_errno;
+        return NULL;
+    }
+    return pm;
 }
 
 /* Ensure the in-memory pm->buf has capacity for at least 'need' bytes.  The
@@ -756,23 +760,152 @@ static int pww_spill_transition(pending_member_t *pm)
 }
 
 /* ==================================================================== */
-/* Flush machinery -- write the buffered member to the PDS and STOW it   */
+/* Write-path helpers                                                    */
+/*                                                                       */
+/* The steps of pww_write(), each with the reasoning that justifies it,  */
+/* so the public function reads as the sequence it performs.             */
 /* ==================================================================== */
 
-#ifndef __MVS__
-/* Build the "//DSN:dsname(member)" open path.  MVS goes through dynamic
-   allocation + "//DDN:" instead (see pww_flush_slot), so this is only used
-   by the non-MVS (dev/mock) build. */
-static void pww_member_path(char *out, const char *dsname_ebcdic,
-                            const char *member_name)
+/* Mark a member as holding content that is not yet stowed.
+   The two assignments are ONE operation and must never be separated:
+   last_write_time is what both the idle sweep and the LRU eviction sort on,
+   so a slot marked dirty without refreshing it looks stale and gets flushed
+   or evicted early -- mid-sequence, in the worst case. */
+static void pww_set_dirty(pending_member_t *pm)
 {
-    strcpy(out, "//DSN:");
-    strcat(out, dsname_ebcdic);
-    strcat(out, "(");
-    strcat(out, member_name);
-    strcat(out, ")");
+    pm->dirty           = 1;
+    pm->last_write_time = time(NULL);
 }
-#endif
+
+/* Tripwire (TEMPORARY -- see pww_find_rpc_header): is an inbound RPC message
+   already inside the payload we were handed?  Checked BEFORE the data is
+   stored, so a hit proves the corruption happened upstream of the write pool.
+   Reports only; it does not reject the write. */
+static void pww_check_payload_corruption(const char *dsname_ebcdic,
+                                         const char *member_name,
+                                         const uint8_t *data, uint32_t count,
+                                         uint64_t offset)
+{
+    int rpc_at = pww_find_rpc_header(data, count);
+
+    if (rpc_at >= 0)
+        log_error("pww_write: CORRUPT PAYLOAD ON ARRIVAL -- RPC CALL header at"
+                  " payload offset %d of %s(%s) (write offset=%llu count=%u)."
+                  "  Corruption is UPSTREAM of the write pool.",
+                  rpc_at, dsname_ebcdic, member_name,
+                  (unsigned long long)offset, count);
+}
+
+/* Would this write take the member past the absolute per-member cap?
+   Returns 0 if it fits, -1 with errno set if not. */
+static int pww_check_member_cap(const char *dsname_ebcdic,
+                                const char *member_name,
+                                uint64_t offset, uint32_t count)
+{
+    if (offset + (uint64_t)count <= (uint64_t)PWW_MAX_MEMBER_BYTES)
+        return 0;
+
+    log_warn("pww_write: %s(%s) exceeds %d-byte cap (offset=%llu count=%u)",
+        dsname_ebcdic, member_name, PWW_MAX_MEMBER_BYTES,
+        (unsigned long long)offset, count);
+    errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
+    return -1;
+}
+
+/* Refuse up front if a flush to this dataset has just abended out of space
+   (Sec 7.3): one abend instead of one per file, and CREATE / WRITE being
+   synchronous, the client actually sees the ENOSPC rather than losing the
+   data silently the way a failed background flush does.
+   'op' names the calling function for the log line.
+   Returns 0 if the dataset has room, -1 with errno = ENOSPC if not. */
+static int pww_check_dataset_space(const char *op, const char *dsname_ebcdic,
+                                   const char *member_name)
+{
+    if (!pww_dataset_is_full(dsname_ebcdic, time(NULL)))
+        return 0;
+
+    log_debug("%s: %s is out of space -- refusing %s",
+              op, dsname_ebcdic, member_name);
+    errno = ENOSPC;
+    return -1;
+}
+
+/* PERF_PWW_WRITE_GAP: time since the previous WRITE for this member.
+   Purely a measurement -- it records a sample and updates three fields, and
+   influences nothing else.  Called with the slot known good but the data not
+   yet stored, so it reflects request ARRIVAL rather than how long we then
+   take to buffer it.
+
+   The first write of a sequence has nothing to measure from, so it only
+   primes the timer: a member written by a single request contributes no
+   sample and cannot move min/max/avg.  A slot is memset by pww_slot_init, so
+   each new sequence starts clean. */
+static void pww_record_write_gap(pending_member_t *pm,
+                                 const char *dsname_ebcdic,
+                                 const char *member_name, uint64_t offset)
+{
+    unsigned long now_ms = pww_now_ms();
+
+    if (pm->nwrites > 0 && now_ms >= pm->last_write_ms) {
+        mvsprf_record_ms(PERF_PWW_WRITE_GAP, now_ms - pm->last_write_ms);
+    } else if (pm->nwrites == 0) {
+        /* First write of a sequence.  Remember when, so an eviction can
+           report the member's age, and flag the case where it did not start
+           at offset 0 -- see pww_nonzero_start. */
+        pm->first_write_ms = now_ms;
+        if (offset != 0)
+            pww_nonzero_start(dsname_ebcdic, member_name, offset,
+                              now_ms, time(NULL));
+    }
+    pm->last_write_ms = now_ms;
+    pm->nwrites++;
+}
+
+/* Place count bytes of data at offset in the member's content, and advance
+   its logical size.  The mirror of pww_read_range(): between them they are
+   the only two places that care whether a member is backed by memory or by
+   the spill dataset, so nothing else has to.
+
+   In memory while the member stays under the spill threshold; once it (or
+   this write) would exceed it, the member moves to a temp dataset and stays
+   there.  Either way memory use per pending member is bounded by the
+   threshold.  Returns 0, or -1 with errno set. */
+static int pww_store_range(pending_member_t *pm, uint64_t offset,
+                           const uint8_t *data, uint32_t count)
+{
+    uint64_t end = offset + (uint64_t)count;
+
+    if (pm->spill_fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
+        if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
+            return -1;    /* errno set (ENOSPC/ENOMEM) */
+
+        /* Zero-fill any gap between the current end and this write's offset. */
+        if (offset > (uint64_t)pm->high_water)
+            memset(pm->buf + pm->high_water, 0,
+                   (size_t)(offset - (uint64_t)pm->high_water));
+
+        if (count > 0)
+            memcpy(pm->buf + offset, data, (size_t)count);
+    } else {
+        /* Spill path: transition on the write that first crosses the threshold,
+           then place this segment in the scratch dataset (spill_write handles
+           the hole zero-fill and the "cannot fseek past EOF" extension). */
+        if (pm->spill_fp == NULL) {
+            if (pww_spill_transition(pm) != 0)
+                return -1;    /* errno set; slot rolled back to in-memory */
+        }
+        if (spill_write(pm, (uint32_t)offset, data, count) != 0)
+            return -1;        /* errno set (EIO) */
+    }
+
+    if (end > (uint64_t)pm->high_water)
+        pm->high_water = (uint32_t)end;
+    return 0;
+}
+
+/* ==================================================================== */
+/* Flush machinery -- write the buffered member to the PDS and STOW it   */
+/* ==================================================================== */
 
 /* Read len bytes at off from a pending member's content into dst, from the
    in-memory buffer or the spill dataset -- the single accessor the flush and
@@ -875,7 +1008,6 @@ static int pww_write_member(pending_member_t *pm, const char *open_target,
     return 0;
 }
 
-#ifdef __MVS__
 /* Region A of the flush (design_nfs_write.md Sec 7.3): run pww_write_member
    under a STAE so an out-of-space abend fails THIS request instead of
    terminating the NFSD task.
@@ -911,7 +1043,7 @@ static int pww_write_member_guarded(pending_member_t *pm,
             /* Expected: the dataset filled up.  Remember it, so the next write
                is refused up front instead of costing another abend -- and so
                the client gets a synchronous ENOSPC it can actually see. */
-            pww_mark_full(pm->dsname_ebcdic, time(NULL));
+            pww_dataset_mark_full(pm->dsname_ebcdic, time(NULL));
             log_error("pww_flush_slot: %s(%s) ABENDED S%03X (dataset out of"
                       " space) -- member NOT written; refusing writes to this"
                       " dataset for %d seconds",
@@ -1015,7 +1147,6 @@ static int pww_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
              " to %s(%s) UNPROTECTED", rc, pm->dsname_ebcdic, pm->member_name);
     return pww_apply_stats(pm, stats_ud);
 }
-#endif /* __MVS__ */
 
 /* Write the buffered member out in one pass and STOW it.
    Returns 0 on success, -1 on failure (errno set). */
@@ -1039,7 +1170,6 @@ static int pww_flush_slot(pending_member_t *pm)
     existing = mvs_pds_get_member_entry(pm->dsname_ebcdic, pm->member_name,
                                         pm->export_idx, &existing_ent);
 
-#ifdef __MVS__
     /* The SPFEDIT enqueue and the DSN(member) DISP=SHR allocation were taken at
        CREATE / first WRITE (pww_lock) and are held for the slot's whole
        lifetime, so the flush neither enqueues nor allocates -- it simply opens
@@ -1064,20 +1194,14 @@ static int pww_flush_slot(pending_member_t *pm)
         }
         return -1;
     }
-#else
-    pww_member_path(path, pm->dsname_ebcdic, pm->member_name);
-    if (pww_write_member(pm, path, &line_count) != 0)
-        return -1;
-#endif
 
     pm->dirty = 0;
     /* The dataset clearly has room, so drop any "out of space" memory of it
        (Sec 7.3): recovery is immediate once an operator adds space. */
-    pww_clear_full(pm->dsname_ebcdic);
+    pww_dataset_clear_full(pm->dsname_ebcdic);
     log_info("pww_flush_slot: stowed %s(%s), %u bytes",
         pm->dsname_ebcdic, pm->member_name, pm->high_water);
 
-#ifdef __MVS__
     /* Apply ISPF statistics.  This runs AFTER the member has been stowed by
        fclose, because mvs_stow() does BLDL+FIND+STOW REPLACE and so needs the
        member to already exist in the directory.  (JCC's __setstow() cannot do
@@ -1136,13 +1260,6 @@ static int pww_flush_slot(pending_member_t *pm)
         }
     }
     /* No DEQ / unallocate here: both are held until the slot is released. */
-#else
-    (void)existing;
-    (void)line_count;
-    (void)want_stats;
-    (void)new_stats;
-    (void)stats_ud;
-#endif
 
     /* The PDS directory just changed: bump its mtime so clients
        invalidate their cached listing, and drop our own cached listing so the
@@ -1164,11 +1281,7 @@ static int pww_flush_slot(pending_member_t *pm)
    anything we could not release ourselves. */
 int pww_fatal_abend(void)
 {
-#ifdef __MVS__
     return g_fatal_abend;
-#else
-    return 0;
-#endif
 }
 
 /* Initialise the pool.  Call once at startup. */
@@ -1182,38 +1295,24 @@ int pww_create(int export_idx, int dataset_idx,
 {
     pending_member_t *pm;
 
-    /* Refuse up front if a flush to this dataset has just abended out of space
-       (Sec 7.3).  CREATE is synchronous, so unlike a failed background flush
-       this error actually reaches the client. */
-    if (pww_is_full(dsname_ebcdic, time(NULL))) {
-        log_debug("pww_create: %s is out of space -- refusing %s",
-                  dsname_ebcdic, member_name);
-        errno = ENOSPC;
-        return -1;
-    }
+    if (pww_check_dataset_space("pww_create", dsname_ebcdic, member_name) < 0)
+        return -1;                  /* errno set (ENOSPC dataset full) */
 
-    pm = pww_slot_acquire(dsname_ebcdic, member_name);
-    if (pm->status != PWW_STATUS_USED ||
-        strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
-        strcmp(pm->member_name, member_name) != 0) {
-        /* Fresh or reused slot: (re)initialise it, then take the SPFEDIT
-           enqueue and allocate the member (held for the slot's lifetime).  If
-           the member is being edited elsewhere, fail the create now. */
-        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
-        if (pww_lock(pm) != 0) {
-            int saved_errno = errno;
-            pww_slot_release(pm);
-            errno = saved_errno;
+    pm = pww_slot_find(dsname_ebcdic, member_name);
+    if (pm == NULL) {
+        /* Not pending: start a new member, which takes the SPFEDIT enqueue and
+           allocates it for the slot's lifetime.  If the member is being edited
+           elsewhere, fail the create now. */
+        pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pm == NULL)
             return -1;              /* errno set (EACCES held / EIO alloc) */
-        }
     } else {
         /* Re-create over an existing pending member (already open): truncate. */
         pm->high_water = 0;
     }
 
     /* An empty create still needs to stow an empty member on COMMIT. */
-    pm->dirty           = 1;
-    pm->last_write_time = time(NULL);
+    pww_set_dirty(pm);
 
     log_debug("pww_create: %s(%s)", dsname_ebcdic, member_name);
     return 0;
@@ -1224,113 +1323,33 @@ int pww_write(int export_idx, int dataset_idx,
               const uint8_t *data, uint32_t count, uint64_t offset)
 {
     pending_member_t *pm;
-    uint64_t          end;
-    int               rpc_at;
 
-    /* Tripwire: is an RPC message already inside the payload we were handed?
-       Checked BEFORE the data is stored, so a hit means the corruption
-       happened upstream of the write pool. */
-    rpc_at = pww_find_rpc_header(data, count);
-    if (rpc_at >= 0)
-        log_error("pww_write: CORRUPT PAYLOAD ON ARRIVAL -- RPC CALL header at"
-                  " payload offset %d of %s(%s) (write offset=%llu count=%u)."
-                  "  Corruption is UPSTREAM of the write pool.",
-                  rpc_at, dsname_ebcdic, member_name,
-                  (unsigned long long)offset, count);
+    pww_check_payload_corruption(dsname_ebcdic, member_name,
+                                 data, count, offset);
 
-    end = offset + (uint64_t)count;
-    if (end > (uint64_t)PWW_MAX_MEMBER_BYTES) {
-        log_warn("pww_write: %s(%s) exceeds %d-byte cap (offset=%llu count=%u)",
-            dsname_ebcdic, member_name, PWW_MAX_MEMBER_BYTES,
-            (unsigned long long)offset, count);
-        errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
-        return -1;
-    }
+    if (pww_check_member_cap(dsname_ebcdic, member_name, offset, count) < 0)
+        return -1;                  /* errno set (ENOSPC over the cap) */
 
-    /* Refuse up front if a flush to this dataset has just abended out of space
-       (Sec 7.3): one abend instead of one per file, and WRITE being synchronous
-       the client actually sees the ENOSPC. */
-    if (pww_is_full(dsname_ebcdic, time(NULL))) {
-        log_debug("pww_write: %s is out of space -- refusing %s",
-                  dsname_ebcdic, member_name);
-        errno = ENOSPC;
-        return -1;
-    }
+    if (pww_check_dataset_space("pww_write", dsname_ebcdic, member_name) < 0)
+        return -1;                  /* errno set (ENOSPC dataset full) */
 
-    pm = pww_slot_acquire(dsname_ebcdic, member_name);
-    if (pm->status != PWW_STATUS_USED ||
-        strcmp(pm->dsname_ebcdic, dsname_ebcdic) != 0 ||
-        strcmp(pm->member_name, member_name) != 0) {
-        /* First write to this member: initialise the slot, then take the
-           SPFEDIT enqueue and allocate it (held until the slot is released).
+    pm = pww_slot_find(dsname_ebcdic, member_name);
+    if (pm == NULL) {
+        /* First write to this member: start a new pending member, which takes
+           the SPFEDIT enqueue and allocates it until the slot is released.
            A member being edited elsewhere fails the write here -- every
            client issues WRITE, so the conflict always surfaces. */
-        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
-        if (pww_lock(pm) != 0) {
-            int saved_errno = errno;
-            pww_slot_release(pm);
-            errno = saved_errno;
+        pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pm == NULL)
             return -1;              /* errno set (EACCES held / EIO alloc) */
-        }
     }
 
-    /* PERF_PWW_WRITE_GAP: time since the previous WRITE for this member.
-       Purely a measurement -- it records a sample and updates two fields,
-       and influences nothing else.  Sampled here (slot known good, data not
-       yet stored) so it reflects request arrival rather than how long we
-       then take to buffer it.  The first write of a sequence has nothing to
-       measure from, so it only primes the timer: a member written by one
-       request contributes no sample and cannot move min/max/avg.  A slot is
-       memset by pww_slot_init, so each new sequence starts clean. */
-    {
-        unsigned long now_ms = pww_now_ms();
+    pww_record_write_gap(pm, dsname_ebcdic, member_name, offset);
 
-        if (pm->nwrites > 0 && now_ms >= pm->last_write_ms) {
-            mvsprf_record_ms(PERF_PWW_WRITE_GAP, now_ms - pm->last_write_ms);
-        } else if (pm->nwrites == 0) {
-            /* First write of a sequence.  Remember when, so an eviction
-               can report the member's age, and flag the case where it
-               did not start at offset 0 -- see pww_nonzero_start. */
-            pm->first_write_ms = now_ms;
-            if (offset != 0)
-                pww_nonzero_start(dsname_ebcdic, member_name, offset,
-                                  now_ms, time(NULL));
-        }
-        pm->last_write_ms = now_ms;
-        pm->nwrites++;
-    }
+    if (pww_store_range(pm, offset, data, count) < 0)
+        return -1;                  /* errno set (ENOSPC/ENOMEM/EIO) */
 
-    /* In memory while the member stays under the spill threshold; once it (or
-       this write) would exceed it, move to a temp dataset and keep it there.
-       Either way memory use per pending member is bounded by the threshold. */
-    if (pm->spill_fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
-        if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
-            return -1;    /* errno set (ENOSPC/ENOMEM) */
-
-        /* Zero-fill any gap between the current end and this write's offset. */
-        if (offset > (uint64_t)pm->high_water)
-            memset(pm->buf + pm->high_water, 0,
-                   (size_t)(offset - (uint64_t)pm->high_water));
-
-        if (count > 0)
-            memcpy(pm->buf + offset, data, (size_t)count);
-    } else {
-        /* Spill path: transition on the write that first crosses the threshold,
-           then place this segment in the scratch dataset (spill_write handles
-           the hole zero-fill and the "cannot fseek past EOF" extension). */
-        if (pm->spill_fp == NULL) {
-            if (pww_spill_transition(pm) != 0)
-                return -1;    /* errno set; slot rolled back to in-memory */
-        }
-        if (spill_write(pm, (uint32_t)offset, data, count) != 0)
-            return -1;        /* errno set (EIO) */
-    }
-
-    if (end > (uint64_t)pm->high_water)
-        pm->high_water = (uint32_t)end;
-
-    pm->dirty           = 1;
-    pm->last_write_time = time(NULL);
+    pww_set_dirty(pm);
 
     log_debug("pww_write: %s(%s) off=%llu cnt=%u hw=%u",
         dsname_ebcdic, member_name, (unsigned long long)offset, count,
@@ -1359,16 +1378,10 @@ int pww_truncate(int export_idx, int dataset_idx,
            client is not blocked (see doc/design_nfs_write.md). */
         if (size != 0)
             return 0;
-        pm = pww_slot_acquire(dsname_ebcdic, member_name);
-        pww_slot_init(pm, export_idx, dataset_idx, dsname_ebcdic, member_name);
-        if (pww_lock(pm) != 0) {     /* enqueue + allocate the new member */
-            int saved_errno = errno;
-            pww_slot_release(pm);
-            errno = saved_errno;
+        pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);
+        if (pm == NULL)
             return -1;                    /* errno set (EACCES held / EIO alloc) */
-        }
-        pm->dirty           = 1;
-        pm->last_write_time = time(NULL);
+        pww_set_dirty(pm);
         log_debug("pww_truncate: %s(%s) -> 0 (new empty)",
             dsname_ebcdic, member_name);
         return 0;
@@ -1414,8 +1427,7 @@ int pww_truncate(int export_idx, int dataset_idx,
     }
 
     pm->high_water      = size;
-    pm->dirty           = 1;
-    pm->last_write_time = time(NULL);
+    pww_set_dirty(pm);
     log_debug("pww_truncate: %s(%s) -> %u", dsname_ebcdic, member_name, size);
     return 0;
 }
@@ -1505,7 +1517,6 @@ int pww_touch_stats(int export_idx, int dataset_idx,
                     const char *dsname_ebcdic,
                     const char *member_name, time_t new_time)
 {
-#ifdef __MVS__
     pending_member_t   *pm;
     pds_member_entry_t  entry;
     pds_member_entry_t *ep;
@@ -1574,9 +1585,4 @@ int pww_touch_stats(int export_idx, int dataset_idx,
     if (own_enq)
         (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
     return 0;
-#else
-    (void)export_idx; (void)dataset_idx; (void)dsname_ebcdic;
-    (void)member_name; (void)new_time;
-    return 0;
-#endif
 }

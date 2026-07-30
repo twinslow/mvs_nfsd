@@ -26,11 +26,9 @@
  * MVS linker.  Defined here (before the prototypes) so aliasing is
  * consistent regardless of this header's include order relative to nfsd.h.
  */
-#if defined(__MVS__)
 #define pww_flush_member        pwwFlMbr
 #define pww_flush_idle          pwwFlIdl
 #define pww_flush_all           pwwFlAll
-#endif
 
 /* -------------------------------------------------------------------- */
 /* Phase 1 parameters                                                   */

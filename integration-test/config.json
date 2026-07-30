@@ -4,7 +4,7 @@
   "mode": "mvs",
 
   "nfs": {
-    "mount_point": "Z:\\",
+    "mount_point": "X:\\",
     "export": "192.168.1.168:/iexports",
     "windows_export": "\\\\192.168.1.168\\iexports",
     "auto_mount": false,
@@ -16,7 +16,7 @@
   "ftp": {
     "host": "192.168.1.168",
     "port": 2121,
-    "use_cwd": true,  "quote_dsn": false,
+    "use_cwd": true,  "quote_dsn": false, "dsn_prefix": "/",
     "user": null,
     "password": null
   },

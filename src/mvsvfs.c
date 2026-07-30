@@ -24,9 +24,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-#ifdef __MVS__
 #include <io.h>          /* JCC: _unlink() removes a PDS member */
-#endif
 
 #include "ebcdic.h"
 #include "mvsfid.h"

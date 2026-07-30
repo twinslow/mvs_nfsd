@@ -103,12 +103,8 @@ static int g_tz_offset = 0;
 
 void mvs_tz_init(void)
 {
-#ifdef __MVS__
     /* CVTLDTO only changes across an IPL, so reading it once is enough. */
     g_tz_offset = get_tz_offset();
-#else
-    g_tz_offset = 0;
-#endif
 }
 
 int mvs_tz_offset(void)
