@@ -662,6 +662,47 @@ attempt count is now 12), and the abend storm itself motivated the fast-fail in
 (3) above.  With that in place the expected shape is: **one** abend for the
 first member, then every later attempt refused synchronously with `ENOSPC`.
 
+#### 7.3.1 Why the SECOND abend is fatal (diagnosed 2026-07-30)
+
+"One abend is survivable" is load-bearing, and for a while it was only half
+true: the fast-fail in (3) covered `pww_write` / `pww_create`, but **not the
+flush path**.  Members already buffered when the dataset filled were still
+flushed by the idle sweep, one at a time, each abending in turn.
+
+A second abend hangs the server outright.  From a `SYSUDUMP` taken by
+cancelling a hung NFSD:
+
+| evidence | reading |
+|---|---|
+| `PSW ... ILC 2 INTC 0001` | last interrupt was **SVC 1 — WAIT** |
+| PRB PSW problem state, key 8 | the WAIT was issued by *library* code, not a system service |
+| module offset `0xAB3C4` → CSECT `ST000157` | JCC's **`athreadlock`** |
+| address space idle; no SVRB for user code | parked on an ECB (WAIT is a type-1 SVC, so it gets no SVRB) |
+
+So a STAE longjmp out of a JCC library routine that holds the runtime's
+internal lock **never releases it**, and the next `fclose` / `free` waits on
+that lock forever — no log output, no response to MODIFY, `CANCEL` the only
+way out.
+
+This is a Windows-shaped failure.  Windows clients are FILE_SYNC and never
+send COMMIT, so the idle sweep is their only flush trigger and several
+members sit dirty in the pool at once — guaranteeing a second victim queued
+behind the first.  On Linux, COMMIT drains members one at a time and a second
+simultaneous dirty member for the same dataset is rare, which is why this went
+unseen for so long.
+
+**Fix:** `pww_flush_slot` now consults the same out-of-space memory at entry
+and refuses before touching the runtime or the PDS.  The member's content is
+lost — the flush it replaces would have abended anyway — but exactly one abend
+occurs per episode, which is the survivable case.
+
+**Residue.** The first abend still happens and still leaks the lock; whether
+that leaves the runtime quietly degraded is not established.  Removing the
+abend altogether is (4) below, now practical because `mvsdscb.asm` can read a
+dataset's extents.  Doing better than that would mean replacing `fwrite` with
+an assembler writer under our own ESTAE — considered and rejected as
+disproportionate.
+
 ## 8. Memory strategy (the 8 MB address-space constraint)
 
 The MVS 3.8J application address space is ~8 MB for code + data, so we cannot

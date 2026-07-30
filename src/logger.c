@@ -124,12 +124,53 @@ static const char *level_tag(log_level_t level)
     }
 }
 
+/* Longest line written to the log stream in ONE record.
+ *
+ * MUST stay below the STDERR DD's record limit.  RECFM=V BLKSIZE=n yields
+ * n-8 bytes of data (4-byte BDW + 4-byte RDW), so the started task's
+ * BLKSIZE=250 allows 242.  A small BLKSIZE is deliberate -- less sits
+ * unwritten when the task dies, which matters because JCC's fflush is a
+ * no-op -- so the headroom is bought here rather than by growing the block.
+ *
+ * Exceeding the record limit is not a truncated line: QSAM abends the task
+ * S002-14 and the server dies.  That happened on 2026-07-30, from a single
+ * over-long log_warn.  Hence splitting rather than trusting callers to
+ * count characters.
+ */
+#define LOG_LINE_MAX  200
+
+/* Write prefix + body to fp, split across as many records as it takes so no
+   single one exceeds LOG_LINE_MAX.  The prefix rides on the first record;
+   continuations carry body text only.  Nothing is truncated. */
+static void log_emit(FILE *fp, const char *prefix, const char *body)
+{
+    size_t plen = strlen(prefix);
+    size_t blen = strlen(body);
+    size_t off  = 0;
+    size_t room;
+
+    fwrite(prefix, 1, plen, fp);
+    room = (plen < (size_t)LOG_LINE_MAX)
+         ? (size_t)LOG_LINE_MAX - plen : (size_t)1;
+
+    for (;;) {
+        size_t n = blen - off;
+        if (n > room) n = room;
+        if (n > 0) fwrite(body + off, 1, n, fp);
+        fputc('\n', fp);
+        off += n;
+        if (off >= blen) break;
+        room = (size_t)LOG_LINE_MAX;
+    }
+}
+
 static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
 {
     FILE       *fp;
     struct tm  *tm_ptr;
     time_t      now;
     char        ts_buf[22];   /* "YYYY-MM-DD HH:MM:SS " + NUL */
+    char        pfx_buf[32];  /* ts_buf + "[LEVEL] "           */
     char        msg_buf[480]; /* formatted message body        */
     char        wto_buf[490]; /* "[LEVEL] " + msg_buf          */
 
@@ -148,6 +189,7 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
     msg_buf[sizeof(msg_buf) - 1] = '\0';   /* some libcs omit the NUL */
 
     /* Optional timestamp prefix (log stream only, not WTO). */
+    ts_buf[0] = '\0';
     if (g_log_timestamps) {
         now    = time(NULL);
         tm_ptr = gmtime(&now);
@@ -159,11 +201,13 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
                     tm_ptr->tm_hour,
                     tm_ptr->tm_min,
                     tm_ptr->tm_sec);
-            fprintf(fp, "%s", ts_buf);
         }
     }
 
-    fprintf(fp, "[%s] %s\n", level_tag(level), msg_buf);
+    /* The timestamp counts against the record limit, so it is part of the
+       prefix rather than a separate write. */
+    sprintf(pfx_buf, "%s[%s] ", ts_buf, level_tag(level));
+    log_emit(fp, pfx_buf, msg_buf);
     fflush(fp);
 
 #ifdef __MVS__

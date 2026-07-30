@@ -171,11 +171,8 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
             unsigned long gap = now_ms - g_pww_recent[i].last_write_ms;
 
             mvsprf_record_ms(PERF_PWW_LATE_GAP, gap);
-            log_warn("pww_write: %s(%s) resumed at offset %lu after a"
-                     " %lu ms pause -- the idle sweep had already flushed"
-                     " it, so the member is STOWed again and the earlier"
-                     " copy's blocks are abandoned.  Raise"
-                     " PWW_IDLE_TIMEOUT_SECONDS if this recurs.",
+            log_warn("pww_write: %s(%s) resumed at offset %lu after %lu ms"
+                     " -- idle sweep had flushed it; member re-STOWed",
                      dsname_ebcdic, member_name,
                      (unsigned long)offset, gap);
             /* One severed sequence yields exactly one sample. */
@@ -192,10 +189,8 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
        write, which this server does not support and which would leave
        binary zeros in the member.  Reported so the difference between the
        NZSTART and LATE_GAP counts can be accounted for. */
-    log_warn("pww_write: %s(%s) began a write sequence at offset %lu, not"
-             " 0, and no recent idle flush explains it -- either writes"
-             " arrived out of order (harmless) or this is a random-access"
-             " write, which is unsupported and leaves zeros in the member.",
+    log_warn("pww_write: %s(%s) starts at offset %lu, not 0 -- writes out"
+             " of order, or unsupported random write",
              dsname_ebcdic, member_name, (unsigned long)offset);
 }
 
@@ -1160,6 +1155,19 @@ static int pww_flush_slot(pending_member_t *pm)
     uint8_t             stats_ud[MVS_ISPF_STATS_LEN];
     int                 want_stats;
     int32_t             line_count;
+
+    /* Never flush into a dataset a previous flush abended out of space on:
+       the SECOND abend deadlocks the task in the JCC runtime's lock (design
+       Sec 7.3).  The content is lost either way -- the flush this replaces
+       would have abended -- but the server survives. */
+    if (pww_dataset_is_full(pm->dsname_ebcdic, time(NULL))) {
+        log_error("pww_flush_slot: %s(%s) NOT flushed -- %s is already known"
+                  " out of space; content discarded",
+                  pm->dsname_ebcdic, pm->member_name, pm->dsname_ebcdic);
+        pm->dirty = 0;    /* as the abend path below: nothing retryable */
+        errno = ENOSPC;
+        return -1;
+    }
 
     log_info("pww_flush_slot: Starting flush for %s(%s)",
         pm->dsname_ebcdic, pm->member_name);

@@ -21,3 +21,4 @@
 //STDIN     DD DUMMY                                                     0002100
 //NFSDCONF  DD DISP=SHR,DSN=TONYW.DINONFS.CONF                           0002200
 //FILESIZE  DD DUMMY                                                     0002307
+//SYSUDUMP  DD SYSOUT=*                                                  0002407
