@@ -10,16 +10,89 @@
  */
 
 #include <string.h>        /* memset */
+#include <time.h>          /* struct timeval */
 #ifdef __MVS__
-#include <sockets.h>        /* recv, send */
+#include <sockets.h>       /* recv, send, select, fd_set */
 #else
 #include <sys/socket.h>    /* recv, send */
+#include <sys/select.h>    /* select, fd_set */
 #endif
 #include "nfsd.h"
 
 /* ------------------------------------------------------------------ */
 /* Internal helpers: receive / send all bytes with retries              */
+/*                                                                      */
+/* recv() and send() here are BLOCKING and the server is                */
+/* single-threaded, so a peer that goes quiet part-way through a        */
+/* message would stall EVERYTHING: every other client, the idle-flush   */
+/* sweep (leaving buffered members unstowed), and the operator-command  */
+/* poll -- so even "F NFSD,STOP" would stop working and CANCEL would be */
+/* the only way out, which also loses the log tail (JCC's fflush is a   */
+/* no-op).                                                              */
+/*                                                                      */
+/* The select loop in nfsd.c only guarantees that the FIRST recv() of a */
+/* message has data waiting.  Nothing guarantees the REST arrives:      */
+/*                                                                      */
+/*   - a record mark that over-declares its length (one that still fits */
+/*     maxlen, so the check in rpc_recv passes) leaves us waiting for   */
+/*     bytes the sender was never going to send;                        */
+/*   - a peer that dies without a FIN -- killed VM, pulled cable,       */
+/*     dropped NAT entry -- leaves TCP with nothing to report;          */
+/*   - a client that simply stalls mid-message.                         */
+/*                                                                      */
+/* send() has the mirror image: a client that stops draining its socket */
+/* fills our send buffer and blocks us there instead.                   */
+/*                                                                      */
+/* TCP does not rescue us: SO_KEEPALIVE is never set on these sockets,  */
+/* and even where keepalive is enabled by default it is measured in     */
+/* hours.  So each transfer is gated on a select() with a timeout.      */
 /* ------------------------------------------------------------------ */
+
+/* Seconds without progress on a PARTIALLY transferred message before the
+   connection is abandoned.
+   This is an INTER-SEGMENT timeout, not a whole-message one: every recv()
+   or send() that moves even one byte restarts the clock, so a slow but
+   advancing client is never dropped and only genuine silence trips it.
+   Chosen comfortably longer than any real stall on a healthy link, and
+   shorter than the ~60s RPC timeout a client applies, so we give up on the
+   connection before the client gives up on us.  JCC's select() honours
+   whole seconds only, which is exactly the granularity wanted here. */
+#define RPC_IO_TIMEOUT_SECONDS  30
+
+/* Wait until fd is ready, or the timeout expires.
+   for_write == 0 waits for readability, non-zero for writability.
+   Returns 0 when ready, -1 on timeout or a select() failure.  Timeouts are
+   NOT logged here -- the caller reports them with the byte counts, which is
+   the part that says what actually went wrong. */
+static int rpc_wait_io(int fd, int for_write)
+{
+    fd_set         fds;
+    struct timeval tv;
+    int            n;
+
+    for (;;) {
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        tv.tv_sec  = RPC_IO_TIMEOUT_SECONDS;
+        tv.tv_usec = 0;
+
+        if (for_write)
+            n = select(fd + 1, NULL, &fds, NULL, &tv);
+        else
+            n = select(fd + 1, &fds, NULL, NULL, &tv);
+
+        if (n > 0)  return 0;     /* ready */
+        if (n == 0) return -1;    /* timed out -- caller reports it */
+
+#ifndef __MVS__
+        /* A signal is not a failure: reissue the wait. */
+        if (errno == EINTR) continue;
+#endif
+        log_error("rpc: select() failed on fd=%d while waiting to %s",
+                  fd, for_write ? "send" : "receive");
+        return -1;
+    }
+}
 
 static int recv_all(int fd, uint8_t *buf, uint32_t len)
 {
@@ -27,6 +100,12 @@ static int recv_all(int fd, uint8_t *buf, uint32_t len)
     int n;
 
     while (done < len) {
+        if (rpc_wait_io(fd, 0) < 0) {
+            log_error("rpc_recv: fd=%d stalled after %u of %u byte(s) --"
+                      " no data for %d seconds; dropping the connection",
+                      fd, done, len, RPC_IO_TIMEOUT_SECONDS);
+            return -1;
+        }
         n = (int)recv(fd, buf + done, (size_t)(len - done), 0);
         if (n <= 0) return -1;   /* connection closed or error */
         done += (uint32_t)n;
@@ -40,6 +119,12 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
     int n;
 
     while (done < len) {
+        if (rpc_wait_io(fd, 1) < 0) {
+            log_error("rpc_send: fd=%d blocked after %u of %u byte(s) --"
+                      " peer stopped reading for %d seconds; dropping the"
+                      " connection", fd, done, len, RPC_IO_TIMEOUT_SECONDS);
+            return -1;
+        }
         n = (int)send(fd, (void *)(buf + done), (size_t)(len - done), 0);
         if (n <= 0) return -1;
         done += (uint32_t)n;
