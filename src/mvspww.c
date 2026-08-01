@@ -123,20 +123,21 @@ static void pww_remember_idle_flush(const pending_member_t *pm, time_t now)
 }
 
 /*
- * A write sequence has begun at a NON-ZERO offset.  Count it, and try to
- * work out which of the three causes it was.
+ * Report a write pww_write is about to REFUSE: one at a non-zero offset with
+ * no pending slot behind it, which could only be satisfied by inventing the
+ * bytes before it.  Counts it and works out which of the two causes it was.
  *
- * The COUNT is the reliable part and needs no state at all, so it can
- * never be missed.  The ring is only used to CLASSIFY: if it still holds
- * an idle flush of this member at exactly this offset, the cause is
- * certain -- the sweep cut the sequence and the client has resumed --
- * and the gap that caused it can be reported too.
+ * The COUNT is the reliable part and needs no state at all, so it can never
+ * be missed.  The ring is only used to CLASSIFY: if it still holds an idle
+ * flush of this member at exactly this offset, the cause is certain -- the
+ * sweep cut the sequence and the client has resumed -- and the gap that
+ * caused it can be reported too.  Otherwise it is an append or a random
+ * write, which this server has never supported.
  *
- * That division matters.  The ring is finite and members churn, so on a
- * busy system an entry may have been evicted before the client resumes.
+ * That division matters.  The ring is finite and members churn, so on a busy
+ * system an entry may have been evicted before the client resumes.
  * Structured this way, ring pressure costs us the DIAGNOSIS, never the
- * DETECTION -- which is the wrong way round if the count is what you
- * check to decide the timeout is safe.
+ * DETECTION -- and the write is refused either way.
  */
 static void pww_nonzero_start(const char *dsname_ebcdic,
                               const char *member_name,
@@ -168,8 +169,8 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
             unsigned long gap = now_ms - g_pww_recent[i].last_write_ms;
 
             mvsprf_record_ms(PERF_PWW_LATE_GAP, gap);
-            log_warn("pww_write: %s(%s) resumed at offset %lu after %lu ms"
-                     " -- idle sweep had flushed it; member re-STOWed",
+            log_warn("pww_write: %s(%s) REFUSED at offset %lu -- idle sweep"
+                     " flushed it %lu ms ago; raise PWW_IDLE_TIMEOUT_SECONDS",
                      dsname_ebcdic, member_name,
                      (unsigned long)offset, gap);
             /* One severed sequence yields exactly one sample. */
@@ -180,14 +181,12 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
         break;
     }
 
-    /* Not attributable to a remembered flush.  Either the writes simply
-       arrived out of order -- harmless, the zero-filled gap is overwritten
-       when the earlier offsets turn up -- or it is a genuine random-access
-       write, which this server does not support and which would leave
-       binary zeros in the member.  Reported so the difference between the
-       NZSTART and LATE_GAP counts can be accounted for. */
-    log_warn("pww_write: %s(%s) starts at offset %lu, not 0 -- writes out"
-             " of order, or unsupported random write",
+    /* No remembered flush explains it, so this is an append or a random
+       write to a member we have not buffered -- unsupported, because the
+       existing content is never read back.  Reported so the difference
+       between the NZSTART and LATE_GAP counts can be accounted for. */
+    log_warn("pww_write: %s(%s) REFUSED at offset %lu -- append and random"
+             " write are not supported (member must be written from 0)",
              dsname_ebcdic, member_name, (unsigned long)offset);
 }
 
@@ -678,22 +677,20 @@ static int pww_check_dataset_space(const char *op, const char *dsname_ebcdic,
    primes the timer: a member written by a single request contributes no
    sample and cannot move min/max/avg.  A slot is memset by pww_slot_init, so
    each new sequence starts clean. */
-static void pww_record_write_gap(pending_member_t *pm,
-                                 const char *dsname_ebcdic,
-                                 const char *member_name, uint64_t offset)
+static void pww_record_write_gap(pending_member_t *pm)
 {
     unsigned long now_ms = pww_now_ms();
 
     if (pm->nwrites > 0 && now_ms >= pm->last_write_ms) {
         mvsprf_record_ms(PERF_PWW_WRITE_GAP, now_ms - pm->last_write_ms);
     } else if (pm->nwrites == 0) {
-        /* First write of a sequence.  Remember when, so an eviction can
-           report the member's age, and flag the case where it did not start
-           at offset 0 -- see pww_nonzero_start. */
+        /* First write of a sequence -- remember when, so an eviction can
+           report how long the member had been accumulating.
+           A first write at a non-zero offset is not flagged here: the
+           dangerous form (no slot at all) is refused in pww_write before it
+           ever reaches this point, and what remains is a write arriving out
+           of order into a slot CREATE already made, which is harmless. */
         pm->first_write_ms = now_ms;
-        if (offset != 0)
-            pww_nonzero_start(dsname_ebcdic, member_name, offset,
-                              now_ms, time(NULL));
     }
     pm->last_write_ms = now_ms;
     pm->nwrites++;
@@ -836,6 +833,21 @@ int pww_write(int export_idx, int dataset_idx,
 
     pm = pww_slot_find(dsname_ebcdic, member_name);
     if (pm == NULL) {
+        /* No slot means no CREATE preceded this write and nothing is buffered,
+           so we have never seen what the member already holds -- and nothing
+           in this server ever reads it back.  Storing at a non-zero offset
+           would zero-fill everything before it (pww_store_range) and the flush
+           would then replace the member with those zeros.  Refuse instead: an
+           error the client reports beats data it silently loses.
+           A normal new member is CREATEd first, so its slot already exists and
+           out-of-order writes into it stay legal -- see design Sec 5.2. */
+        if (offset != 0) {
+            pww_nonzero_start(dsname_ebcdic, member_name, offset,
+                              pww_now_ms(), time(NULL));
+            errno = EIO;            /* -> NFS3ERR_IO */
+            return -1;
+        }
+
         /* First write to this member: start a new pending member, which takes
            the SPFEDIT enqueue and allocates it until the slot is released.
            A member being edited elsewhere fails the write here -- every
@@ -845,7 +857,7 @@ int pww_write(int export_idx, int dataset_idx,
             return -1;              /* errno set (EACCES held / EIO alloc) */
     }
 
-    pww_record_write_gap(pm, dsname_ebcdic, member_name, offset);
+    pww_record_write_gap(pm);
 
     if (pww_store_range(pm, offset, data, count) < 0)
         return -1;                  /* errno set (ENOSPC/ENOMEM/EIO) */

@@ -32,6 +32,18 @@ def _text_keys(ctx):
     return [k for k in ("fb", "vb") if k in ctx.cfg["datasets"]]
 
 
+def _alt_text(ctx, key, n, tag):
+    """n lines sized for the dataset's RECFM, with a caller-chosen tag.
+
+    ctx.gen() is fixed at 6 lines / 'large_lines' and one tag, which is fine
+    when a test writes a member once.  A test that writes the SAME member
+    twice needs the two contents to differ in both text and LENGTH, so a
+    stale tail or a half-replaced member cannot pass by accident."""
+    if ctx.is_vb(key):
+        return textutil.gen_var_lines(n, base=20, tag=tag)
+    return textutil.gen_fixed_lines(n, int(ctx.opts["line_width"]), tag=tag)
+
+
 # =====================================================================
 # 1. Upload to FB and VB text PDS members
 # =====================================================================
@@ -220,6 +232,127 @@ def upload_then_download(ctx):
             d = textutil.diff_summary(text, got)
             ctx.check(not d, "round-trip of %s/%s mismatch: %s" % (key, name, d))
             ctx.verify_member(key, name, text)            # and independently
+
+
+@testcase("2.3", "update_stowed_member")
+def update_stowed_member(ctx):
+    """Overwrite a member that is ALREADY IN THE PDS, and prove both paths
+    see the new content.
+
+    Every other write test starts from reset(), so it only ever exercises
+    creating a member.  Here the first copy is confirmed stowed (verify_now)
+    before the second write, so the flush is a STOW over an existing
+    directory entry rather than an add.
+
+    The replacement is deliberately SHORTER than the original: if any part of
+    the first copy survived -- a stale tail, a directory entry still carrying
+    the old size -- the comparison fails instead of quietly passing."""
+    for key in _text_keys(ctx):
+        name  = "UPDSTOW"
+        first = _alt_text(ctx, key, 9, "IT1")
+
+        ctx.reset(key, name)
+        ctx.write_member(key, name, first)
+        ctx.verify_now(key, name, first)     # must be stowed before we update
+
+        second = _alt_text(ctx, key, 4, "IT2")
+        ctx.write_member(key, name, second)
+
+        got = ctx.read_member(key, name)
+        d = textutil.diff_summary(second, got)
+        ctx.check(not d, "NFS read after updating stowed %s/%s: %s"
+                         % (key, name, d))
+        ctx.verify_member(key, name, second)
+
+
+@testcase("2.4", "rewrite_pending_member")
+def rewrite_pending_member(ctx):
+    """Rewrite a member while the server still has it PENDING.
+
+    Deliberately no verify_now and no settle between the two writes, so the
+    second one lands while the first is still buffered in the write pool.
+    That takes a different route through the server than 2.3: the slot is
+    found already in use, so the truncate-to-zero goes through the
+    "re-create over an existing pending member" path rather than allocating
+    a fresh slot -- and the member must end up as the SECOND content only,
+    with nothing left of the first.
+
+    Both sizes, because a pending member may be held in memory or in the
+    spill dataset, and the reset path differs."""
+    for key in _text_keys(ctx):
+        for kind, name in (("small", "REWRS"), ("large", "REWRL")):
+            first  = ctx.gen(key, kind)
+            second = _alt_text(ctx, key, 5, "IT3")
+
+            ctx.reset(key, name)
+            ctx.write_member(key, name, first)
+            ctx.write_member(key, name, second)   # first copy still pending
+
+            got = ctx.read_member(key, name)
+            d = textutil.diff_summary(second, got)
+            ctx.check(not d, "NFS read after rewriting pending %s/%s: %s"
+                             % (key, name, d))
+            ctx.verify_member(key, name, second)
+
+
+@testcase("2.5", "append_no_data_loss", requires="mvs")
+def append_no_data_loss(ctx):
+    """An append must never leave the client thinking data was stored that
+    was not.  EITHER outcome is acceptable; only losing data is not:
+
+      refused  -- the write raises, and the member is byte-for-byte the
+                  original.  This is what the server does when it cannot
+                  honour the write: it has no pending buffer for the member
+                  and never reads one back, so satisfying a write at a
+                  non-zero offset would mean inventing the bytes before it
+                  and the flush would replace the member with zeros.
+      accepted -- the write succeeds, and the member is the original plus the
+                  appended text.  Nothing was lost, so nothing is wrong.
+
+    Which one happens is up to the CLIENT, not us, and that is why the test
+    accepts both.  NFS clients are page-granular: to append they must first
+    read the page they are about to modify.  For a member smaller than a page
+    that means reading the whole thing and rewriting it from offset 0 -- an
+    append at the API level that is a plain rewrite on the wire, which the
+    server handles normally.  Only once the member spans several pages does
+    the client write just the dirty tail page, at a non-zero offset, which is
+    the case the refusal exists for.
+
+    Hence the LARGE original: a small one is normalised into a rewrite by the
+    client and never reaches the code under test.  Even so the outcome is not
+    guaranteed -- wsize, caching and client version all bear on it -- so the
+    assertion is on the invariant that actually matters rather than on which
+    path was taken.
+
+    The settle() is LOAD-BEARING, not tidiness.  A flush stows the member but
+    KEEPS the slot, so an append arriving straight afterwards still finds the
+    buffer holding the original content and is then perfectly satisfiable.
+    Only once the idle sweep has released the slot is there nothing left to
+    append to.
+    """
+    for key in _text_keys(ctx):
+        name     = "APPEND"
+        original = ctx.gen(key, "large")      # must span several pages
+        extra    = _alt_text(ctx, key, 2, "IT5")
+
+        ctx.reset(key, name)
+        ctx.write_member(key, name, original)
+        ctx.verify_now(key, name, original)   # stowed in the PDS...
+        ctx.settle()                          # ...and the slot released
+
+        raised = None
+        try:
+            with open(str(ctx.member_path(key, name)), "a", newline="\n") as f:
+                f.write(extra)
+                f.flush()
+                os.fsync(f.fileno())          # force it to the server now
+        except (OSError, IOError) as e:       # noqa -- IOError is an alias
+            raised = e
+
+        if raised is not None:
+            ctx.verify_member(key, name, original)      # refused: unchanged
+        else:
+            ctx.verify_member(key, name, original + extra)   # accepted: intact
 
 
 # =====================================================================

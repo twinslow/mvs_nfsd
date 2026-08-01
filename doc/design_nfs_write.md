@@ -194,6 +194,28 @@ are zero-filled in the buffer.  For text members holes are unusual, but the
 buffer model handles them naturally.  Out-of-order chunks just land at their
 offset.
 
+**A write with no pending slot behind it, at a non-zero offset, is REFUSED**
+(`EIO` -> `NFS3ERR_IO`).  Nothing in this server reads an existing member
+back, so the buffer starts empty: honouring such a write would zero-fill
+everything before the offset and the flush would then replace the member with
+those zeros.  Refusing is the difference between an error the client reports
+and data it loses silently.
+
+The distinction is **"is there a slot?"**, not "is the offset zero?":
+
+| situation | slot? | outcome |
+|---|---|---|
+| new member, chunks arrive out of order | yes — CREATE made it | accepted; the gap is filled when the earlier offsets arrive |
+| append while the member is still buffered | yes — flush keeps the slot | accepted; the buffer still holds the earlier content, so it is genuinely satisfiable |
+| append after the idle sweep released the slot | no | **refused** |
+| write sequence resumed after the sweep cut it | no | **refused**; `PERF_PWW_LATE_GAP` records the gap that caused it, and the fix is a longer `PWW_IDLE_TIMEOUT_SECONDS` |
+
+So an append can succeed or fail depending on how long the client waited —
+non-deterministic, but never silently wrong, and that is the trade this
+design accepts rather than reading members back before writing them.
+Counted by `PERF_PWW_NZSTART`; covered by integration test 2.5 and unit test
+`mvspww/write/append_refused`.
+
 ## 6. Write verifier — do NOT persist it
 
 > **Implemented:** the verifier is `time()` (high 4 bytes) + a 32-bit hash of
