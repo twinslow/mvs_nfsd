@@ -4,7 +4,7 @@
  *
  * See doc/design_nfs_write.md Sec 8 (Phase 2).  Used only by mvspww.c; the
  * "spill_" prefix keeps these clearly distinct from the member-write path
- * (pww_write / pww_write_member, which write the real PDS member).
+ * (pww_write / pdsflush_write_member, which write the real PDS member).
  *
  * THIS IS THE WHOLE BOUNDARY.  Everything about a spilled member -- whether
  * it is spilled, where its bytes are, how big it is -- is reached through the

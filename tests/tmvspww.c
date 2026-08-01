@@ -7,7 +7,7 @@
  *   pww_init, pww_create, pww_write, pww_truncate, pww_find, pww_discard,
  *   and the non-flushing paths of pww_flush_member.
  *
- * The flush/STOW path (pww_flush_slot -> fopen/STOW/mvs_dynalloc/mvs_stow) is
+ * The flush/STOW path (pdsflush_slot -> fopen/STOW/mvs_dynalloc/mvs_stow) is
  * MVS-only real I/O and is NOT exercised here; every test is careful never to
  * trigger a flush (no dirty-slot flush, no pool eviction).  Where a test needs
  * a "just-flushed" (clean) slot it clears pm->dirty directly through the

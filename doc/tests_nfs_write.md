@@ -35,7 +35,7 @@ C:\Users\tony_\dev>
 
 On MVS console I see --
 ```
-/16.52.20 STC 1927  +[INFO ] pww_flush_slot: stowed TEMP.TESTPROJ.CNTL(TEST1), 431 bytes
+/16.52.20 STC 1927  +[INFO ] pdsflush_slot: stowed TEMP.TESTPROJ.CNTL(TEST1), 431 bytes
 ```
 
 ## Test 1W.02 - Verify file content on TSO/ISPF
@@ -159,7 +159,7 @@ twinslow@dev-desktop-vm:~$
 
 This message shown on MVS console
 ```
-/15.45.27 STC 1927  +[INFO ] pww_flush_slot: stowed TEMP.TESTPROJ.CNTL(TEST1), 422 bytes
+/15.45.27 STC 1927  +[INFO ] pdsflush_slot: stowed TEMP.TESTPROJ.CNTL(TEST1), 422 bytes
 ```
 
 ## Test 1L.02 - Verify file content on TSO/ISPF

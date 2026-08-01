@@ -123,7 +123,7 @@ NOTSTOP  DS    0H
 ***********************************************************************
 *
 DOSTART  DS    0H
-*        WTO   'CIBGET: Found start command CIB - freeing it'
+         WTO   'CIBGET: Found start command CIB - freeing it'
          QEDIT ORIGIN=COMCIBPT,BLOCK=(R11)  Free processed CIB
          BR    R6                    Return to caller
 *

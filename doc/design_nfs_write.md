@@ -264,7 +264,7 @@ latency to a few seconds.  This mirrors how the DOL pool and read cache
 already use time-based expiry.  `COMMIT`-driven flushes happen inline in
 `proc_commit` and don't wait for the sweep.
 
-The flush itself (`pww_flush_slot`) — note it neither enqueues nor allocates;
+The flush itself (`pdsflush_slot`) — note it neither enqueues nor allocates;
 both are already held from first write (§7.2), so it opens the held allocation
 by its ddname:
 
@@ -284,7 +284,7 @@ The READDIRPLUS-loop fix (a *stable* directory mtime) has a flip side: clients
 use a directory's mtime as their readdir cache-invalidation signal, so a
 stable mtime means a **newly stowed member never appears** in a cached
 listing.  The fix is a directory mtime that is stable between changes but
-**bumps when the directory changes**.  On every STOW (`pww_flush_slot`) we
+**bumps when the directory changes**.  On every STOW (`pdsflush_slot`) we
 therefore, for that dataset:
 
 - **bump `pds_dataset_t.dir_mtime`** (`export_dataset_touch`) — `vfs_stat` of
@@ -401,7 +401,7 @@ its own STAE rather than sharing one:
 | **B — ISPF stats** | `mvs_stow` STOW REPLACE adding the 30-byte user data (§9.1) | the member is **intact and stowed**; only its statistics are missing |
 
 Protection is per region, never per record: the establish is an SVC call,
-negligible against a member write.  `pww_flush_slot` splits into unprotected
+negligible against a member write.  `pdsflush_slot` splits into unprotected
 workers plus a guard — region A is shown below; region B has the same shape but
 the weaker recovery described further down:
 
@@ -480,7 +480,7 @@ than silent:
 2. **Drop our reference to the member stream** — the runtime has already closed
    it (that is what raised the `B14`), so recovery simply clears the saved
    `FILE *` and must **not** touch it again.  Because the abend unwinds out of
-   `pww_write_member`, keep it in a module-scope `static FILE *g_flush_fp` (the
+   `pdsflush_write_member`, keep it in a module-scope `static FILE *g_flush_fp` (the
    server is single-threaded and flushes one slot at a time), set on open and
    cleared on close or recovery.
 3. **Unallocate the member and DEQ the enqueue — mandatory, and in that
@@ -502,7 +502,7 @@ than silent:
 
    Release is issued by the **caller** (`pww_flush_idle` / `pww_flush_all` /
    the eviction path), not by the flush: an earlier version released inside
-   `pww_flush_slot`, which zeroed the slot underneath the caller — it then
+   `pdsflush_slot`, which zeroed the slot underneath the caller — it then
    logged an empty `flush failed for ()` and released a second time.
 4. **Mark the slot clean and free** so neither the idle sweep nor a later
    COMMIT retries it.  Retrying an out-of-space write only abends again; the
@@ -525,7 +525,7 @@ with running out of space.  Recovering from those would be actively harmful: an
 "I/O error", repeated silently, and the underlying bug hidden — the exact
 opposite of what you want while chasing a corruption bug.
 
-So `pww_abend_recoverable()` whitelists `B14`/`B37`/`D37`/`E37` and nothing
+So `pdsflush_abend_recoverable()` whitelists `B14`/`B37`/`D37`/`E37` and nothing
 else.  Anything outside that set is reported with unmistakably different wording
 ("UNEXPECTED abend ... probable PROGRAM ERROR") and sets a **fatal flag**
 (`pww_fatal_abend()`).  The main `select()` loop polls it alongside the operator
@@ -611,7 +611,7 @@ for the first cut; the ways out, in rough order of value:
    The memory expires (`PWW_FULL_EXPIRY_SEC`, 60s) so the server recovers on its
    own once an operator adds space, and any successful flush to that dataset
    clears it immediately.  A small fixed table (`PWW_FULL_REMEMBER`) holds the
-   recent offenders.  The predicate is `pww_dataset_is_full()` — named for the
+   recent offenders.  The predicate is `pdsflush_dataset_is_full()` — named for the
    *dataset*, never the slot pool (§5), which is a separate concern.
 4. **Check space before accepting.**  Consult the dataset's free extents at
    CREATE / first write and refuse early with `ENOSPC` on the (synchronous)
@@ -691,7 +691,7 @@ behind the first.  On Linux, COMMIT drains members one at a time and a second
 simultaneous dirty member for the same dataset is rare, which is why this went
 unseen for so long.
 
-**Fix:** `pww_flush_slot` now consults the same out-of-space memory at entry
+**Fix:** `pdsflush_slot` now consults the same out-of-space memory at entry
 and refuses before touching the runtime or the PDS.  The member's content is
 lost — the flush it replaces would have abended anyway — but exactly one abend
 occurs per episode, which is the survivable case.
@@ -844,14 +844,14 @@ whether the member is in memory or spilled, so `pww` grows one accessor:
 pww_read_range(pm, off, dst, len)   /* from pm->buf, or spill_read() if spilled */
 ```
 
-`vfs_pread` and `pww_flush_slot` call it instead of touching `pm->buf`
+`vfs_pread` and `pdsflush_slot` call it instead of touching `pm->buf`
 directly.  At flush the member is streamed in 4 KB blocks — read block →
 ASCII→EBCDIC → `fwrite` to the text-mode member (§9).  Because the text-mode
 runtime forms a record at each EBCDIC newline regardless of how the bytes are
 `fwrite`n, block-at-a-time streaming produces exactly the same records as the
 current one-pass write.
 
-The flush reads the content **once**: `pww_write_member` counts the ISPF records
+The flush reads the content **once**: `pdsflush_write_member` counts the ISPF records
 (one per LF, plus a trailing partial line — §9.1) off each ASCII chunk as it
 goes, so there is no separate line-counting read pass over the spill.  (An early
 version read the spill twice — count then write — which not only doubled the I/O
@@ -878,7 +878,7 @@ No explicit delete is needed and the 1000/256 JCC limits are never approached.
 
 The temp-file mechanics live in their own module, `src/mvsspl.c` / `mvsspl.h`,
 with a distinct `spill_` prefix so they are never confused with the
-member-write path (`pww_write` / `pww_write_member`, which write the *real* PDS
+member-write path (`pww_write` / `pdsflush_write_member`, which write the *real* PDS
 member):
 
 | Function | Role |
@@ -967,7 +967,7 @@ matches the JCC doc's warning that "not all file types allow user-data"; the
 routine appears intended for load-library members, not FB source members.
 
 So the stats are applied by two small **assembler helpers** (prototypes in
-`src/asmutils.h`), called from `pww_flush_slot` **after** `fclose` has stowed
+`src/asmutils.h`), called from `pdsflush_slot` **after** `fclose` has stowed
 the member (the member must already exist in the directory), and while the
 slot's `SPFEDIT` enqueue is still held (§7.2), so the directory rewrite is
 serialised against an editor just like the content STOW:
@@ -1033,7 +1033,7 @@ both the EBCDIC target and the little-endian test host.
 
 **Line count** is the number of records the member will have: one per LF, plus a
 final record for a trailing partial line.  The flush accumulates it in
-`pww_write_member` as it streams the content through its single read pass (§8.4)
+`pdsflush_write_member` as it streams the content through its single read pass (§8.4)
 — for both in-memory and spilled members — rather than making a separate pass.
 It tests for `0x0A` — not `'\n'`, which is the EBCDIC newline under JCC.  (The
 standalone `mvs_ispf_count_lines` in `mvspdir.c`, and its unit tests, remain as
