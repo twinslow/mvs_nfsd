@@ -74,7 +74,9 @@ static void spl_begin(int slot)
     g_ref_size = 0;
     g_rng      = 0x2545F491u;   /* fixed seed -> reproducible test data */
 
-    munit_assert_int(spill_open(&g_pm, slot), ==, 0);
+    /* NULL/0 content: transition an empty member, i.e. just open the
+       scratch (spill_open itself is private to mvsspl.c). */
+    munit_assert_int(spill_transition(&g_pm, slot, NULL, 0), ==, 0);
     munit_assert_ptr_not_null(g_pm.spill.fp);
     munit_assert_int((int)g_pm.spill.size, ==, 0);
 }

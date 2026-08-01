@@ -30,6 +30,7 @@
 
 #include "munit.h"
 #include "mvspww.h"
+#include "mvsspl.h"    /* has_spill_file_open() -- do not test pm->spill directly */
 
 #define DS   "TEMP.TEST.CNTL"
 #define MEM  "MEMBER1"
@@ -190,7 +191,7 @@ static MunitResult test_write_grows_buffer(const MunitParameter p[], void *d)
     pm = pww_find(DS, MEM);
     munit_assert_ptr_not_null(pm);
     munit_assert_int(pm->high_water,   ==, 70000);
-    munit_assert_ptr_not_null(pm->spill.fp);   /* spilled to disk        */
+    munit_assert_int(has_spill_file_open(pm), !=, 0);  /* spilled to disk */
     munit_assert_ptr_null(pm->buf);            /* in-memory buffer freed */
 
     /* Read the content back through the accessor: the written byte, and a
@@ -224,7 +225,7 @@ static MunitResult test_write_spill_segments(const MunitParameter p[], void *d)
     /* 20000 > PWW_SPILL_THRESHOLD -> spills on this first write. */
     munit_assert_int(pww_write(0, 0, DS, MEM, big, sizeof(big), 0), ==, 0);
     pm = pww_find(DS, MEM);
-    munit_assert_ptr_not_null(pm->spill.fp);
+    munit_assert_int(has_spill_file_open(pm), !=, 0);
 
     /* Overwrite 4 bytes within, and append 4 bytes past a 100-byte hole. */
     munit_assert_int(pww_write(0, 0, DS, MEM, a, 4, 50),    ==, 0);

@@ -44,7 +44,14 @@
    (t#seqrw2), so we reduce every write to that. */
 static uint8_t g_spill_block[SPILL_BLK];
 
-int spill_open(pending_member_t *pm, int slot_id)
+int has_spill_file_open(const pending_member_t *pm)
+{
+    return pm->spill.fp != NULL;
+}
+
+/* Open the slot's scratch dataset.  Private: the only way a member becomes
+   spilled is spill_transition(), which owns the rollback on failure. */
+static int spill_open(pending_member_t *pm, int slot_id)
 {
     if (pm->spill.fp != NULL)      /* already spilled -- should not happen */
         return 0;
@@ -227,15 +234,20 @@ int spill_write(pending_member_t *pm, uint32_t off,
     return 0;
 }
 
-void spill_shrink(pending_member_t *pm, uint32_t size)
+int spill_truncate(pending_member_t *pm, uint32_t size)
 {
-    /* Lowering the logical extent is all that is needed: the blocks stay on
-       disk but nothing reads them, because every reader is bounded by the
-       member's high_water.  A later write back into the freed region goes
-       through spill_write, which zero-fills any hole it finds ahead of the
-       current extent -- so the stale bytes can never resurface. */
-    if (size < pm->spill.size)
-        pm->spill.size = size;
+    /* Grow: zero-extend to 'size' with an empty write (spill_write fills the
+       hole ahead of the current extent). */
+    if (size > pm->spill.size)
+        return spill_write(pm, size, NULL, 0);
+
+    /* Shrink: lowering the recorded extent is all that is needed.  The blocks
+       stay on disk but nothing reads them -- every reader is bounded by the
+       member's logical size -- and a later write back into the freed region
+       goes through spill_write, which zero-fills any hole ahead of the
+       current extent, so the stale bytes can never resurface. */
+    pm->spill.size = size;
+    return 0;
 }
 
 int spill_read(pending_member_t *pm, uint32_t off,
@@ -270,9 +282,28 @@ int spill_read(pending_member_t *pm, uint32_t off,
 void spill_close(pending_member_t *pm)
 {
     if (pm->spill.fp != NULL) {
-        fclose(pm->spill.fp);        /* on the dev host this deletes tmpfile */
+        log_debug("spill_close: closing spill for %s(%s) ...",
+                  pm->dsname_ebcdic, pm->member_name);
+        fclose(pm->spill.fp);
         pm->spill.fp = NULL;
     }
     pm->spill.size  = 0;
     pm->spill.dirty = 0;
+}
+
+int spill_transition(pending_member_t *pm, int slot_id,
+                     const uint8_t *data, uint32_t len)
+{
+    if (spill_open(pm, slot_id) != 0)
+        return -1;                   /* nothing opened; caller keeps its buffer */
+
+    if (len > 0 && data != NULL) {
+        if (spill_write(pm, 0, data, len) != 0) {
+            int saved = errno;
+            spill_close(pm);         /* roll back: the member is in memory again */
+            errno = saved;
+            return -1;
+        }
+    }
+    return 0;
 }

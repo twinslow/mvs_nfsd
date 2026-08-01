@@ -15,7 +15,7 @@
 
 #include "nfsd.h"
 #include "mvspww.h"
-#include "mvsspl.h"      /* spill store: spill_open/write/read/close (Phase 2) */
+#include "mvsspl.h"      /* spill store -- the whole mvsspl.c boundary        */
 #include "mvspdir.h"
 #include "mvsdol.h"
 #include "ebcdic.h"
@@ -542,9 +542,6 @@ static void pww_unlock(pending_member_t *pm)
 static void pww_slot_release_inner(pending_member_t *pm)
 {
     pww_unlock(pm);        /* DEQ + unallocate whatever the slot still holds */
-    if (pm->spill.fp != NULL)
-        log_debug("pww_slot_release: closing spill for %s(%s) ...",
-                  pm->dsname_ebcdic, pm->member_name);
     spill_close(pm);       /* close the scratch dataset if the member spilled */
     if (pm->buf != NULL)
         free(pm->buf);
@@ -727,22 +724,15 @@ static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
    buffer into it at offset 0, and free the buffer.  On any failure the slot is
    rolled back to in-memory (buffer intact, scratch closed) and -1 is returned
    with errno set, so the caller can fail the write and the slot stays coherent.
-   Caller must have checked pm->spill.fp == NULL. */
+   Caller must have checked has_spill_file_open() is false. */
 static int pww_spill_transition(pending_member_t *pm)
 {
     int slot = (int)(pm - g_pww_pool);
 
-    if (spill_open(pm, slot) != 0)
+    /* mvsspl.c moves the bytes and owns the rollback; the buffer is ours to
+       free, and only once the content is safely on disk. */
+    if (spill_transition(pm, slot, pm->buf, pm->high_water) != 0)
         return -1;                          /* still fully in memory */
-
-    if (pm->high_water > 0 && pm->buf != NULL) {
-        if (spill_write(pm, 0, pm->buf, pm->high_water) != 0) {
-            int saved = errno;
-            spill_close(pm);                /* roll back to in-memory */
-            errno = saved;
-            return -1;
-        }
-    }
 
     if (pm->buf != NULL) {
         free(pm->buf);
@@ -870,7 +860,7 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
 {
     uint64_t end = offset + (uint64_t)count;
 
-    if (pm->spill.fp == NULL && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
+    if (!has_spill_file_open(pm) && end <= (uint64_t)PWW_SPILL_THRESHOLD) {
         if (pww_slot_ensure_cap(pm, (uint32_t)end) < 0)
             return -1;    /* errno set (ENOSPC/ENOMEM) */
 
@@ -885,7 +875,7 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
         /* Spill path: transition on the write that first crosses the threshold,
            then place this segment in the scratch dataset (spill_write handles
            the hole zero-fill and the "cannot fseek past EOF" extension). */
-        if (pm->spill.fp == NULL) {
+        if (!has_spill_file_open(pm)) {
             if (pww_spill_transition(pm) != 0)
                 return -1;    /* errno set; slot rolled back to in-memory */
         }
@@ -910,7 +900,7 @@ int pww_read_range(pending_member_t *pm, uint32_t off,
 {
     if (len == 0)
         return 0;
-    if (pm->spill.fp == NULL) {
+    if (!has_spill_file_open(pm)) {
         memcpy(dst, pm->buf + off, (size_t)len);
         return 0;
     }
@@ -1405,16 +1395,11 @@ int pww_truncate(int export_idx, int dataset_idx,
 
     /* Adjust the existing pending member to exactly 'size' bytes, spilling if
        the new size crosses the in-memory threshold. */
-    if (pm->spill.fp != NULL) {
-        /* Already spilled: grow by zero-extending the scratch, shrink by
-           lowering its logical extent.  Both are spill-store operations, so
-           both go through mvsspl.c -- see pww_spill_t on the ownership rule. */
-        if (size > pm->high_water) {
-            if (spill_write(pm, size, NULL, 0) != 0)
-                return -1;               /* errno set (EIO) */
-        } else {
-            spill_shrink(pm, size);
-        }
+    if (has_spill_file_open(pm)) {
+        /* Already spilled: resizing the scratch, in either direction, is
+           entirely mvsspl.c's business. */
+        if (spill_truncate(pm, size) != 0)
+            return -1;                   /* errno set (EIO) */
     } else if (size <= (uint32_t)PWW_SPILL_THRESHOLD) {
         /* Stays in memory. */
         if (size > pm->buf_cap) {
