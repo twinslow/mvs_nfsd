@@ -54,8 +54,8 @@ int spill_open(pending_member_t *pm, int slot_id)
 
         sprintf(name, "//DSN:&&PWWSP%02d", slot_id);
         pm->spill.fp = fopen(name,
-            "w+b," PWW_SPILL_DS_SPACE_PARMS ","
-            "dsorg=ps,recfm=fb,blksize=4096,lrecl=4096");
+            "w+b," SPILL_DS_SPACE_PARMS
+            ",dsorg=ps,recfm=fb,blksize=4096,lrecl=4096");
         if (pm->spill.fp == NULL) {
             log_error("spill_open: fopen %s failed: %s",
                       name, strerror(errno));

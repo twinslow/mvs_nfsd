@@ -15,6 +15,11 @@
 #include "types.h"
 #include "mvspww.h"     /* pending_member_t, pww_spill_t (pm->spill) */
 
+
+/* This string will be concatenated into the file open mode for the spill */
+/* temporary dataset at compile time                                      */
+#define SPILL_DS_SPACE_PARMS   "pri=15,sec=15,rlse,unit=sysda"
+
 /* Open the scratch dataset for a slot that is spilling to disk.  slot_id names
  * the per-slot temp dataset (&&PWWSP<nn>) so it is reused, never accumulated.
  * This is a DSORG=PS RECFM=FB BLKSIZE=4096 temp dataset opened binary "w+b".
