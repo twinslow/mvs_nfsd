@@ -188,6 +188,31 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
     vsnprintf(msg_buf, sizeof(msg_buf), fmt, ap);
     msg_buf[sizeof(msg_buf) - 1] = '\0';   /* some libcs omit the NUL */
 
+#ifdef __MVS__
+    /* CONSOLE FIRST, and the order is load-bearing.
+     *
+     * WTO is a supervisor call and touches none of the C runtime.  The stream
+     * write below goes through @STDIO into @IO, which serialises every file
+     * operation on one module-scope lock -- and an abend trapped by a STAE
+     * can leave that lock held, after which the next file operation deadlocks
+     * against itself (see doc/design_nfs_write.md Sec 7.3.1).  Writing the
+     * stream first meant the message died in the deadlock it was trying to
+     * report, which is why a hung task went silent with no final line.
+     *
+     * Reaching here already means level >= g_log_level, so the effective
+     * console floor is max(g_log_level, g_wto_level) -- raising WTOLVL
+     * quietens the console without touching the stream, but it can never
+     * surface a line the stream itself has filtered out.
+     * No timestamp -- operator messages stay concise.
+     */
+    if (level >= g_wto_level) {
+        snprintf(wto_buf, sizeof(wto_buf), "[%s] %s",
+                 level_tag(level), msg_buf);
+        wto_buf[sizeof(wto_buf) - 1] = '\0';
+        _write2op(wto_buf);
+    }
+#endif
+
     /* Optional timestamp prefix (log stream only, not WTO). */
     ts_buf[0] = '\0';
     if (g_log_timestamps) {
@@ -209,21 +234,6 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
     sprintf(pfx_buf, "%s[%s] ", ts_buf, level_tag(level));
     log_emit(fp, pfx_buf, msg_buf);
     fflush(fp);
-
-#ifdef __MVS__
-    /* Also write to the operator console via WTO when the line meets the
-       console threshold.  Reaching here already means level >= g_log_level,
-       so the effective console floor is max(g_log_level, g_wto_level) --
-       raising WTOLVL quietens the console without touching the stream, but
-       it can never surface a line the stream itself has filtered out.
-       No timestamp -- operator messages stay concise. */
-    if (level >= g_wto_level) {
-        snprintf(wto_buf, sizeof(wto_buf), "[%s] %s",
-                 level_tag(level), msg_buf);
-        wto_buf[sizeof(wto_buf) - 1] = '\0';
-        _write2op(wto_buf);
-    }
-#endif
 }
 
 /* -------------------------------------------------------------------- */

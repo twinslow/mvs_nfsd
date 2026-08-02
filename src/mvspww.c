@@ -325,7 +325,10 @@ static void pww_unalloc_guarded(pending_member_t *pm)
                          pm->dsname_ebcdic, pm->member_name, scratch) != 0)
             log_warn("pww_unlock: unalloc %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
-        (void)_setjmp_canc();
+        if (_setjmp_canc() != 0)
+            log_error("pww_unlock: _setjmp_canc FAILED after unalloc %s(%s)"
+                      " -- a STAE is left established", pm->dsname_ebcdic,
+                      pm->member_name);
     } else if (rc == 1) {
         log_error("pww_unlock: ABEND S%03X unallocating %s(%s) -- ddname may"
                   " leak; continuing to the DEQ, and requesting shutdown so"
@@ -357,7 +360,10 @@ static void pww_deq_guarded(pending_member_t *pm)
         if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0)
             log_warn("pww_unlock: DEQ %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
-        (void)_setjmp_canc();
+        if (_setjmp_canc() != 0)
+            log_error("pww_unlock: _setjmp_canc FAILED after DEQ %s(%s)"
+                      " -- a STAE is left established", pm->dsname_ebcdic,
+                      pm->member_name);
     } else if (rc == 1) {
         log_error("pww_unlock: ABEND S%03X releasing the SPFEDIT enqueue on"
                   " %s(%s) -- the member may stay LOCKED against ISPF;"
@@ -423,7 +429,9 @@ static void pww_slot_release(pending_member_t *pm)
     if (rc == 0) {
         pww_slot_release_inner(pm);
         if (_setjmp_canc() != 0)
-            log_warn("pww_slot_release: _setjmp_canc failed");
+            log_error("pww_slot_release: _setjmp_canc FAILED releasing %s(%s)"
+                      " -- a STAE is left established", pm->dsname_ebcdic,
+                      pm->member_name);
         return;
     }
     if (rc == 1) {

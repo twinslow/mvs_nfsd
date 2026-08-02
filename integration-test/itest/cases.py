@@ -262,7 +262,7 @@ def update_stowed_member(ctx):
         d = textutil.diff_summary(second, got)
         ctx.check(not d, "NFS read after updating stowed %s/%s: %s"
                          % (key, name, d))
-        ctx.verify_member(key, name, second)
+        ctx.verify_member(key, name, second, updated=True)
 
 
 @testcase("2.4", "rewrite_pending_member")
@@ -292,7 +292,7 @@ def rewrite_pending_member(ctx):
             d = textutil.diff_summary(second, got)
             ctx.check(not d, "NFS read after rewriting pending %s/%s: %s"
                              % (key, name, d))
-            ctx.verify_member(key, name, second)
+            ctx.verify_member(key, name, second, updated=True)
 
 
 @testcase("2.5", "append_no_data_loss", requires="mvs")
@@ -352,7 +352,8 @@ def append_no_data_loss(ctx):
         if raised is not None:
             ctx.verify_member(key, name, original)      # refused: unchanged
         else:
-            ctx.verify_member(key, name, original + extra)   # accepted: intact
+            ctx.verify_member(key, name, original + extra,   # accepted: intact
+                              updated=True)
 
 
 # =====================================================================

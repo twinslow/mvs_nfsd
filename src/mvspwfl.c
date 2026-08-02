@@ -290,11 +290,18 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
     if (rc == 0) {                          /* armed -- do the work */
         int frc = pdsflush_write_member(pm, open_target, lines_out);
         if (_setjmp_canc() != 0)
-            log_warn("pdsflush_slot: _setjmp_canc failed");
+            log_error("pdsflush_slot: _setjmp_canc FAILED after writing %s(%s)"
+                      " -- a STAE is left established", pm->dsname_ebcdic,
+                      pm->member_name);
         return frc;
     }
 
     if (rc == 1) {                          /* an abend was intercepted */
+        /* No _setjmp_canc() here, and none is needed: measured 2026-08-01,
+           it returns 8 ("nothing to cancel") on every trapped abend, exactly
+           as JCC documents.  The spent exits that pile up in a dump are not
+           a leak we can close from C -- MVS keeps them chained but marks
+           them used, and they are unrelated to the @IO deadlock. */
         code = SDWA_ABEND_CODE(sdwa);
         if (pdsflush_abend_recoverable(code)) {
             /* Expected: the dataset filled up.  Remember it, so the next write
@@ -381,7 +388,9 @@ static int pdsflush_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
     if (rc == 0) {                          /* armed -- do the work */
         int src = pdsflush_apply_stats(pm, stats_ud);
         if (_setjmp_canc() != 0)
-            log_warn("pdsflush_slot: _setjmp_canc failed (stats)");
+            log_error("pdsflush_slot: _setjmp_canc FAILED after stats on %s(%s)"
+                      " -- a STAE is left established", pm->dsname_ebcdic,
+                      pm->member_name);
         return src;
     }
 
