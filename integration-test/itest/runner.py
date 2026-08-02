@@ -62,14 +62,19 @@ def run_all(ctx, filters=None, sections=None, repeat=1):
     stop = False
     for it in range(1, repeat + 1):
         if repeat > 1:
-            print("\n----- pass %d/%d -----" % (it, repeat))
+            print("\n----- pass %d/%d -----  %s"
+                  % (it, repeat, time.strftime("%H:%M:%S")))
         for entry in selected:
             label = "[%s] %s" % (entry["section"], entry["name"])
+            # Start time, LOCAL, on every result line.  The MVS console
+            # timestamps in local time too, so a test can be lined up against
+            # the server's log without arithmetic.
+            t0  = time.time()
+            t0s = time.strftime("%H:%M:%S", time.localtime(t0))
             if entry["requires"] == "mvs" and ctx.mode != "mvs":
-                print("SKIP %-42s (MVS-only)" % label)
+                print("%s SKIP %-42s (MVS-only)" % (t0s, label))
                 skipped += 1
                 continue
-            t0 = time.time()
             try:
                 entry["fn"](ctx)
                 # Backend verifications are queued by the test and run here,
@@ -77,14 +82,14 @@ def run_all(ctx, filters=None, sections=None, repeat=1):
                 # failure is still attributed to this test and the offending
                 # member is still on the server to inspect.
                 ctx.drain_verifications()
-                print("PASS %-42s (%.2fs)" % (label, time.time() - t0))
+                print("%s PASS %-42s (%.2fs)" % (t0s, label, time.time() - t0))
                 passed += 1
             except TestSkip as e:
-                print("SKIP %-42s (%s)" % (label, e))
+                print("%s SKIP %-42s (%s)" % (t0s, label, e))
                 skipped += 1
             except Exception as e:
                 ctx.mark_failed()     # keep this test's members for post-mortem
-                print("FAIL %-42s (%.2fs) -- %s" % (label, time.time() - t0, e))
+                print("%s FAIL %-42s (%.2fs) -- %s" % (t0s, label, time.time() - t0, e))
                 failures.append(("pass %d: %s" % (it, label), traceback.format_exc()))
                 failed += 1
                 stop = (repeat > 1)   # loop-until-fail: stop at the first one
