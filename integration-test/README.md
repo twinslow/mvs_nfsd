@@ -155,6 +155,9 @@ Numbers match `--section`. "MVS-only" tests skip automatically in `plain` mode.
 | 1.5 | upload_invalid_name *(MVS-only)* | Create a member with a non-matching extension; assert it's rejected. |
 | 2.1 | download_small_large | Prepare members out-of-band (FTP upload), read via NFS, compare. |
 | 2.2 | upload_then_download | Write via NFS, immediately read back (small + large). |
+| 2.3 | update_stowed_member | Overwrite a member already stowed in the PDS; replacement is shorter. |
+| 2.4 | rewrite_pending_member | Rewrite a member the server still holds pending (small + large). |
+| 2.5 | append_no_data_loss | Append a large member: either refused with the member unchanged, or accepted with it intact. |
 | 3 | touch_create | `touch` a new path; assert an (empty) member appears. |
 | 4 | update_stats | Set mtime on an existing member; assert mtime moved and content is unchanged. |
 | 5.1 | delete_exists | Delete a member; assert it's gone. |

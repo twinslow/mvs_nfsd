@@ -106,23 +106,26 @@ typedef enum {
     PERF_PWW_LATE_GAP,
 
     /*
-     * Write sequences that began at a NON-ZERO offset.  A normal client
-     * writes a member from offset 0, so a first write anywhere else means
-     * one of three things:
+     * WRITEs REFUSED because they arrived at a non-zero offset with no
+     * pending slot behind them.
+     *
+     * Nothing here ever reads an existing member back, so such a write
+     * could only be satisfied by inventing the bytes before it -- and the
+     * flush would then replace the member with those zeros.  It is refused
+     * with EIO instead, so the client is told rather than losing data
+     * quietly.  Two causes:
      *
      *   a) the idle sweep flushed and released the slot while the client
-     *      was merely pausing, and it has now resumed -- the member gets
-     *      STOWed twice and the earlier copy's blocks are abandoned;
-     *   b) writes simply arrived out of order, which is HARMLESS: the
-     *      zero-filled gap is overwritten when the earlier offsets turn
-     *      up;
-     *   c) a genuine random-access write that never fills the gap, which
-     *      leaves binary zeros in the member.
+     *      was merely pausing, and it has now resumed.  Also recorded in
+     *      PERF_PWW_LATE_GAP, with the gap that caused it -- the fix is a
+     *      longer PWW_IDLE_TIMEOUT_SECONDS;
+     *   b) an append, or a random-access write.  Never supported; a member
+     *      must be written from offset 0.
      *
-     * This slot counts all three, and needs no state to do it, so it can
-     * never miss one.  The subset confirmed as (a) is also recorded in
-     * PERF_PWW_LATE_GAP; the difference between the two counts is the
-     * (b)+(c) population, which is worth investigating if it is not zero.
+     * The difference between this count and PERF_PWW_LATE_GAP's is the (b)
+     * population.  Writes arriving OUT OF ORDER are not counted here and
+     * are not refused: CREATE has already made the slot, so they land in a
+     * buffer whose gap the earlier offsets fill in (design Sec 5.2).
      *
      * COUNT is the only meaningful column here -- the recorded value is
      * always 0, so total/avg/min/max will read zero.

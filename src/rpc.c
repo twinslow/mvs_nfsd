@@ -262,7 +262,7 @@ static int rpc_write_expected_len(const uint8_t *buf, uint32_t total,
     return 0;
 }
 
-#define QUICK_CHECK
+//#define QUICK_CHECK
 
 static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
                                const uint32_t *frag_off,

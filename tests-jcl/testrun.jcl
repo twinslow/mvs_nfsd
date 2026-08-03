@@ -11,7 +11,7 @@
 //* Desc: Build and run the mUnit tests for NFSD server
 //*
 //********************************************************************
-//* 
+//*
 //JCCCMOD PROC SOUT='*',JCC='JCC',
 //          INFILE='TONYW.DINONFS.C',
 //          OBJFILE='TONYW.DINONFS.OBJLIB',
@@ -67,30 +67,30 @@
 //          LOADLIB='TONYW.DINONFS.LOAD',
 //          MODULE='XXXXX'
 //*
-//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K                    
-//SYSLIB   DD   DSN=&MAC,DISP=SHR                                  
-//         DD   DSN=&MAC1,DISP=SHR                                 
-//         DD   DSN=&MAC2,DISP=SHR                                 
-//         DD   DSN=&MAC3,DISP=SHR                                 
-//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),    
-//             SEP=(SYSLIB)                                        
-//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),     
-//             SEP=(SYSLIB,SYSUT1)                                 
-//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))      
-//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089                      
-//SYSPUNCH DD   SYSOUT=&SOUT                                           
-//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),       
+//ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K
+//SYSLIB   DD   DSN=&MAC,DISP=SHR
+//         DD   DSN=&MAC1,DISP=SHR
+//         DD   DSN=&MAC2,DISP=SHR
+//         DD   DSN=&MAC3,DISP=SHR
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=SYSSQ,SPACE=(1700,(600,100)),
+//             SEP=(SYSLIB)
+//SYSUT2   DD   DSN=&&SYSUT2,UNIT=SYSSQ,SPACE=(1700,(300,50)),
+//             SEP=(SYSLIB,SYSUT1)
+//SYSUT3   DD   DSN=&&SYSUT3,UNIT=SYSSQ,SPACE=(1700,(300,50))
+//SYSPRINT DD   SYSOUT=&SOUT,DCB=BLKSIZE=1089
+//SYSPUNCH DD   SYSOUT=&SOUT
+//SYSGO    DD   DSN=&&OBJSET,UNIT=SYSSQ,SPACE=(80,(200,50)),
 //             DISP=(MOD,PASS)
-//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)             
-//*                                     
-//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,    
-//             COND=(8,LT,ASM)                                     
-//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)                     
-//*         DD   DDNAME=SYSIN                                       
-//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),    
-//             SPACE=(1024,(50,20))                                
+//SYSIN    DD   DISP=SHR,DSN=&SRCLIB(&MODULE)
+//*
+//LKED     EXEC PGM=IEWL,PARM=(XREF,LET,LIST,NCAL),REGION=128K,
+//             COND=(8,LT,ASM)
+//SYSLIN   DD   DSN=&&OBJSET,DISP=(OLD,DELETE)
+//*         DD   DDNAME=SYSIN
+//SYSUT1   DD   DSN=&&SYSUT1,UNIT=(SYSDA,SEP=(SYSLIN,SYSLMOD)),
+//             SPACE=(1024,(50,20))
 //SYSPRINT DD   SYSOUT=&SOUT
-//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)          
+//SYSLMOD  DD   DISP=SHR,DSN=&LOADLIB(&MODULE)
 //*
 //ASMMOD   PEND
 //*
@@ -103,7 +103,7 @@
 //GETCIB   EXEC ASMMOD,MODULE=GETCIB
 //MVSDALC  EXEC ASMMOD,MODULE=MVSDALC
 //MVSSTOW  EXEC ASMMOD,MODULE=MVSSTOW
-//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ 
+//MVSENQ   EXEC ASMMOD,MODULE=MVSENQ
 //*
 //********************************************************************
 //*
@@ -114,11 +114,12 @@
 //CFGOPTS  EXEC JCCCMOD,MODNAME=CFGOPTS
 //LOGGER   EXEC JCCCMOD,MODNAME=LOGGER
 //MVSDOL   EXEC JCCCMOD,MODNAME=MVSDOL
-//MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ                                
-//MVSIO    EXEC JCCCMOD,MODNAME=MVSIO                                 
+//MVSFSZ   EXEC JCCCMOD,MODNAME=MVSFSZ
+//MVSIO    EXEC JCCCMOD,MODNAME=MVSIO
 //MVSPDIR  EXEC JCCCMOD,MODNAME=MVSPDIR
 //MVSPRF   EXEC JCCCMOD,MODNAME=MVSPRF
 //MVSPRW   EXEC JCCCMOD,MODNAME=MVSPRW
+//MVSPWFL  EXEC JCCCMOD,MODNAME=MVSPWFL
 //MVSPWW   EXEC JCCCMOD,MODNAME=MVSPWW
 //MVSSPL   EXEC JCCCMOD,MODNAME=MVSSPL
 //MVSUTL   EXEC JCCCMOD,MODNAME=MVSUTL
@@ -128,18 +129,18 @@
 //MVSFID   EXEC JCCCMOD,MODNAME=MVSFID
 //*
 //********************************************************************
-//*                                                                   
-//* Compile unit test modules                                         
-//*                                                                   
+//*
+//* Compile unit test modules
+//*
 //********************************************************************
 //TSTUBS   EXEC JCCCTST,MODNAME=TSTUBS
 //TLOGGER  EXEC JCCCTST,MODNAME=TLOGGER
 //TCFGOPTS EXEC JCCCTST,MODNAME=TCFGOPTS
 //TMVSDOL  EXEC JCCCTST,MODNAME=TMVSDOL
-//TMVSFSZ  EXEC JCCCTST,MODNAME=TMVSFSZ                               
-//TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO                                
-//TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2                               
-//TMVSPDIR EXEC JCCCTST,MODNAME=TMVSPDIR                               
+//TMVSFSZ  EXEC JCCCTST,MODNAME=TMVSFSZ
+//TMVSIO   EXEC JCCCTST,MODNAME=TMVSIO
+//TMVSIO2  EXEC JCCCTST,MODNAME=TMVSIO2
+//TMVSPDIR EXEC JCCCTST,MODNAME=TMVSPDIR
 //TMVSPRW  EXEC JCCCTST,MODNAME=TMVSPRW
 //TMVSPRF  EXEC JCCCTST,MODNAME=TMVSPRF
 //TMVSPWW  EXEC JCCCTST,MODNAME=TMVSPWW
@@ -152,17 +153,17 @@
 //TMVSUTL  EXEC JCCCTST,MODNAME=TMVSUTL
 //*
 //********************************************************************
-//*                                                                   
-//* Compile RUNALL, then link and run tests                           
-//*                                                                   
+//*
+//* Compile RUNALL, then link and run tests
+//*
 //********************************************************************
-//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',   
-//             PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',       
-//             JOPTS='-D_MVS -D__MVS__ -o -list=//DDN:SYSPRINT'       
-//COMPILE.JCCINCS DD DISP=SHR,DSN=SYSD.MUNIT.H                        
-//          DD DISP=SHR,DSN=TONYW.DINONFS.H                           
-//          DD DISP=SHR,DSN=TONYW.DINONFS.TESTS.H                     
-//COMPILE.SYSPRINT DD SYSOUT=*                                        
+//JCCCLG  EXEC JCCCLG,INFILE='TONYW.DINONFS.TESTS.C(RUNALL)',
+//             PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
+//             JOPTS='-D_MVS -D__MVS__ -o -list=//DDN:SYSPRINT'
+//COMPILE.JCCINCS DD DISP=SHR,DSN=SYSD.MUNIT.H
+//          DD DISP=SHR,DSN=TONYW.DINONFS.H
+//          DD DISP=SHR,DSN=TONYW.DINONFS.TESTS.H
+//COMPILE.SYSPRINT DD SYSOUT=*
 //PRELINK.I DD DISP=SHR,DSN=SYSD.MUNIT.OBJLIB(MUNIT)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(CFGOPTS)
@@ -172,6 +173,7 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPDIR)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPRW)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWFL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSSPL)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)
@@ -180,13 +182,13 @@
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(FHANDLE)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSFID)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(EBCDIC)
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSFSZ)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)              
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPDIR)             
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)             
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TSTUBS)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSDOL)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSFSZ)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSIO2)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPDIR)
+//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPRF)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSPWW)
 //          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(TMVSSPL)
@@ -207,4 +209,4 @@
 //GO.TSTFSZ DD DISP=(NEW,DELETE),DSN=&&TESTFSZ,
 //          UNIT=SYSDA,VOL=SER=TSO003,SPACE=(TRK,2),
 //          DCB=(DSORG=PS,RECFM=VB,LRECL=255,BLKSIZE=27998)
-//                                                                    
+//

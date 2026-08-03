@@ -226,9 +226,24 @@ class Context(object):
             pass
 
     def reset(self, key, *names):
-        """Delete members so a test is idempotent across reruns."""
+        """Delete members so a test is idempotent across reruns.
+
+        A delete that FAILS is reported here, not swallowed.  A member left
+        behind is read later by the out-of-band verification, which then sees
+        the PREVIOUS run's content and reports it as corruption -- seconds
+        later, in a different step, with a hex dump that looks alarming and
+        says nothing about the real cause.  Failing at the point of the
+        refused delete costs one line and names it.
+
+        Absence is fine and expected: most runs have nothing to delete."""
         for n in names:
             self.remove_member(key, n)
+            if self.member_path(key, n).exists():
+                raise AssertionError(
+                    "reset: %s(%s) still exists after delete. Something else"
+                    " holds the dataset -- an ISPF/REVIEW member list keeps it"
+                    " allocated DISP=SHR, which blocks the DISP=OLD allocation"
+                    " the delete needs." % (self.ds(key)["nfs_dir"], n))
 
     # -- setup / verification helpers -------------------------------------
     def ensure_dirs(self):
@@ -243,7 +258,7 @@ class Context(object):
         if not cond:
             raise AssertionError(msg)
 
-    def verify_member(self, key, name, expected_text):
+    def verify_member(self, key, name, expected_text, updated=False):
         """Queue a backend verification for the END of the test.
 
         Verification is DEFERRED rather than performed here, because the
@@ -263,12 +278,12 @@ class Context(object):
         operation on that member -- nothing renames or deletes it afterwards.
         Where an immediate check IS required (asserting a member is readable
         before the test does something else to it), call verify_now()."""
-        self._pending_verify.append((key, name, expected_text))
+        self._pending_verify.append((key, name, expected_text, updated))
 
-    def verify_now(self, key, name, expected_text):
+    def verify_now(self, key, name, expected_text, updated=False):
         """Verify immediately, bypassing the queue.  Use only when the test
         depends on the check having happened before it continues."""
-        self._verify_one(key, name, expected_text, self._deadline())
+        self._verify_one(key, name, expected_text, self._deadline(), updated)
 
     def drain_verifications(self):
         """Run every queued verification.  Called by the runner once the test
@@ -278,16 +293,27 @@ class Context(object):
         readable straight away, which is the point of batching."""
         pending = self._pending_verify
         self._pending_verify = []
-        for key, name, expected_text in pending:
-            self._verify_one(key, name, expected_text, self._deadline())
+        for key, name, expected_text, updated in pending:
+            self._verify_one(key, name, expected_text, self._deadline(), updated)
 
-    def _verify_one(self, key, name, expected_text, end):
+    def _verify_one(self, key, name, expected_text, end, updated=False):
         """Assert the backend's copy of the member matches expected_text.
 
         Retries while the member is not yet fetchable: right after an NFS write
         the flush may not have happened, so the first fetch can legitimately
         fail with 550.  Once it IS fetchable a content mismatch fails at once --
-        we only retry the "not there yet" case, never a wrong-content one."""
+        we only retry the "not there yet" case, never a wrong-content one.
+
+        'updated' relaxes that for the one case where it is wrong: a member
+        that ALREADY EXISTED before the write being verified.  There, the old
+        copy stays perfectly fetchable until the flush lands, so a premature
+        fetch returns the PREVIOUS content -- a mismatch that is pure timing,
+        not corruption.  With updated=True a mismatch is retried to the same
+        deadline; only if it never resolves is it reported.
+
+        Keep it opt-in.  For a member created fresh, an immediate mismatch
+        really is a defect and must fail at once with the evidence intact --
+        that is how the receive-corruption bug was caught."""
         last = None
         while True:
             try:
@@ -311,6 +337,15 @@ class Context(object):
             d = textutil.diff_summary(expected_text, actual)
             if not d:
                 return
+
+            # An UPDATE can legitimately still be showing the old content:
+            # the member existed, so it is fetchable before the new write has
+            # been flushed.  Give it the same deadline the "not there yet"
+            # case gets.
+            if updated and time.time() < end:
+                time.sleep(0.5)
+                continue
+
             self._preserve.add((key, name))
             raise AssertionError("member %s(%s) mismatch: %s\n%s"
                                  % (self.ds(key)["nfs_dir"], name, d,

@@ -21,3 +21,6 @@ zapp.yaml
 .mvs_upload_lastrun
 .mvs_upload_ftp.log
 .mvs_download_ftp.log
+
+# Integration test config
+integration-test/config.json

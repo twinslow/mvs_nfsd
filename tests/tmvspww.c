@@ -7,7 +7,7 @@
  *   pww_init, pww_create, pww_write, pww_truncate, pww_find, pww_discard,
  *   and the non-flushing paths of pww_flush_member.
  *
- * The flush/STOW path (pww_flush_slot -> fopen/STOW/mvs_dynalloc/mvs_stow) is
+ * The flush/STOW path (pdsflush_slot -> fopen/STOW/mvs_dynalloc/mvs_stow) is
  * MVS-only real I/O and is NOT exercised here; every test is careful never to
  * trigger a flush (no dirty-slot flush, no pool eviction).  Where a test needs
  * a "just-flushed" (clean) slot it clears pm->dirty directly through the
@@ -30,6 +30,7 @@
 
 #include "munit.h"
 #include "mvspww.h"
+#include "mvsspl.h"    /* has_spill_file_open() -- do not test pm->spill directly */
 
 #define DS   "TEMP.TEST.CNTL"
 #define MEM  "MEMBER1"
@@ -143,10 +144,15 @@ static MunitResult test_write_offset_gap(const MunitParameter p[], void *d)
     int i;
     (void)p; (void)d;
 
+    /* CREATE first, as the NFS path always does for a new member: that is
+       what makes a write past a hole an out-of-order write into an existing
+       slot rather than an append, which pww_write now refuses. */
     pww_init();
+    pww_create(0, 0, DS, MEM);
     pww_write(0, 0, DS, MEM, data, 4, 10);  /* write past a hole */
 
     pm = pww_find(DS, MEM);
+    munit_assert_ptr_not_null(pm);
     munit_assert_int(pm->high_water, ==, 14);
     for (i = 0; i < 10; i++)                 /* gap is zero-filled */
         munit_assert_int(pm->buf[i], ==, 0);
@@ -185,12 +191,13 @@ static MunitResult test_write_grows_buffer(const MunitParameter p[], void *d)
        to SPILL to the temp dataset, zero-filling the hole on disk, without a
        huge source array. */
     pww_init();
+    pww_create(0, 0, DS, MEM);              /* as the NFS path always does */
     munit_assert_int(pww_write(0, 0, DS, MEM, &b, 1, 69999), ==, 0);
 
     pm = pww_find(DS, MEM);
     munit_assert_ptr_not_null(pm);
     munit_assert_int(pm->high_water,   ==, 70000);
-    munit_assert_ptr_not_null(pm->spill.fp);   /* spilled to disk        */
+    munit_assert_int(has_spill_file_open(pm), !=, 0);  /* spilled to disk */
     munit_assert_ptr_null(pm->buf);            /* in-memory buffer freed */
 
     /* Read the content back through the accessor: the written byte, and a
@@ -224,7 +231,7 @@ static MunitResult test_write_spill_segments(const MunitParameter p[], void *d)
     /* 20000 > PWW_SPILL_THRESHOLD -> spills on this first write. */
     munit_assert_int(pww_write(0, 0, DS, MEM, big, sizeof(big), 0), ==, 0);
     pm = pww_find(DS, MEM);
-    munit_assert_ptr_not_null(pm->spill.fp);
+    munit_assert_int(has_spill_file_open(pm), !=, 0);
 
     /* Overwrite 4 bytes within, and append 4 bytes past a 100-byte hole. */
     munit_assert_int(pww_write(0, 0, DS, MEM, a, 4, 50),    ==, 0);
@@ -242,6 +249,25 @@ static MunitResult test_write_spill_segments(const MunitParameter p[], void *d)
     munit_assert_memory_equal(4, rb, z);
 
     pww_discard(DS, MEM);
+    return MUNIT_OK;
+}
+
+/* A write at a non-zero offset with NO pending slot behind it must be
+   refused, not zero-filled.  Nothing here reads an existing member back, so
+   honouring it would mean inventing the bytes before the offset -- and the
+   flush would then replace the member with those zeros.  This is what an
+   append over NFS looks like by the time it reaches the pool. */
+static MunitResult test_write_append_refused(const MunitParameter p[], void *d)
+{
+    uint8_t b = 0x5A;
+    (void)p; (void)d;
+
+    pww_init();                             /* deliberately no pww_create */
+    errno = 0;
+    munit_assert_int(pww_write(0, 0, DS, MEM, &b, 1, 10), ==, -1);
+    munit_assert_int(errno, ==, EIO);
+    /* And nothing was allocated: no slot, so no enqueue or ddname leaked. */
+    munit_assert_ptr_null(pww_find(DS, MEM));
     return MUNIT_OK;
 }
 
@@ -266,6 +292,8 @@ static MunitTest write_tests[] = {
     { "/overwrite",   test_write_overwrite,    NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/grows_buffer",test_write_grows_buffer, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/spill_segments", test_write_spill_segments, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
+    { "/append_refused", test_write_append_refused,
+                                               NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { "/over_cap",    test_write_over_cap,     NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL },
     { NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }
 };
@@ -281,10 +309,9 @@ static pending_member_t *make_clean_member(uint32_t size)
     pending_member_t *pm;
 
     pww_init();
+    pww_create(0, 0, DS, MEM);              /* as the NFS path always does */
     if (size > 0)
         pww_write(0, 0, DS, MEM, &b, 1, (uint64_t)size - 1);  /* high_water=size */
-    else
-        pww_create(0, 0, DS, MEM);
     pm = pww_find(DS, MEM);
     pm->dirty = 0;                          /* pretend it has been stowed */
     return pm;

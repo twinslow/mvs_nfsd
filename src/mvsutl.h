@@ -77,4 +77,15 @@ int mvs_blocks_per_track(uint8_t devcode, uint32_t trklen, uint32_t blksize);
    than an upper-bound estimate. */
 int mvs_blocks_exact(uint8_t devcode);
 
+/* -------------------------------------------------------------------- */
+/* Abend diagnostics                                                     */
+/* -------------------------------------------------------------------- */
+
+/*
+ * System completion code out of an SDWA copy -- e.g. 0xB14 for an SB14.
+ * 'sdwa' is the unsigned int[26] (104-byte IHASDWA copy) filled in by
+ * _setjmp_stae() when it intercepts an abend.
+ */
+#define SDWA_ABEND_CODE(sdwa)   (((sdwa)[1] & 0x00FFF000u) >> 12)
+
 #endif

@@ -26,6 +26,8 @@
  * MVS linker.  Defined here (before the prototypes) so aliasing is
  * consistent regardless of this header's include order relative to nfsd.h.
  */
+/* pww_find_rpc_header collides with pww_find in the first 8 chars. */
+#define pww_find_rpc_header     pwwFndRp
 #define pww_flush_member        pwwFlMbr
 #define pww_flush_idle          pwwFlIdl
 #define pww_flush_all           pwwFlAll
@@ -37,11 +39,6 @@
 #define PWW_SPILL_THRESHOLD        (16 * 1024)      /* in-memory prefix; a member
                                                         larger than this spills to
                                                         a temp dataset (mvsspl.c).*/
-#define PWW_SPILL_DS_SPACE_PARMS   "pri=15,sec=15,rlse,unit=sysda"   /* This string
-                                                        will be concatenated into
-                                                        the file open for the spill
-                                                        temporary dataset at
-                                                        compile time              */
 #define PWW_MAX_MEMBER_BYTES       (1024 * 1024)     /* absolute per-member cap;
                                                         disk-backed past the
                                                         spill threshold           */
@@ -173,6 +170,16 @@ pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name);
  * vfs_pread serve a not-yet-stowed member regardless of where it is backed. */
 int  pww_read_range(pending_member_t *pm, uint32_t off,
                     uint8_t *dst, uint32_t len);
+
+/* Raise the "shut the server down" flag polled by pww_fatal_abend().  For
+   the flush machinery (mvspwfl.c) to report an abend it does not recover
+   from.  One-way: nothing lowers it. */
+void pww_request_shutdown(void);
+
+/* Scan 'len' bytes for an embedded RPC CALL header (the corruption tripwire
+   -- TEMPORARY, see mvspww.c).  Returns the offset, or -1.  Shared with the
+   flush machinery, which checks the bytes on their way out as well as in. */
+int  pww_find_rpc_header(const uint8_t *p, uint32_t len);
 
 /* Discard any pending (buffered) write for a member WITHOUT flushing it.
  * Used by REMOVE so a delete cannot be undone by a later flush re-STOWing the
