@@ -463,6 +463,19 @@ int pdsflush_slot(pending_member_t *pm)
     strcpy(path, "//DDN:");
     strcat(path, pm->ddname);
     if (pdsflush_write_member_guarded(pm, path, &line_count) != 0) {  /* write + STOW */
+        /* The space prediction admitted this content and it did not fit
+           after all, so the prediction was wrong.  Report what it believed
+           at the time: the admit decision itself logs only at debug level,
+           so without this the decision that was actually at fault leaves no
+           trace in a production log (doc/design_pds_full_prediction.md). */
+        if (pm->blkcalc.last_need != 0) {
+            log_error("pdsflush_slot: %s(%s) failed though predicted to fit"
+                      " -- need %lu avail %lu hw=%u",
+                      pm->dsname_ebcdic, pm->member_name,
+                      (unsigned long)pm->blkcalc.last_need,
+                      (unsigned long)pm->blkcalc.last_avail,
+                      pm->high_water);
+        }
         if (g_flush_abended) {
             /* Sec 7.3 region A: an abend (typically the dataset filling) is not
                worth retrying -- a retry just abends again -- so mark the slot

@@ -943,6 +943,17 @@ int pww_truncate(int export_idx, int dataset_idx,
         pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);
         if (pm == NULL)
             return -1;                    /* errno set (EACCES held / EIO alloc) */
+        /* Same promise as pww_create's: marking it dirty commits us to stowing
+           it, so it has to be predicted first (an empty member still costs the
+           EOF block). */
+        if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
+            int saved_errno = errno;
+            log_warn("pww_truncate: %s(%s) refused -- predicted not to fit",
+                     dsname_ebcdic, member_name);
+            pww_slot_release(pm);         /* nothing buffered yet */
+            errno = saved_errno;
+            return -1;
+        }
         pww_set_dirty(pm);
         log_debug("pww_truncate: %s(%s) -> 0 (new empty)",
             dsname_ebcdic, member_name);
@@ -956,6 +967,22 @@ int pww_truncate(int export_idx, int dataset_idx,
        second STOW. */
     if (size == pm->high_water)
         return 0;
+
+    /* GROWING a member is as much a space commitment as a WRITE, and clients
+       preallocate this way -- Linux sends SETATTR(size) before the data, so a
+       109500-byte member can exist here before a single WRITE is seen.  Left
+       ungated it zero-extends the member, marks it dirty, and the idle sweep
+       then carries it into the very E37 the prediction exists to avoid, while
+       every actual WRITE is correctly refused (observed STC02352).
+       Passing offset = size with no data models exactly that: a member of
+       'size' zero bytes.  Shrinking only frees space, so it needs no check. */
+    if (size > pm->high_water) {
+        if (blkcalc_admit_write(pm, NULL, 0, (uint64_t)size) < 0) {
+            log_warn("pww_truncate: %s(%s) grow to %u refused -- predicted"
+                     " not to fit", dsname_ebcdic, member_name, size);
+            return -1;                   /* errno set (ENOSPC) */
+        }
+    }
 
     /* Adjust the existing pending member to exactly 'size' bytes, spilling if
        the new size crosses the in-memory threshold. */

@@ -32,6 +32,7 @@
  * JCC C89 compliance: declarations precede statements; block comments only.
  */
 
+#include <stdio.h>    /* sprintf -- blkc_state_str() */
 #include <string.h>
 #include <errno.h>
 
@@ -317,6 +318,39 @@ static uint32_t blkc_ttr_add(const dataset_dscb_info_t *ds,
     return BLKC_TTR(tt + trks, nblocks - (trks - 1) * bpt);
 }
 
+/* Blocks a member will occupy once stowed, charged at a minimum of one.
+   An EMPTY member is not free: stowing one still writes an end-of-file
+   marker and takes a directory entry, so a dataset with no room cannot
+   accept it either -- and a zero here would answer "fits" for every member
+   on a completely full PDS.
+
+   Shared by the fit test and by the diagnostics below, so the number the log
+   reports can never differ from the number the decision used. */
+static uint32_t blkc_need(const blkcalc_info_t *bi)
+{
+    uint32_t n = (uint32_t)blkcalc_total_blocks(bi);
+
+    return (n == 0) ? 1u : n;
+}
+
+/* One-line summary of the dataset figures every fit decision rests on.
+   Written into a caller-supplied buffer of BLKC_STATE_BUF bytes.
+
+   Logged with each verdict because without it a wrong decision leaves no
+   trace: on 2026-08-04 a 9 block write was admitted into a dataset that
+   turned out to have room for none, and the log recorded only the "blocks
+   needed" half, so the fault could not be located afterwards. */
+#define BLKC_STATE_BUF 96
+
+static void blkc_state_str(const dataset_dscb_info_t *ds, char *buf)
+{
+    sprintf(buf, "lstar=%lu.%d trbal=%d trk=%lu ext=%d bpt=%d sec=%lu",
+            (unsigned long)ds->lstar_tt, (int)ds->lstar_r,
+            (int)ds->trbal, (unsigned long)ds->tracks,
+            (int)ds->nextents, ds->blocks_per_track,
+            (unsigned long)ds->sec_tracks);
+}
+
 int blkcalc_will_member_fit(const blkcalc_info_t *bi,
                             const dataset_dscb_info_t *ds,
                             uint32_t last_block_ttr,
@@ -330,15 +364,7 @@ int blkcalc_will_member_fit(const blkcalc_info_t *bi,
     if (!ds->valid || ds->blocks_per_track <= 0)
         return -1;                    /* cannot tell -- treat as "no" */
 
-    need  = (uint32_t)blkcalc_total_blocks(bi);
-
-    /* An EMPTY member is not free.  Stowing one still writes an end-of-file
-       marker and takes a directory entry, so a dataset with no room cannot
-       accept it either -- and a zero here would answer "fits" for every
-       member on a completely full PDS.  Charge one block minimum. */
-    if (need == 0)
-        need = 1;
-
+    need  = blkc_need(bi);
     avail = blkc_blocks_available(ds, last_block_ttr);
 
     /* Where this member would end, whether or not it fits: the caller
@@ -573,6 +599,9 @@ int blkcalc_admit_write(void *pmv, const uint8_t *data,
     pds_dataset_t    *ds;
     blkcalc_info_t    trial;
     uint32_t          ttr;
+    uint32_t          need;
+    uint32_t          avail;
+    char              state[BLKC_STATE_BUF];
     int               i;
 
     if (pm == NULL)
@@ -598,31 +627,53 @@ int blkcalc_admit_write(void *pmv, const uint8_t *data,
     }
 
     /* This member first, from the real end of the dataset ... */
-    ttr = BLKC_TTR(ds->dscb.lstar_tt, ds->dscb.lstar_r);
+    ttr   = BLKC_TTR(ds->dscb.lstar_tt, ds->dscb.lstar_r);
+    need  = blkc_need(&trial);
+    avail = blkc_blocks_available(&ds->dscb, ttr);
+    blkc_state_str(&ds->dscb, state);
+
+    /* Recorded whichever way the decision goes, so a flush that fails after
+       an ADMIT can still report what was believed at the time. */
+    trial.last_need  = need;
+    trial.last_avail = avail;
+
     if (blkcalc_will_member_fit(&trial, &ds->dscb, ttr, &ttr) != 0) {
-        log_warn("blkcalc: %s(%s) predicted NOT to fit -- %d blocks needed + EOF block",
+        log_warn("blkcalc: %s(%s) NOT fit -- need %lu avail %lu (%s)",
                  pm->dsname_ebcdic, pm->member_name,
-                 blkcalc_total_blocks(&trial));
+                 (unsigned long)need, (unsigned long)avail, state);
         errno = ENOSPC;
         return -1;
     }
+
+    log_debug("blkcalc: %s(%s) fits -- need %lu avail %lu (%s)",
+              pm->dsname_ebcdic, pm->member_name,
+              (unsigned long)need, (unsigned long)avail, state);
 
     /* ... then every OTHER member pending for the same dataset, each
        starting where the previous one was predicted to end.  They will all
        be stowed eventually, so they all have to fit together. */
     for (i = 0; i < PWW_MAX_PENDING; i++) {
         pending_member_t *other = pww_slot_at(i);
+        uint32_t          oneed;
+        uint32_t          oavail;
 
         if (other == NULL || other == pm)
             continue;
         if (strcmp(other->dsname_ebcdic, pm->dsname_ebcdic) != 0)
             continue;
 
+        /* Taken BEFORE the call, because the call advances ttr. */
+        oneed  = blkc_need(&other->blkcalc);
+        oavail = blkc_blocks_available(&ds->dscb, ttr);
+
         if (blkcalc_will_member_fit(&other->blkcalc, &ds->dscb,
                                     ttr, &ttr) != 0) {
-            log_warn("blkcalc: %s(%s) refused -- pending %s would not also"
-                     " fit", pm->dsname_ebcdic, pm->member_name,
-                     other->member_name);
+            log_warn("blkcalc: %s(%s) refused -- pending %s needs %lu,"
+                     " avail %lu from ttr %lu.%lu",
+                     pm->dsname_ebcdic, pm->member_name, other->member_name,
+                     (unsigned long)oneed, (unsigned long)oavail,
+                     (unsigned long)BLKC_TTR_TT(ttr),
+                     (unsigned long)BLKC_TTR_R(ttr));
             errno = ENOSPC;
             return -1;
         }

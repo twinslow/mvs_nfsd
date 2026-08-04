@@ -46,6 +46,17 @@ typedef struct
     /* doc/design_pds_full_prediction.md Sec 7.1.                          */
     uint32_t            consumed_upto;
 
+    /* DIAGNOSTIC ONLY -- nothing decides anything from these.             */
+    /* The verdict of the last admit decision for this member: blocks the  */
+    /* estimate asked for, and blocks the dataset was believed to have.    */
+    /* Kept so that a flush which fails ANYWAY can report what the         */
+    /* predictor had believed when it let the content in -- otherwise the  */
+    /* decision that was actually wrong leaves no trace at all, which is   */
+    /* what made the 2026-08-04 case (9 blocks admitted into a dataset     */
+    /* with room for none) impossible to diagnose from the log.            */
+    uint32_t            last_need;
+    uint32_t            last_avail;
+
 } blkcalc_info_t;
 
 

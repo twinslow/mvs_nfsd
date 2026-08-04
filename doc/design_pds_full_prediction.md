@@ -689,6 +689,74 @@ Two changes, and both were needed — the first alone would not have worked:
 The gate now sits on both entry points to the pending pool, which is what §3
 implied but only stated for WRITE.
 
+## 9.3.4 SETATTR(size) is a third entry point, and it was ungated
+
+Found by the instrumentation of §9.3.5, in STC02352 (Linux, dataset
+compressed so it had room for ~6 of the 12 members test 1.3 writes).
+
+There are **three** ways content enters the pending pool, not two:
+
+| entry point | gated? |
+|---|---|
+| `pww_create` (NFS CREATE) | yes, since §9.3.3 |
+| `pww_write` (NFS WRITE) | yes, from the start |
+| **`pww_truncate` (NFS SETATTR size)** | **no** |
+
+Linux preallocates: it sends `SETATTR(size=109500)` between the CREATE and
+the first WRITE. `pww_truncate` zero-extended the member to 109500 bytes,
+spilled it, and marked it dirty **without consulting the predictor**. Every
+subsequent WRITE was then correctly refused -- but the member already existed
+at full size, and the idle sweep carried it into the `E37`.
+
+The log said so unambiguously once the figures were there:
+
+```
+blkcalc: ...(FULL010) fits -- need 1 avail 6 ...     <- the CREATE
+pww_create: ...(FULL010)
+spill_open: ...(FULL010) spilled to //DSN:&&PWWSP00  <- the SETATTR, ungated
+proc_write ... count 65536 offset 0
+blkcalc: rebuilding ... (hw=109500 consumed=0)       <- already full size
+blkcalc: ...(FULL010) NOT fit -- need 15 avail 6
+...
+pdsflush_slot: ...(FULL010) failed though predicted to fit -- need 1 avail 6 hw=109500
+```
+
+`need 1 ... hw=109500` is the whole story: the CREATE was the last decision
+the predictor was ever asked about.
+
+**Fix.** `pww_truncate` now gates both of its paths:
+
+* the "no pending member, truncate to 0" path creates an empty member, so it
+  takes the same `blkcalc_admit_write(pm, NULL, 0, 0)` check as `pww_create`,
+  releasing the slot on refusal;
+* a GROW of an existing member calls
+  `blkcalc_admit_write(pm, NULL, 0, (uint64_t)size)`. Passing `offset = size`
+  with no data makes `blkc_build_trial` model exactly a member of `size` zero
+  bytes, which is what the zero-extension produces. A SHRINK only frees space
+  and is left unchecked.
+
+**Also worth noting:** had that truncate fitted, the flush would have stowed a
+member of pure zeros the client never wrote. The gate closes a data-integrity
+hole as well as a space one.
+
+## 9.3.5 Instrumentation: log the AVAILABLE side, not just the needed side
+
+The first two failures of this kind could not be diagnosed at all, because the
+predictor logged only "N blocks needed" and never what it believed was free,
+nor the VTOC figures behind it. Added:
+
+* every refusal (`WARN`, so visible at INFO level) and every admit (`DEBUG`)
+  reports `need`, `avail` and `lstar/trbal/trk/ext/bpt/sec`;
+* the chained-member refusal reports the other member's need and the TTR it
+  chained from, instead of just a name;
+* `blkcalc_info_t` carries `last_need` / `last_avail` from the last ADMIT, and
+  `pdsflush_slot` prints them when a flush fails anyway -- the admitted
+  decision is the one at fault, and it otherwise leaves no trace in a
+  production log. That single line is what identified §9.3.4.
+
+`blkc_need()` is shared by the fit test and the diagnostics so the logged
+figure can never drift from the one the decision used.
+
 ## 9.4 Not implemented
 
 * **§7.5 directory space** — out of scope by decision. A directory-full
