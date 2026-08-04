@@ -13,17 +13,14 @@
 //* before running the tests, and again whenever you want a clean
 //* slate.
 //*
-//* Datasets (adjust the TEMP.ITEST.* names to match your
-//* config.json "dsname" values and export configuration):
+//* Datasets (adjust the dataset name prefix) for DS names to match
+//* your config.json "dsname" values and export configuration:
 //*
 //*    TEMP.ITEST.FB       PO RECFM=FB LRECL=80   general FB tests
 //*    TEMP.ITEST.VB       PO RECFM=VB LRECL=255  general VB tests
 //*    TEMP.ITEST.FB2      PO RECFM=FB LRECL=80   rename/copy target
 //*    TEMP.ITEST.VB2      PO RECFM=VB LRECL=255  rename/copy target
 //*    TEMP.ITEST.FBSMALL  PO RECFM=FB LRECL=80   tiny -> "full ds"
-//*
-//* STEP1 deletes any existing copies (ok to fail the first time);
-//* STEP2 allocates them fresh and empty.
 //*
 //* These datasets must also be EXPORTED by the dino-nfs server
 //* (nfsd.conf) so their members appear under the NFS mount.  Give
@@ -32,40 +29,51 @@
 //*
 //********************************************************************
 //*
-//DELETE   EXEC PGM=IDCAMS
-//SYSPRINT DD   SYSOUT=*
-//SYSIN    DD   *
-  DELETE TEMP.ITEST.FB
-  DELETE TEMP.ITEST.VB
-  DELETE TEMP.ITEST.FB2
-  DELETE TEMP.ITEST.VB2
-  DELETE TEMP.ITEST.FBSMALL
-  SET MAXCC = 0
-/*
+//MKDSETS PROC PREFIX='TEMP.ITEST',VOLSER=WORK04,IN=CYL,PRI=10,SEC=10
+//*
+//DELETE  EXEC PGM=IEFBR14
+//*
+//DEL1     DD  UNIT=SYSDA,SPACE=(TRK,1),DISP=(MOD,DELETE),
+//             DSN=&PREFIX..FB
+//DEL2     DD  UNIT=SYSDA,SPACE=(TRK,1),DISP=(MOD,DELETE),
+//             DSN=&PREFIX..VB
+//DEL3     DD  UNIT=SYSDA,SPACE=(TRK,1),DISP=(MOD,DELETE),
+//             DSN=&PREFIX..FB2
+//DEL4     DD  UNIT=SYSDA,SPACE=(TRK,1),DISP=(MOD,DELETE),
+//             DSN=&PREFIX..VB2
+//DEL5     DD  UNIT=SYSDA,SPACE=(TRK,1),DISP=(MOD,DELETE),
+//             DSN=&PREFIX..FBSMALL
 //*
 //ALLOC   EXEC PGM=IEFBR14
-//FB       DD  DSN=TEMP.ITEST.FB,DISP=(NEW,CATLG,DELETE),
-//             UNIT=SYSDA,SPACE=(TRK,(30,15,25)),
-//             VOL=SER=TSO003,
+//*
+//FB       DD  DSN=&PREFIX..FB,DISP=(NEW,CATLG,DELETE),
+//             UNIT=SYSDA,SPACE=(&IN,(&PRI,&SEC,25)),
+//             VOL=SER=&VOLSER,
 //             DCB=(DSORG=PO,RECFM=FB,LRECL=80,BLKSIZE=8000)
-//VB       DD  DSN=TEMP.ITEST.VB,DISP=(NEW,CATLG,DELETE),
-//             UNIT=SYSDA,SPACE=(TRK,(30,15,25)),
-//             VOL=SER=TSO003,
+//VB       DD  DSN=&PREFIX..VB,DISP=(NEW,CATLG,DELETE),
+//             UNIT=SYSDA,SPACE=(&IN,(&PRI,&SEC,25)),
+//             VOL=SER=&VOLSER,
 //             DCB=(DSORG=PO,RECFM=VB,LRECL=255,BLKSIZE=6144)
-//FB2      DD  DSN=TEMP.ITEST.FB2,DISP=(NEW,CATLG,DELETE),
-//             UNIT=SYSDA,SPACE=(TRK,(15,10,15)),
-//             VOL=SER=TSO003,
+//FB2      DD  DSN=&PREFIX..FB2,DISP=(NEW,CATLG,DELETE),
+//             UNIT=SYSDA,SPACE=(&IN,(&PRI,&SEC,25)),
+//             VOL=SER=&VOLSER,
 //             DCB=(DSORG=PO,RECFM=FB,LRECL=80,BLKSIZE=8000)
-//VB2      DD  DSN=TEMP.ITEST.VB2,DISP=(NEW,CATLG,DELETE),
-//             UNIT=SYSDA,SPACE=(TRK,(15,10,15)),
-//             VOL=SER=TSO003,
+//VB2      DD  DSN=&PREFIX..VB2,DISP=(NEW,CATLG,DELETE),
+//             UNIT=SYSDA,SPACE=(&IN,(&PRI,&SEC,25)),
+//             VOL=SER=&VOLSER,
 //             DCB=(DSORG=PO,RECFM=VB,LRECL=255,BLKSIZE=6144)
 //*
 //* FBSMALL is intentionally tiny (1 track, 3 directory blocks) so
 //* the "upload to full dataset" test fills it quickly.
 //*
-//FBSMALL  DD  DSN=TEMP.ITEST.FBSMALL,DISP=(NEW,CATLG,DELETE),
-//             UNIT=SYSDA,SPACE=(TRK,(1,0,3)),
-//             VOL=SER=TSO003,
+//FBSMALL  DD  DSN=&PREFIX..FBSMALL,DISP=(NEW,CATLG,DELETE),
+//             UNIT=SYSDA,SPACE=(TRK,(1,1,3)),
+//             VOL=SER=&VOLSER,
 //             DCB=(DSORG=PO,RECFM=FB,LRECL=80,BLKSIZE=8000)
+//*
+//MKDSETS PEND
+//*
+//********************************************************************
+//*
+//S1 EXEC MKDSETS
 //
