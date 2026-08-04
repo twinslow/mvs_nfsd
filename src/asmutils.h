@@ -100,15 +100,28 @@ typedef struct {
     uint8_t  reserved[3];       /* offset 85 - alignment padding        */
     uint32_t sec_qty;           /* offset 88 - DS1SCAL3, in those units */
     uint32_t sec_tracks;        /* offset 92 - same in tracks, 0 if n/a */
-} mvs_dscb_info_t;              /* 96 bytes                             */
+    /*
+     * Where the dataset currently ends.  Unlike every field above, these
+     * two move whenever ANY task writes a member, so code predicting free
+     * space must re-read them rather than cache them (see
+     * doc/design_pds_full_prediction.md Sec 7.4).
+     *
+     * lstar is a TTR: two bytes of relative TRACK then one byte of RECORD
+     * within that track.  All zero on a never-written dataset.  Read the
+     * track with MVS_DSCB_U16(e->lstar) and the record from e->lstar[2].
+     */
+    uint8_t  lstar[3];          /* offset  96 - DS1LSTAR, last block TTR */
+    uint8_t  trbal[2];          /* offset  99 - DS1TRBAL, bytes left     */
+    uint8_t  reserved2[3];      /* offset 101 - alignment padding        */
+} mvs_dscb_info_t;              /* 104 bytes                             */
 
 /*
- * Compile-time check that the struct really is 96 bytes with the fields
+ * Compile-time check that the struct really is 104 bytes with the fields
  * where the assembler expects them.  A negative array width fails the
  * build rather than letting a silently repacked struct read garbage.
  */
 typedef char mvs_dscb_size_check[
-    (sizeof(mvs_dscb_info_t) == 96) ? 1 : -1];
+    (sizeof(mvs_dscb_info_t) == 104) ? 1 : -1];
 
 /*
  * Units of sec_qty, from the top two bits of sec_flags.  A dataset
@@ -124,6 +137,31 @@ typedef char mvs_dscb_size_check[
 
 /* Read one of the raw big-endian halfword fields above. */
 #define MVS_DSCB_U16(f)   ((uint16_t)(((uint16_t)(f)[0] << 8) | (f)[1]))
+
+/*
+ * DSORG bits, from the FIRST byte of the format 1 DSCB's DS1DSORG.
+ *
+ * BEWARE: these are NOT the MVS_DCB_DSORG_* values in mvsio.h.  Those come
+ * from JCC's __getdcb(), which reports PO as 0x40 and PS as 0x02 -- exactly
+ * the opposite way round from the DSCB.  Using the wrong set here would
+ * classify every PDS as sequential.  Test with the pair that matches where
+ * the byte came from.
+ */
+#define MVS_DSCB_DSORG_IS   0x80
+#define MVS_DSCB_DSORG_PS   0x40
+#define MVS_DSCB_DSORG_DA   0x20
+#define MVS_DSCB_DSORG_PO   0x02
+#define MVS_DSCB_DSORG_UNMV 0x01   /* unmovable                          */
+
+/*
+ * RECFM bits, from the format 1 DSCB's DS1RECFM.  The top two bits give the
+ * base format and 0x10 says it is blocked; these DO agree with the DCB.
+ */
+#define MVS_DSCB_RECFM_MASK 0xC0
+#define MVS_DSCB_RECFM_V    0x40
+#define MVS_DSCB_RECFM_F    0x80
+#define MVS_DSCB_RECFM_U    0xC0
+#define MVS_DSCB_RECFM_BLK  0x10
 
 /*
  * Unpack a 3-byte DSCB date.

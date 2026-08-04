@@ -35,14 +35,18 @@ SFEND    DS    0F
 SFSIZE   EQU   SFEND-SFSTART
 *
 ***********************************************************************
-* Layout of ONE returned dataset entry, 96 bytes.  This must match    *
+* Layout of ONE returned dataset entry, 104 bytes.  This must match   *
 * mvs_dscb_info_t in src/asmutils.h byte for byte.                    *
 *                                                                     *
 * The three fullwords land on offsets 52, 88 and 92, all of which are *
 * already aligned, so a C struct of the same fields needs no padding  *
 * and no packing pragma.  asmutils.h carries a compile time assertion *
-* that sizeof() really is 96, so a repacked struct fails the build    *
+* that sizeof() really is 104, so a repacked struct fails the build   *
 * rather than silently reading the wrong fields.                      *
+*                                                                     *
+* DS1LSTAR / DS1TRBAL were APPENDED at offset 96.  Adding them at the *
+* end leaves every existing offset untouched, so nothing that already *
+* read this structure had to be revisited.                            *
 ***********************************************************************
 DSCBOUT  DSECT
 OUTSTAT  DS    CL1              0=found, 8=not found, 12=multi-volume
@@ -80,7 +84,15 @@ OUTSCAL1 DS    CL1              DS1SCAL1 - units and flags
 OUTSCQTY DS    F                DS1SCAL3 - quantity, in those units
 OUTSCTRK DS    F                The same in TRACKS, or 0 if it could
 *                               not be converted (see below)
-OUTLEN   EQU   *-DSCBOUT        Length of one entry (96 bytes)
+*
+* End of the dataset as currently written.  Together these say exactly
+* where the next block would go, which is what the space prediction in
+* src/mvsblkc.c needs -- see doc/design_pds_full_prediction.md.
+*
+OUTLSTAR DS    CL3              DS1LSTAR - TTR of the last block used
+OUTTRBAL DS    CL2              DS1TRBAL - bytes left on that track
+         DS    CL3              (pad back to a fullword boundary)
+OUTLEN   EQU   *-DSCBOUT        Length of one entry (104 bytes)
 *
 ***********************************************************************
 * Format 1 DSCB (the dataset's VTOC entry).                           *
@@ -206,7 +218,7 @@ MVSDSCB  CSECT
 *                          dsnlist. Each dataset will have an         *
 *                          a set of fields as below.                  *
 *                                                                     *
-*    Each dataset entry is 96 bytes, laid out as below.  This must    *
+*    Each dataset entry is 104 bytes, laid out as below.  This must   *
 *    match the DSCBOUT DSECT further down AND mvs_dscb_info_t in      *
 *    src/asmutils.h byte for byte.                                    *
 *                                                                     *
@@ -267,6 +279,18 @@ MVSDSCB  CSECT
 *                   NOT, because that needs the device's track        *
 *                   capacity -- the caller finishes that case with    *
 *                   mvs_blocks_per_track() and the block size.        *
+*                                                                     *
+*    Where the dataset currently ends.  These two move every time a   *
+*    member is written, unlike everything above them, so a caller     *
+*    predicting free space must re-read them rather than cache them.  *
+*                                                                     *
+*     96  DS  CL3   DS1LSTAR - TTR of the last block written: two     *
+*                   bytes of relative TRACK then one byte of RECORD   *
+*                   within that track.  All zero on a dataset that    *
+*                   has never been written.                           *
+*     99  DS  CL2   DS1TRBAL - bytes still free on the track named by *
+*                   DS1LSTAR                                          *
+*    101  DS  CL3   Unused, pads the entry back to a fullword         *
 *                                                                     *
 *    Second and subsequent datasets repeat the above fields           *
 *                                                                     *
@@ -402,6 +426,8 @@ GD@HAVCY DS    0H
          MVC   OUTRECFM,DS1RECFM
          MVC   OUTBLKSZ,DS1BLKL
          MVC   OUTLRECL,DS1LRECL
+         MVC   OUTLSTAR,DS1LSTAR     TTR of the last block written
+         MVC   OUTTRBAL,DS1TRBAL     Bytes left on that track
 *
 *---------------------------------------------------------------------*
 * Secondary allocation quantity, converted to tracks where possible   *

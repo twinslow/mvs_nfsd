@@ -17,6 +17,7 @@
 #include "mvspww.h"
 #include "mvsspl.h"      /* spill store -- the whole mvsspl.c boundary        */
 #include "mvspwfl.h"     /* flush machinery -- pdsflush_slot()               */
+#include "mvsblkc.h"     /* PDS space prediction -- blkcalc_admit_write()    */
 #include "mvsutl.h"      /* SDWA_ABEND_CODE()                                 */
 #include "mvspdir.h"
 #include "mvsdol.h"
@@ -520,6 +521,7 @@ static void pww_slot_init(pending_member_t *pm, int export_idx, int dataset_idx,
     pm->high_water      = 0;
     pm->dirty           = 0;
     pm->last_write_time = time(NULL);
+    blkcalc_slot_reset(pm);   /* space estimate, from the dataset's RECFM */
 }
 
 /* Begin a new pending member: claim a slot, initialise it, and acquire the
@@ -796,10 +798,24 @@ void pww_init(void)
     memset(g_pww_pool, 0, sizeof(g_pww_pool));
 }
 
+/* Slot i of the pool, or NULL if i is out of range or the slot is free.
+   The one window onto the pool: the space prediction (mvsblkc.c) has to see
+   every member pending for a dataset, and giving it this keeps the walk out
+   of this module.  Everything else uses pww_find(). */
+pending_member_t *pww_slot_at(int i)
+{
+    if (i < 0 || i >= PWW_MAX_PENDING)
+        return NULL;
+    if (g_pww_pool[i].status != PWW_STATUS_USED)
+        return NULL;
+    return &g_pww_pool[i];
+}
+
 int pww_create(int export_idx, int dataset_idx,
                const char *dsname_ebcdic, const char *member_name)
 {
     pending_member_t *pm;
+    int               created = 0;
 
     if (pww_check_dataset_space("pww_create", dsname_ebcdic, member_name) < 0)
         return -1;                  /* errno set (ENOSPC dataset full) */
@@ -812,9 +828,29 @@ int pww_create(int export_idx, int dataset_idx,
         pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);
         if (pm == NULL)
             return -1;              /* errno set (EACCES held / EIO alloc) */
+        created = 1;
     } else {
-        /* Re-create over an existing pending member (already open): truncate. */
+        /* Re-create over an existing pending member (already open): truncate.
+           The space estimate has to go back to empty with it, or the
+           re-created member inherits the previous one's blocks. */
         pm->high_water = 0;
+        blkcalc_slot_reset(pm);
+    }
+
+    /* CREATE has to be predicted too, not just WRITE.  Marking the slot dirty
+       below is a promise to stow this member, and the idle sweep will keep
+       that promise even if every subsequent WRITE is refused for lack of
+       space -- flushing an empty member straight into the SB14 abend this
+       whole mechanism exists to avoid.  An empty member is not free: the stow
+       still writes an EOF marker, which blkcalc charges as one block. */
+    if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
+        int saved_errno = errno;
+        log_warn("pww_create: %s(%s) refused -- predicted not to fit",
+                 dsname_ebcdic, member_name);
+        if (created)
+            pww_slot_release(pm);   /* nothing buffered yet; give it all back */
+        errno = saved_errno;
+        return -1;
     }
 
     /* An empty create still needs to stow an empty member on COMMIT. */
@@ -866,6 +902,11 @@ int pww_write(int export_idx, int dataset_idx,
     }
 
     pww_record_write_gap(pm);
+
+    /* Predict whether this member -- and every other member pending for the
+       same dataset -- will still fit in the PDS once stowed.  */
+    if (blkcalc_admit_write(pm, data, count, offset) < 0)
+        return -1;                  /* errno set (ENOSPC predicted / EIO) */
 
     if (pww_store_range(pm, offset, data, count) < 0)
         return -1;                  /* errno set (ENOSPC/ENOMEM/EIO) */
@@ -990,16 +1031,14 @@ void pww_flush_idle(time_t now)
             continue;
 
         if (pm->dirty) {
-            if (pdsflush_slot(pm) < 0)
+            if (pdsflush_slot(pm) < 0) {
                 log_error("pww_flush_idle: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
+            }
         }
 
         /* Remember it BEFORE the release wipes the slot, so a client that
-           was only pausing can be recognised when it resumes.  Only the
-           idle sweep is instrumented: an eviction also severs a sequence,
-           but that means the pool is too small, which is a different
-           problem from the timeout being too short. */
+           was only pausing can be recognised when it resumes. */
         pww_remember_idle_flush(pm, now);
 
         pww_slot_release(pm);

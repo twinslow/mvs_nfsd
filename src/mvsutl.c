@@ -4,6 +4,7 @@
 
 #include "types.h"    /* uint8_t / uint16_t / uint32_t */
 #include "mvsutl.h"
+#include "asmutils.h"
 
 typedef unsigned char  BYTE;
 typedef unsigned int   ADDR31;   /* S/370 addresses fit in 4 bytes */
@@ -283,3 +284,30 @@ int mvs_blocks_exact(uint8_t devcode)
             devcode == MVS_DEV_3380 ||
             devcode == MVS_DEV_3350) ? 1 : 0;
 }
+
+char *mvs_dscb_dsorg_str(uint8_t dsorg, char *str) {
+    switch(dsorg) {
+        case MVS_DSCB_DSORG_IS: strcpy(str, "IS"); break;
+        case MVS_DSCB_DSORG_PS: strcpy(str, "PS"); break;
+        case MVS_DSCB_DSORG_DA: strcpy(str, "DA"); break;
+        case MVS_DSCB_DSORG_PO: strcpy(str, "PO"); break;
+        default: strcpy(str, "?");
+    }
+    if (dsorg & MVS_DSCB_DSORG_UNMV)
+        strcat(str, "U");
+    return str;
+}
+
+char *mvs_dscb_recfm_str(uint8_t recfm, char *str) {
+    switch(recfm & MVS_DSCB_RECFM_MASK) {
+        case MVS_DSCB_RECFM_V: strcpy(str, "V"); break;
+        case MVS_DSCB_RECFM_F: strcpy(str, "F"); break;
+        case MVS_DSCB_RECFM_U: strcpy(str, "U"); break;
+        default: strcpy(str, "?");
+    }
+    if (recfm & MVS_DSCB_RECFM_BLK)
+        strcat(str, "B");
+    return str;
+}
+
+

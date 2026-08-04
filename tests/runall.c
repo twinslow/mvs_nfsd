@@ -8,11 +8,11 @@
  *      tests/tmvsdol.c tests/tmvsfsz.c tests/tmvsprf.c tests/tmvspww.c \
  *      tests/tmvsspl.c tests/tlogger.c tests/tcfgopts.c tests/txdr.c \
  *      tests/trpc.c tests/tfhandle.c tests/tmvsfid.c tests/tebcdic.c \
- *      tests/tmvsutl.c \
+ *      tests/tmvsutl.c tests/tmvsblkc.c \
  *      src/mvsio.c src/mvsdol.c src/mvsfsz.c src/mvspdir.c src/mvsprw.c \
  *      src/mvspww.c src/mvsspl.c src/ebcdic.c src/mvsprf.c src/logger.c \
  *      src/cfgopts.c src/xdr.c src/rpc.c src/fhandle.c src/mvsfid.c \
- *      src/mvsutl.c tests/munit.c \
+ *      src/mvsutl.c src/mvsblkc.c tests/munit.c \
  *      -o tests/runall
  *
  * Run:
@@ -49,12 +49,13 @@ extern MunitSuite tfhandle_suite;
 extern MunitSuite tmvsfid_suite;
 extern MunitSuite tebcdic_suite;
 extern MunitSuite tmvsutl_suite;
+extern MunitSuite tmvsblkc_suite;
 
 /*
  * NUM_SUITES: count of module suites (excluding the NULL terminator).
  * Increment this by one each time a new extern suite is added.
  */
-#define NUM_SUITES 17
+#define NUM_SUITES 18
 
 /* -----------------------------------------------------------------------
  * main: build the root suite from all module suites and run it.
@@ -87,6 +88,7 @@ int main(int argc, char *argv[])
     all_suites[14] = tmvsfid_suite;
     all_suites[15] = tebcdic_suite;
     all_suites[16] = tmvsutl_suite;
+    all_suites[17] = tmvsblkc_suite;
 
     /* NULL terminator entry */
     memset(&all_suites[NUM_SUITES], 0, sizeof(MunitSuite));

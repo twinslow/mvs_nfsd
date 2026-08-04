@@ -77,6 +77,14 @@ int mvs_blocks_per_track(uint8_t devcode, uint32_t trklen, uint32_t blksize);
    than an upper-bound estimate. */
 int mvs_blocks_exact(uint8_t devcode);
 
+/* Translate the DSCB DSORG byte into a string IS/PS/PO/DA/DAU etc.     */
+/* Returns the *str value. The input buffer must be at least 4 bytes.   */
+char *mvs_dscb_dsorg_str(uint8_t dsorg, char *str);
+
+/* Translate the DSCB RECFM byte into a string F/FB/V/VB/U etc.         */
+/* Returns the *str value. The input buffer must be at least 4 bytes.   */
+char *mvs_dscb_recfm_str(uint8_t recfm, char *str);
+
 /* -------------------------------------------------------------------- */
 /* Abend diagnostics                                                     */
 /* -------------------------------------------------------------------- */

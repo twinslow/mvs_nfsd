@@ -35,21 +35,27 @@
  * Adding a section: add a CFG_SECT_* id, an entry in g_cfg_sections[],
  * and a case in the dispatch switch in exports_load().
  */
- 
+
 #include <stdio.h>    /* fopen, fclose, fgets */
 #include <string.h>   /* strncpy, strlen, strcmp, strchr */
 #include <ctype.h>    /* isspace, tolower */
 #include <time.h>     /* time */
- 
+
 #ifndef __MVS__
 #include <sys/stat.h> /* stat */
 #endif
- 
+
 #include "nfsd.h"
 #include "ebcdic.h"
 #include "logger.h"
 #include "mvsio.h"
 #include "cfgopts.h"   /* cfg_opts_t + keyword parsing (pure, unit-tested) */
+
+#ifdef __MVS__
+#include "asmutils.h"  /* mvs_dscb() -- VTOC info for the exported datasets */
+#include "mvsblkc.h"   /* blkcalc_dataset_init()                            */
+#include "mvsutl.h"
+#endif
 
 /*
  * cfgopts carries the resolved 'fileext' in a CFG_FILEEXT_MAX buffer and hands
@@ -192,7 +198,7 @@ static void cfg_do_init_line(const char *cmd)
     }
     /* rc < 0: the handler already reported the specific fault. */
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* dataset_init: populate a pds_dataset_t from a dsname token.        */
 /*                                                                    */
@@ -229,6 +235,7 @@ static void dataset_init(pds_dataset_t *ds, const char *dsname_ebcdic)
         ds->file_ext[0] = '\0';
     }
 
+#if 0
     /* DCB info (record format / lengths) for member size estimation. */
     if (mvs_get_dcb_info_dsn(ds->dsname_ebcdic, &ds->dcbinfo) < 0)
         log_error("exports_load: get dcb failed for %s", ds->dsname_ebcdic);
@@ -236,6 +243,7 @@ static void dataset_init(pds_dataset_t *ds, const char *dsname_ebcdic)
         log_info("exports_load: %s DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
             ds->dsname_ebcdic, ds->dcbinfo.dsorg, ds->dcbinfo.recfm,
             ds->dcbinfo.lrecl, ds->dcbinfo.blksize);
+#endif
 
     /* Option defaults.  memset above left these 0, and 0 is a valid but
        catastrophic 0000 mode -- assign the real defaults explicitly.
@@ -335,7 +343,6 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
         exp->host_path[MAX_PATH - 1] = '\0';
         strncpy(exp->file_ext, ds->file_ext, MAX_FILE_EXT_LEN - 1);
         exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
-        exp->dcbinfo = ds->dcbinfo;
     }
 
     log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (ext '%s',"
@@ -556,6 +563,138 @@ static int cfg_enter_section(char *p, int *warned_unknown)
 /* Compacts the table in place; safe because nothing holds an export    */
 /* index until loading has finished.                                    */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* cfg_load_dscb_info: read the VTOC for every exported dataset and    */
+/* reject anything the write-space prediction could not work with.     */
+/*                                                                    */
+/* Runs as a pass after parsing rather than inside dataset_init()      */
+/* because mvs_dscb() takes a LIST -- one call covers a whole export   */
+/* instead of one VTOC I/O per dataset.                               */
+/*                                                                    */
+/* A breach fails the whole EXPORT, not just the dataset: a partially  */
+/* applied export is a worse outcome than a missing one (design of     */
+/* export options, Sec 10.1).  cfg_drop_failed_exports() then removes  */
+/* it, which is why this must run before that.                        */
+/* ------------------------------------------------------------------ */
+#ifdef __MVS__
+static void cfg_load_dscb_info(void)
+{
+    static const char     *dsnlist[MAX_PDS_PER_EXPORT + 1];
+    static mvs_dscb_info_t raw[MAX_PDS_PER_EXPORT];
+    int i;
+    int j;
+
+    for (i = 0; i < g_nexports; i++) {
+        export_t *exp = &g_exports[i];
+
+        if (exp->failed || exp->ndatasets <= 0)
+            continue;
+
+        for (j = 0; j < exp->ndatasets; j++)
+            dsnlist[j] = exp->datasets[j].dsname_ebcdic;
+        dsnlist[exp->ndatasets] = NULL;
+
+        memset(raw, 0, sizeof(raw));
+        (void)mvs_dscb(MVS_DSCB_REQ_INFO, 0, dsnlist, raw);
+        /* The overall return code only says "at least one entry is
+           imperfect"; each entry carries its own status, so judge them
+           individually rather than failing the export wholesale here. */
+
+        for (j = 0; j < exp->ndatasets; j++) {
+            pds_dataset_t *ds   = &exp->datasets[j];
+            uint8_t        base;
+            char           str_dsorg[4];
+            char           str_recfm[4];
+
+            if (raw[j].status != MVS_DSCB_ST_OK) {
+                log_error("exports_load: %s -- no DSCB (status=%d);"
+                          " failing export '%s'",
+                          ds->dsname_ebcdic, (int)raw[j].status,
+                          exp->export_path_ebcdic);
+                cfg_fail_export(i);
+                continue;
+            }
+
+            /* DSORG from the DSCB, NOT the DCB: the two use opposite bits
+               for PO and PS (see asmutils.h). */
+            if ((raw[j].dsorg[0] & MVS_DSCB_DSORG_PO) == 0) {
+                log_error("exports_load: %s is not a PDS (DSORG=%04X);"
+                          " failing export '%s'",
+                          ds->dsname_ebcdic, MVS_DSCB_U16(raw[j].dsorg),
+                          exp->export_path_ebcdic);
+                cfg_fail_export(i);
+                continue;
+            }
+
+            base = (uint8_t)(raw[j].recfm & MVS_DSCB_RECFM_MASK);
+            if (base != MVS_DSCB_RECFM_F && base != MVS_DSCB_RECFM_V) {
+                log_error("exports_load: %s is RECFM=%02X, only F/FB and"
+                          " V/VB are supported; failing export '%s'",
+                          ds->dsname_ebcdic, raw[j].recfm,
+                          exp->export_path_ebcdic);
+                cfg_fail_export(i);
+                continue;
+            }
+
+            /*
+             * A variable-format dataset whose LRECL exceeds BLKSIZE-4 has
+             * no legal maximum record: a record between the two lengths
+             * passes the LRECL check and then cannot fit the block, and
+             * QSAM abends S002-14.  That abend runs through the same flush
+             * path as an out-of-space one, so it carries the same risk of
+             * hanging the server -- refuse the dataset instead.
+             */
+            if (base == MVS_DSCB_RECFM_V &&
+                MVS_DSCB_U16(raw[j].lrecl) > MVS_DSCB_U16(raw[j].blksize) - 4) {
+                log_error("exports_load: %s has LRECL=%d over the limit of"
+                          " BLKSIZE-4=%d for a variable format dataset;"
+                          " failing export '%s'",
+                          ds->dsname_ebcdic, MVS_DSCB_U16(raw[j].lrecl),
+                          MVS_DSCB_U16(raw[j].blksize) - 4,
+                          exp->export_path_ebcdic);
+                cfg_fail_export(i);
+                continue;
+            }
+
+            if (blkcalc_dataset_init(&ds->dscb, &raw[j]) != 0) {
+                log_error("exports_load: %s -- DSCB unusable for space"
+                          " prediction (bpt=%d blksize=%d lrecl=%d"
+                          " tracks=%lu); failing export '%s'",
+                          ds->dsname_ebcdic, ds->dscb.blocks_per_track,
+                          (int)ds->dscb.blksize, (int)ds->dscb.lrecl,
+                          (unsigned long)ds->dscb.tracks,
+                          exp->export_path_ebcdic);
+                cfg_fail_export(i);
+                continue;
+            }
+
+            log_info("exports_load: %s DSCB DSORG=%s RECFM=%s LRECL=%d BLKSIZE=%d",
+                     ds->dsname_ebcdic,
+                     mvs_dscb_dsorg_str(ds->dscb.dsorg, str_dsorg),
+                     mvs_dscb_recfm_str(ds->dscb.recfm, str_recfm),
+                     ds->dscb.lrecl,
+                     ds->dscb.blksize );
+            log_info("exports_load: %s VOL=%s %s alloc-tracks=%lu ext=%d"
+                     " blk/trk=%d lstar=%lu.%d trbal=%d sec=%lu trk",
+                     ds->dsname_ebcdic, ds->dscb.volser,
+                     MVS_DSCB_MODEL_T(raw[j].devtype),
+                     (unsigned long)ds->dscb.tracks, (int)ds->dscb.nextents,
+                     ds->dscb.blocks_per_track,
+                     (unsigned long)ds->dscb.lstar_tt, (int)ds->dscb.lstar_r,
+                     (int)ds->dscb.trbal,
+                     (unsigned long)ds->dscb.sec_tracks);
+        }
+    }
+}
+#else
+static void cfg_load_dscb_info(void)
+{
+    /* No VTOC off MVS: the space prediction stays disabled (dscb.valid is
+       0 from dataset_init's memset) and the flush-time guard is the only
+       protection, exactly as before this change. */
+}
+#endif
+
 static void cfg_drop_failed_exports(void)
 {
     int i;
@@ -635,11 +774,14 @@ int exports_load(const char *config_file)
     if (warned_unknown)
         log_warn("exports_load: one or more unknown sections were skipped");
 
+    /* VTOC pass BEFORE the drop, so anything it fails is dropped with it. */
+    cfg_load_dscb_info();
+
     cfg_drop_failed_exports();
 
     return g_nexports;
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* exports_count: number of configured exports                        */
 /* ------------------------------------------------------------------ */
@@ -647,7 +789,7 @@ int exports_count(void)
 {
     return g_nexports;
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* exports_get: return pointer to export[idx], or NULL                */
 /* ------------------------------------------------------------------ */
@@ -656,7 +798,7 @@ export_t *exports_get(int idx)
     if (idx < 0 || idx >= g_nexports) return NULL;
     return &g_exports[idx];
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* exports_get_id: return the index of exp in the table, or -1        */
 /* ------------------------------------------------------------------ */
@@ -668,7 +810,7 @@ int exports_get_id(const export_t *exp)
     }
     return -1;
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* exports_find_by_nfs_path: find an export whose NFS path matches.   */
 /* The nfs_path comparison is case-sensitive and exact.               */
@@ -682,7 +824,7 @@ export_t *exports_find_by_nfs_path(const char *nfs_path)
     }
     return NULL;
 }
- 
+
 /* ------------------------------------------------------------------ */
 /* exports_find_by_id: find an export by its table index (export_id). */
 /* ------------------------------------------------------------------ */
@@ -753,8 +895,8 @@ void export_dataset_touch(int export_idx, int dataset_idx)
     if (ds != NULL)
         ds->dir_mtime = (uint32_t)time(NULL);
     else {
-        log_warn("Server tried to upd dir_mtime for exp_idx %d, " 
-            "ds_idx %d, which was not found\n", 
+        log_warn("Server tried to upd dir_mtime for exp_idx %d, "
+            "ds_idx %d, which was not found\n",
             export_idx, dataset_idx);
     }
 }

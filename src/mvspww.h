@@ -19,6 +19,7 @@
 #include <stdio.h>   /* FILE (the spill scratch handle in pending_member_t) */
 #include <time.h>
 #include "types.h"
+#include "mvsblkc.h" /* blkcalc_info_t (the running space estimate below)   */
 
 /*
  * MVS short-name aliases (like ebcdic.h).  These three names collide in the
@@ -122,6 +123,12 @@ typedef struct {
        member had been accumulating (PERF_PWW_EVICT_AGE).  Zero means
        nothing has been written to this slot yet. */
     unsigned long first_write_ms;
+
+    /* Running estimate of the PDS blocks this member will occupy once
+       stowed, maintained by mvsblkc.c so a write that cannot fit is
+       refused before the flush abends out of space.  See
+       doc/design_pds_full_prediction.md. */
+    blkcalc_info_t blkcalc;
 } pending_member_t;
 
 /* -------------------------------------------------------------------- */
@@ -170,6 +177,12 @@ pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name);
  * vfs_pread serve a not-yet-stowed member regardless of where it is backed. */
 int  pww_read_range(pending_member_t *pm, uint32_t off,
                     uint8_t *dst, uint32_t len);
+
+/* Slot i of the pending pool, or NULL if i is out of range or the slot is
+ * free.  Exposed so the space prediction (mvsblkc.c) can walk the other
+ * members pending for a dataset without this module growing the loop.
+ * Nothing else should use it -- everything else has pww_find(). */
+pending_member_t *pww_slot_at(int i);
 
 /* Raise the "shut the server down" flag polled by pww_fatal_abend().  For
    the flush machinery (mvspwfl.c) to report an abend it does not recover

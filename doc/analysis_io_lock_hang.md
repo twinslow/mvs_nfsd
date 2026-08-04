@@ -64,24 +64,48 @@ The two clients produce markedly different exposure.
 (`pww_flush_idle`), as opposed to one driven by an NFS COMMIT
 (`pww_flush_member`).
 
-### Why the clients differ
+### Why the clients differ — SUPERSEDED, see below
 
-The difference is in **request pattern**, not in client robustness.
+The original explanation was that Linux's request pattern never leaves members
+pending: once the dataset fills, `pww_write` refuses each write before a slot
+is created (24 refusals against 10 abends in STC02315), so the idle sweep has
+nothing to flush. Windows, by contrast, leaves five or six members pending
+simultaneously.
 
-Linux, once the dataset fills, produces writes that `pww_write` refuses before a
-slot is ever created — in STC02315, 24 refusals against 10 abends. Nothing
-accumulates dirty, so the idle sweep has nothing to flush and never abends.
+That was the right description of those runs but the wrong cause.
 
-Windows leaves five or six members pending simultaneously. When the dataset
-fills, the sweep then attempts to flush each of them in turn.
+### Linux does reproduce it — but the reason it is rarer is UNEXPLAINED
 
-Combined Linux exposure to date: **2,420 tests over 110 passes, zero hangs.**
+**STC02322 hung on Linux** with the identical dump signature (§5). Linux is
+not immune in kind, and the old pattern-based explanation above was never
+shown to be causal.
 
-Note on interpretation: this establishes that Linux does not *reach* the failing
-state at anything like the Windows rate. It does not establish that Linux is
-immune, because the abend and sweep-abend counts for the 100-pass run were not
-captured. Without those counts the run cannot distinguish "structurally avoids
-the trigger" from "hit the trigger and was lucky 100 times".
+`TEMP.ITEST.FBSMALL` at STC02322's server start was at its 16 extent limit
+(`tracks=16 ext=16 blk/trk=6 lstar=15.14 trbal=102`) — the single-volume
+maximum, unable to extend. No FBSMALL member was stowed in the whole run, and
+six (FULL000..FULL005) piled up before anything revealed it was full.
+
+**A candidate explanation that was tested and FAILED.** "The differentiator is
+whether the dataset is already full when the burst starts" fits STC02322
+exactly, and is wrong: in the 100-pass Linux run the dataset was equally full
+from pass 2 onward — 99 consecutive passes of the same starting condition —
+with no hang. A condition that holds constantly cannot explain an event that
+happened once. Recorded here so it is not proposed again.
+
+**The one identified but untested difference:** STC02322 was a *fresh server
+start*, abending about 68 seconds after `exports_load`. The clean Linux runs
+were a single server up for hours, whose `pdsflush_dataset_is_full` table had
+been armed since its first abend. Whether that changes how many members reach
+the sweep is unknown.
+
+**What would settle it:** the abend and sweep-abend counts from the 100-pass
+job log. If that run produced ~99 abends with zero hangs against this run's
+one abend and one hang, the per-abend leak rate differs by two orders of
+magnitude and needs a cause. If it produced almost none — because the
+out-of-space guard stayed armed across passes and refused the writes before
+any flush was attempted — then the two runs never tested the same thing, and
+STC02322 is simply the first Linux run that actually reached an abend. Those
+counts were not captured.
 
 ---
 
@@ -270,8 +294,15 @@ is not determined by anything in dino_nfs's own sequencing.
 |---|---|---|
 | STC02316 | `fopen` in `mvs_open_pds_dir` | the released slot had no spill file, so `spill_close` did nothing; the next file operation came from an unrelated client GETATTR |
 | STC02317 | `fclose` in `spill_close` | the released slot had spilled |
+| STC02322 | `_unlink` in `vfs_remove` | nothing did any I/O for 47 log lines; the first was the test suite's cleanup REMOVE |
 
-Both confirmed by `_write2op` markers, not inferred from the last log line.
+The first two were confirmed by `_write2op` markers rather than inferred from
+the last log line. The third is located by elimination: the last message is
+`mvs_get_pds_dsn_and_member`, and the only steps between it and `_unlink()` in
+`vfs_remove` are `pww_discard` and string building, none of which touch a file.
+
+Three different calls, one mechanism. The victim is simply whichever file
+operation happens next.
 
 ---
 
@@ -408,6 +439,282 @@ an artifact and Theory A stands alone.
 Considered and rejected. With `TCBS = 1` there is no other task to release the
 lock or post the ECB, so a held lock cannot clear itself. This also rules out
 any mitigation based on waiting.
+
+### Theory E — the abend on an EMPTY member leaks the lock (CONFIRMED — this is the cause)
+
+**The decisive pair: STC02346 and STC02347.** Identical scripts, identical
+probe, one variable.
+
+```
+ls -l /mnt/itest/temp.itest.fbsmall
+<<< echo XXX >  ...yyy.txt   |   touch  ...yyy.txt >>>     <-- the ONLY difference
+sleep 5                                    # idle sweep flushes -> E37/B14
+cat /mnt/itest/temp.itest.fb/small.txt     # probe: a DIFFERENT PDS, no cache can serve it
+```
+
+| | STC02346 (`echo`) | STC02347 (`touch`) |
+|---|---|---|
+| member at flush | `pm->high_water = 4` | `pm->high_water = 0` |
+| flush driver | idle sweep | idle sweep |
+| abend | `E37-04` / `B14-10` | `E37-04` / `B14-10` |
+| slot released, SVC 99 unallocate | yes | yes |
+| probe -> `mvs_open_pds_dir` | **`fopen OK`, three times** | **`Calling fopen ...` then nothing** |
+| outcome | server continues, clean shutdown | **HANG** |
+
+Everything is held constant -- same server build, same dataset, same sweep
+path, same release, same abend, same probe, same call site. **Four bytes of
+content is the entire difference, and it decides whether the runtime survives.**
+
+STC02347's dump carries the usual signature exactly: `ILC 2 / INTC 0001`
+(SVC 1 WAIT), R0 = 1, R2 -> lock word `00170CDC` = **`FF000000`**, R1 -> ECB
+`809BCD10` (the same value in every dump taken), `TCBS = 1`. The eight words
+around the lock word are byte-identical to STC02317's and STC02322's.
+
+### Reporting it to JCC
+
+**The obvious minimal case does NOT reproduce it.** `jcl/t#wrfull` does exactly
+this and the task does not hang:
+
+```c
+rc = _setjmp_stae(b, sdwa104);
+if (rc == 0) {
+    ofh = fopen("//DSN:TEMP.ITEST.FBSMALL(XXX)", "wt");   /* full PDS */
+    fclose(ofh);                                          /* nothing written */
+}
+/* then a write to a DIFFERENT PDS as the probe -- it succeeds */
+```
+
+So "empty member + abend + STAE" is not sufficient on its own.
+
+**And the abend messages say why -- the invariant is the EOV count, not
+emptiness.** Counting `IEC032I E37-04` in every run where the outcome is
+known:
+
+| run | member | `IEC032I E37` | `IEC217I B14` | hang |
+|---|---|---|---|---|
+| STC02342 | empty | **1** | 1 | **HANG** |
+| STC02347 | empty (`hw=0`) | **1** | 1 | **HANG** |
+| STC02345 | 4 bytes | **2** | 1 | no |
+| STC02346 | 4 bytes | **2** | 1 | no |
+| JOB02788 (`t#wrfull`) | **empty** | **2** | 1 | **no** |
+| JOB02790 (`t#wrfull`) | 33 bytes | 1 | 0 | no |
+
+Inside NFSD the correlation with emptiness is 4/4 -- but `t#wrfull`'s EMPTY
+case produced TWO E37s and behaved like NFSD's non-empty case. So emptiness is
+not the underlying condition; it is the lever that, **in the NFSD open path**,
+produces a single trip through EOV. Across all six runs **"exactly one
+`IEC032I E37-04`" predicts the hang without exception.**
+
+That gives the small reproduction a measurable target: aim for a run logging
+exactly one `IEC032I E37-04`, rather than guessing at differences and waiting
+to see whether a probe hangs.
+
+(Six data points, and the E37 count may be a symptom of where the abend landed
+rather than a cause. It is used here as a signal to aim at, not as a
+mechanism.)
+
+The differences between `t#wrfull` and the NFSD flush path, most structural
+first:
+
+1. **How the member is opened.** NFSD never opens by DSN. `pww_lock`
+   dynamically allocates `DSN(member)` with SVC 99, and the flush then opens
+   the existing DD by ddname -- `fopen("//DDN:SYS00002", "wt")`
+   (`mvspwfl.c`). `//DSN:` makes the C library do its own allocation;
+   `//DDN:` does not. Different path through the runtime's open logic.
+2. **The same PDS was opened for a directory read moments before.** In
+   STC02347 the flush is preceded by
+   `mvs_open_pds_dir ... mode "rb,klen=0,...,recfm=u,force"` on the same
+   dataset, opened and closed through an entirely different DCB.
+3. **An exclusive SPFEDIT ENQ is held** on the member throughout.
+
+Bisecting those against `t#wrfull` is the route to a small reproduction.
+Until then the reportable case is the server-level one, which is
+deterministic and single-variable (STC02346 vs STC02347 above), with a dump
+for each side.
+
+Added 2026-08-03, and it **supersedes Theories B and D**, both of which turn
+out to have been measuring this variable indirectly.
+
+An empty member flush is `fopen(target, "wt")` -> **no `fwrite` at all** ->
+`fclose`. The abend lands in the close/STOW path with nothing ever having been
+written through the DCB. A non-empty flush issues `fwrite` calls first, and
+the `E37` fires during those instead.
+
+**CONFIRMED BY CONTROLLED EXPERIMENT (STC02345).** The decisive run: a 4 byte
+member (`echo XXX > file`), written FILE_SYNC so the client sent NO COMMIT,
+left dirty and flushed by the IDLE SWEEP. It abended `E37`/`B14`, was fully
+released (including the SVC 99 unallocate), and the server did **not** hang —
+it served the following GETATTR and READDIRPLUS, took the STOP and ended
+cleanly. The abend message carries `pm->high_water = 4`, so the member's
+content is on the record.
+
+| | **empty member** | **non-empty member** |
+|---|---|---|
+| **sweep-driven abend** | STC02317 FULL000, STC02322, STC02342 -> **HANG x3** | **STC02345 -> no hang** |
+| **COMMIT-driven abend** | impossible (no writes => no COMMIT) | STC02317 x2, STC02321 x100 -> no hang |
+
+The top row is a single-variable comparison: same sweep path, same release,
+same unallocate, same abend -- only the member content differs, and it flips
+the outcome. Emptiness is the cause; the flush driver is not.
+
+This also refutes Theory D. The decisive half is documented: **STC02345 and
+STC02346 both performed the SVC 99 unallocate after the abend** (the
+`pww_unlock: unalloc / DEQ / released` lines are in each log) **and neither
+hung.** So the unallocate does not cause the leak.
+
+The converse was also tried -- a `continue` added to the failed-flush path of
+`pww_flush_idle`, removing the release and therefore the unallocate, with the
+hang unchanged -- but that is on the author's report rather than the logs: the
+runs from that period were captured at INFO level, and `pww_unlock` logs at
+DEBUG, so which builds carried the change cannot be established after the
+fact. The `continue` has since been removed; `pww_flush_idle` now releases on
+both the success and failure paths.
+
+**STC02346 closes the last gap.** In STC02345 no `mvs_open_pds_dir` ran after
+the abend (the READDIRPLUS was a directory-cache hit), so there was no direct
+"the next file operation succeeded" line. STC02346 repeated the run with a
+probe chosen to force one -- a read of a member in a DIFFERENT PDS, which no
+cache can serve and which creates nothing that could abend on its own:
+
+```
+ls -l /mnt/itest/temp.itest.fbsmall
+echo XXX > /mnt/itest/temp.itest.fbsmall/yyy.txt   # 4 bytes, FILE_SYNC, no COMMIT
+sleep 5                                            # idle sweep flushes -> E37/B14
+cat /mnt/itest/temp.itest.fb/small.txt             # the probe
+```
+
+Abend logged with `pm->high_water = 4`, released with the unallocate, and then:
+
+```
+mvs_open_pds_dir: Calling fopen on //DSN:TEMP.ITEST.FB ...
+mvs_open_pds_dir: fopen OK for TEMP.ITEST.FB          (three times)
+```
+
+`small.txt` does not exist in that PDS, so the command reported ENOENT -- but
+answering that correctly required real directory reads, which is exactly what
+the probe was for. **The same call site that parks after an empty-member abend
+completed three times after a non-empty one.**
+
+**Supporting evidence — the separation over 105 earlier abends**
+
+| run | abending member | content at flush | outcome |
+|---|---|---|---|
+| STC02317 14.07.14 | FULL002 | 109,500 bytes | recovered |
+| STC02317 14.09.06 | FULL003 | 109,500 bytes | recovered |
+| STC02317 14.10.56 | FULL000 | **empty** | **HANG** |
+| STC02322 | FULL000 | **empty** | **HANG** |
+| STC02321 x100 | various | non-empty | **0 hangs** |
+| STC02342 | XXX (`touch`) | **empty** | **HANG, on demand** |
+
+3 empty-member abends -> 3 hangs. 102 non-empty abends -> 0 hangs.
+C(3,3)/C(105,3) ~ **5 x 10^-6**. STC02317 is internally controlled: three
+abends in one session, same dataset, same sweep path, and only the empty one
+hung.
+
+**STC02342 is a DETERMINISTIC REPRODUCER** (Linux, blkcalc disabled, PDS at
+its 16 extent limit):
+
+```
+ls -l  /mnt/itest/temp.itest.fbsmall     # works
+touch  /mnt/itest/temp.itest.fbsmall/xxx.txt
+ls -l  /mnt/itest/temp.itest.fbsmall     # hangs
+```
+
+`touch` creates an empty member and nothing else; the idle sweep flushes it,
+`E37`/`B14`, and the next directory `fopen` parks.
+
+**Why Theories B and D looked so strong: both were proxies.** A COMMIT-driven
+flush can NEVER be of an empty member, because the client only sends COMMIT
+after writing. So `COMMIT => non-empty` and `empty => sweep` hold by
+construction, and the sweep/COMMIT split was measuring emptiness the whole
+time. The unallocate correlation follows the same way, since the sweep is what
+releases the slot.
+
+**Theory D was refuted by direct experiment, not just by inference.** On
+2026-08-03 a `continue` was added to the failed-flush path in
+`pww_flush_idle`, so a flush that abends no longer releases the slot and no
+SVC 99 unallocate follows the abend at all. **It made no difference to the
+hang.** That is the controlled test Theory D asks for, and it fails it.
+
+Note the change does not remove the release permanently — it defers it. The
+slot stays USED and dirty, the sweep retries it (and is refused by the
+out-of-space guard) indefinitely, holding its ENQ and DD allocation until the
+pool fills and `pww_slot_take` evicts it as LRU, which flushes and releases it
+after all. So it is a diagnostic, not a fix.
+
+**Correction to the record.** STC02322 was first read here as a hang on a
+109,500 byte member, which was the main argument against this theory. That was
+wrong: `pww_write` logs `pww_write: ... off=` only AFTER `pww_store_range`
+succeeds, and blkcalc had refused every FBSMALL write before that point. The
+line appears 6 times in that run for other datasets and **zero** times for
+FBSMALL. Do not read `nfs3.proc_write` as evidence that data was stored.
+
+**Evidence against / unexplained**
+
+* The Windows hang runs (STC02307, 02309, 02313, 02316) have not been
+  classified for emptiness; their logs were not retained.
+* The mechanism inside JCC is inferred from the call sequence, not observed.
+
+### Theory D — the SVC 99 UNALLOCATE after the abend leaks the lock (SUPERSEDED)
+
+Added 2026-08-03 after STC02321, and displaced within the day by Theory E
+above. Retained because the correlation is real and the reasoning shows how a
+proxy variable can look decisive.
+
+The abend interrupts `fclose`/STOW, so the runtime still holds state for that
+DCB. `pww_slot_release_inner` then calls `pww_unlock` — which issues SVC 99 to
+**unallocate the DD** — *before* `spill_close` and before anything else. The
+proposal is that pulling the allocation out from under a DCB the runtime has
+not finished tearing down is what leaves `@IO`'s lock held.
+
+**Evidence for**
+
+STC02321 is an internal control: one client, one server instance, one dataset,
+100 `SB14` abends in three hours, **every one COMMIT-driven**
+(`pww_flush_member` keeps the slot), **zero followed by an unallocate**, and
+**zero hangs**. Only 17 unallocates occurred in the entire run, none within
+six lines of an abend.
+
+| abend followed by an SVC 99 unallocate? | abends | hangs |
+|---|---|---|
+| yes (sweep -> `pww_slot_release`) | 12 | **5** |
+| no (COMMIT -> slot kept) | 126 | **0** |
+
+Probability of all five hangs falling in the group of 12 by chance:
+C(12,5)/C(138,5) ~ **2 x 10^-6**.
+
+It also accounts for all three victims, because `pww_unlock` runs FIRST in the
+release:
+
+| run | after the abend | victim |
+|---|---|---|
+| STC02317 | unalloc, DEQ, released | the very next `@IO` call, the spill `fclose` |
+| STC02316 | unalloc, DEQ, released, no spill | next `@IO`, an `fopen` from a later request |
+| STC02322 | unalloc, DEQ, released, no spill, 47 lines of no I/O | next `@IO`, `_unlink` |
+
+And it explains what Theory A never could: why a COMMIT abend is harmless.
+Nothing is pulled away, so `@IO` recovers — 126 times out of 126.
+
+**Evidence against / unexplained**
+
+* Still only 5 of 12 — presumably whether the runtime had already finished
+  with the DCB before the SVC 99 landed, but that is untested.
+* Not directly demonstrated. It is a correlation over 138 abends plus a
+  plausible mechanism, not an observation of the lock being taken.
+
+**Correction this forces to §7.5.** Deferring the slot release was retired on
+the grounds that STC02316's release "completed cleanly" and the hang came
+later. Under Theory D the release IS the leak point; completing without
+itself hanging does not mean it did not leave the lock held. That was a bad
+inference.
+
+**The fix is NOT to skip the unallocate** (user's position, and correct — the
+allocation has to be released, and leaking DDs to dodge a runtime bug trades
+one resource problem for another). If Theory D is right the remedy lies in
+how the slot is torn down after an abend, not in omitting the teardown.
+
+Settling it is deferred; the space prediction removes the abend, and with it
+the whole question.
 
 ---
 

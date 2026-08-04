@@ -313,6 +313,9 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
                       " dataset for %d seconds",
                       pm->dsname_ebcdic, pm->member_name, code,
                       PWW_FULL_EXPIRY_SEC);
+            log_error("pdsflush_slot: %s(%s) This abend happened with pm->high_water = %d",
+                pm->dsname_ebcdic, pm->member_name,
+                pm->high_water);
             err = ENOSPC;
         } else {
             /* NOT an out-of-space condition, so almost certainly a program

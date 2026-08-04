@@ -576,3 +576,132 @@ can be tested hardest.
 `IEC217I B14-10` in the job log, and therefore zero exposure to the hang in
 `doc/analysis_io_lock_hang.md`.
 
+---
+
+# 9. Implementation notes
+
+Written 2026-08-03. Everything in §4–§7 is implemented except where noted.
+
+## 9.1 DSORG bits are NOT the same in the DCB and the DSCB
+
+The trap that would have broken this silently: `mvsio.h` defines
+`MVS_DCB_DSORG_PO 0x40` / `MVS_DCB_DSORG_PS 0x02`, taken from JCC's
+`__getdcb()`. The **format 1 DSCB uses the opposite bits** — `0x40` is PS and
+`0x02` is PO, as `tests/testdscb.c` has always decoded it.
+
+Validating a DSCB-sourced DSORG with the DCB constant would have classified
+every PDS as sequential and failed every export. `asmutils.h` now carries a
+separate `MVS_DSCB_DSORG_*` set with a warning, and `dataset_dscb_info_t`
+documents which set applies to its fields.
+
+## 9.2 Test data must be built from bytes, not string literals
+
+A pending member's stream is ASCII (it is translated only as the flush writes
+it), so `blkcalc_add_blocks_for_data` looks for `0x0A`. On JCC a `'\n'`
+literal is EBCDIC `0x15`, so `"hello\n"` in a test contains **no terminator
+the module recognises**. `tests/tmvsblkc.c` builds every buffer from explicit
+byte values for that reason.
+
+## 9.3 Conservative choices, and the one place they could bite
+
+Every ambiguous choice is resolved towards "predict full": a wrong "fits"
+costs an abend, a wrong "full" costs an ENOSPC the client reports.
+
+* the current track's remaining capacity is the **smaller** of what
+  `DS1LSTAR`'s record number implies and what `DS1TRBAL` implies;
+* a partial last block counts as a whole block;
+* V/VB blocks are assumed full-size for track usage, per §3;
+* an unreadable or incomplete DSCB answers "does not fit", never "fits" —
+  `blkcalc_dataset_init` refuses to set `valid` unless
+  `blocks_per_track`, `blksize`, `lrecl` and `tracks` are all usable.
+
+**The case to watch in the observe-only run (§8 step 4):** a dataset of ONE
+track whose `DS1TRBAL` reads 0 gets an availability of zero and refuses
+everything. TRBAL is only 0 when the track is exactly full, so this should
+not arise on a real export, but a false ENOSPC would show up here first.
+
+## 9.3.1 `DS1LSTAR`'s record number is NOT in units of blocks-per-track — FIXED
+
+Found in the first observe-only run (STC02322). `TEMP.ITEST.FBSMALL` reported:
+
+```
+tracks=16  ext=16  blk/trk=6  lstar=15.14  trbal=102
+```
+
+Record **14** on a track that holds **6** full blocks. A TTR is a two byte
+relative track address followed by a one byte **physical block** number, and
+those blocks are whatever was actually written — short member-tail blocks,
+256 byte directory blocks, the EOF marker. `blocks_per_track - r` is therefore
+meaningless against a real `DS1LSTAR`.
+
+`TT = 0x000F` says the last track written was 15, the last track of a 16 track
+allocation. `DS1TRBAL` is the useful value.
+
+**The fix (implemented).** The two questions are now separated in
+`blkc_track_room()`:
+
+| track | how its free room is measured | why |
+|---|---|---|
+| the one `DS1LSTAR` names | `DS1TRBAL / bytes-per-block`, capped at `blocks_per_track` | the only sound measure of a track whose existing blocks are of unknown size |
+| one this module PREDICTED, chaining members | `blocks_per_track - r` | exact, because every block we counted is assumed full sized, so r really is in units of blocks |
+
+`blkc_ttr_add()` now fills the current track using the same function and then
+whole tracks, instead of the old `tt * bpt + r` index that mixed the units.
+
+**A second bug this exposed.** When a chained member lands on the `DS1LSTAR`
+track, `DS1TRBAL` still describes that track *as the VTOC found it* and knows
+nothing about blocks already predicted onto it — so the same free space would
+be credited to every pending member in turn. `blkc_track_room()` now subtracts
+`r - lstar_r`. Covered by `/fit/trbal_once`, which fails against the previous
+code.
+
+## 9.3.2 The predictor was correct on its first real test (STC02322)
+
+Same run, warn-only mode. `TEMP.ITEST.FBSMALL` was already at its 16 extent
+limit with 102 bytes free. On FULL000's very first write the predictor said
+*"predicted NOT to fit -- 9 blocks needed"*, and FULL000's flush is exactly
+what abended `SB14`. It called all six pending members the same way, and no
+member was wrongly refused. Enforcement would have prevented that abend, and
+therefore the hang that followed it.
+
+## 9.3.3 CREATE must be predicted too, and an empty member is not free
+
+Found in the second observe-only run (STC02334, Linux, test 1.3 only, dataset
+already full). Every WRITE was correctly refused with ENOSPC — and a flush
+abended `SB14` anyway.
+
+`pww_create` marks the slot dirty unconditionally ("an empty create still
+needs to stow an empty member on COMMIT"). That is a promise to stow, and the
+idle sweep keeps it even when every subsequent WRITE has been refused. So an
+EMPTY member was flushed into the very abend this mechanism exists to prevent.
+
+Two changes, and both were needed — the first alone would not have worked:
+
+1. **`blkcalc_will_member_fit` charges a minimum of one block.**
+   `blkcalc_total_blocks` returns 0 for a member with no content, so a
+   create-time check would have computed "0 blocks needed, fits" on a
+   completely full PDS. A stow always writes an EOF marker and takes a
+   directory entry. Covered by `/fit/empty_costs_one`.
+2. **`pww_create` runs the predictor** (`blkcalc_admit_write(pm, NULL, 0, 0)`)
+   before marking the slot dirty, and releases a slot it had just created if
+   the answer is no.
+
+The gate now sits on both entry points to the pending pool, which is what §3
+implied but only stated for WRITE.
+
+## 9.4 Not implemented
+
+* **§7.5 directory space** — out of scope by decision. A directory-full
+  abend still reaches the flush.
+* **§7.4 pacing** — the VTOC is read on every admit, unconditionally, as
+  agreed. `blkc_vtoc_read()` is the single place to add throttling later.
+
+## 9.5 Recovery if the estimate ever drifts
+
+`consumed_upto` is compared against `high_water` on every write. Anything that
+moves one without the other — a truncate, a failed `pww_store_range` after the
+estimate was committed, an out-of-order write — makes the next write take the
+rebuild path automatically. The estimate is therefore self-correcting rather
+than needing explicit invalidation, and `pdsflush_dataset_is_full` remains as
+the backstop underneath it.
+

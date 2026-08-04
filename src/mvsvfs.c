@@ -52,26 +52,6 @@
 /* or a PDS member.                                                     */
 /* Returns 0 on success, -1 on error (errno set).                       */
 /* -------------------------------------------------------------------- */
-static uint64_t vfs_stat_member_size_calc(
-    pds_dataset_t *ds,
-    int            member_size)
-{
-    mvs_dcb_info_t  *dcb;
-    uint64_t         calc_estimated_size;
-
-    dcb = &ds->dcbinfo;
-
-    if (dcb->recfm & MVS_DCB_RECFM_F ) {
-        calc_estimated_size = member_size * (1 + dcb->lrecl);
-    } else if (dcb->recfm & MVS_DCB_RECFM_V ) {
-        calc_estimated_size = member_size * (1 + dcb->lrecl / 2);
-    } else {
-        calc_estimated_size = 4096;
-    }
-
-    return calc_estimated_size;
-}
-
 
 /*
  * Mode to REPORT for an object, given its configured permission bits and
@@ -182,12 +162,6 @@ static int vfs_stat_pds_member(const char *path, int export_idx,
     rc2 = mvsfsz_get_member_size(
         pds_dsname, pds_member_name,
         member_entry, &set_size);
-
-    /* If above fails ... then we'll estimate the size, but this is problematic for the NFS client */
-    /* which will attempt to read a file based on the file size that was given in a getattr or     */
-    /* lookup operation.                                                                           */
-    if ( rc2 != 0 )
-        set_size = vfs_stat_member_size_calc(ds, member_entry->size);
 
     vs->ftype = NF3REG;
     vs->mode = vfs_report_mode(ds->memperm, ds->readonly);

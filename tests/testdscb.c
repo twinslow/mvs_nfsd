@@ -161,6 +161,19 @@ static void print_entry(int n, const char *asked_for,
     printf("  %-10s %u\n", "blksize", (unsigned)MVS_DSCB_U16(e->blksize));
     printf("  %-10s %u\n", "lrecl",   (unsigned)MVS_DSCB_U16(e->lrecl));
 
+    /*
+     * Where the dataset currently ends.  Unlike everything else here these
+     * two move on every member write, and they are what the write-space
+     * prediction starts from (doc/design_pds_full_prediction.md).
+     * DS1LSTAR is a TTR: relative track, then record within that track.
+     * All zero means nothing has been written yet.
+     */
+    printf("  %-10s track %u, record %u  (raw %02X%02X%02X)\n", "lstar",
+           (unsigned)MVS_DSCB_U16(e->lstar), (unsigned)e->lstar[2],
+           e->lstar[0], e->lstar[1], e->lstar[2]);
+    printf("  %-10s %u bytes left on that track\n", "trbal",
+           (unsigned)MVS_DSCB_U16(e->trbal));
+
     /* Device characteristics, and what they imply. */
     trklen = MVS_DSCB_U16(e->trklen);
     blksz  = MVS_DSCB_U16(e->blksize);
