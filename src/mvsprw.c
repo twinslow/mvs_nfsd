@@ -115,33 +115,33 @@ int mvs_pds_member_pread(
     size_t read_bytes;
     char     discard[1024];
 
-    log_info("mvsprw.mvs_pds_member_pread: Starting with offset = %llu", offset);
+    logmsg_info("NFSIR010I", "mvsprw.mvs_pds_member_pread: Starting with offset = %llu", offset);
 
     if (offset > 0) {
         if (cache_entry->has_last_getpos &&
             offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
-            log_info("mvsprw.mvs_pds_member_pread: Continuing to read from prior pos");
+            logmsg_info("NFSIR020I", "mvsprw.mvs_pds_member_pread: Continuing to read from prior pos");
             /* We have a saved fgetpos value that we can use ...*/
             rc = fsetpos(fh, &cache_entry->last_getpos);
         } else {
             /* We did not have a usable fgetpos value ... so seek */
-            log_info("mvsprw.mvs_pds_member_pread: Seeking to new pos");
+            logmsg_info("NFSIR030I", "mvsprw.mvs_pds_member_pread: Seeking to new pos");
             rc = fseek(fh, (long)offset, SEEK_SET);
         }
         if ( rc < 0 ) {
-            log_info("mvsprw.mvs_pds_member_pread: Got error from fsetpos or fseek");
+            logmsg_info("NFSIR040I", "mvsprw.mvs_pds_member_pread: Got error from fsetpos or fseek");
             mvs_rcache_entry_reset(cache_entry);
             return -1;
         }
     }
 
     /* Now read the data from the file of the required size */
-    log_info("mvsprw.mvs_pds_member_pread: Reading data from file");
+    logmsg_info("NFSIR050I", "mvsprw.mvs_pds_member_pread: Reading data from file");
     read_bytes = fread(buff, 1, (size_t)count, fh);
 
     /* Did we hit an error */
     if ( ferror(fh) ) {
-        log_info("mvsprw.mvs_pds_member_pread: fread - file in error, errno - %d", errno);
+        logmsg_info("NFSIR060I", "mvsprw.mvs_pds_member_pread: fread - file in error, errno - %d", errno);
         mvs_rcache_entry_reset(cache_entry);
         return -1;
     }
@@ -158,20 +158,20 @@ int mvs_pds_member_pread(
     }
 
     /* Update the cache entry */
-    log_info("mvsprw.mvs_pds_member_pread: Updating file position cache entry at 0x%08X", cache_entry);
+    logmsg_info("NFSIR070I", "mvsprw.mvs_pds_member_pread: Updating file position cache entry at 0x%08X", cache_entry);
     cache_entry->last_used_time = time(NULL);
     cache_entry->last_offset = (uint32_t)offset;
     cache_entry->last_nread = (uint32_t)read_bytes;
 
-    log_info("mvsprw.mvs_pds_member_pread: Calling fgetpos");
+    logmsg_info("NFSIR080I", "mvsprw.mvs_pds_member_pread: Calling fgetpos");
     rc = fgetpos(fh, &(cache_entry->last_getpos));
-    log_info("mvsprw.mvs_pds_member_pread: fgetpos ended rc = %d", rc);
+    logmsg_info("NFSIR090I", "mvsprw.mvs_pds_member_pread: fgetpos ended rc = %d", rc);
     if ( rc ) {
         fprintf(stderr, "fgetpos returned error, errno - %d", errno);
         /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
         mvs_rcache_entry_reset(cache_entry);
     } else {
-        log_info("mvsprw.mvs_pds_member_pread: Set indicator in cache that we have fgetpos info");
+        logmsg_info("NFSIR100I", "mvsprw.mvs_pds_member_pread: Set indicator in cache that we have fgetpos info");
         cache_entry->has_last_getpos = 1;
     }
 
@@ -231,6 +231,6 @@ int mvs_pds_member_read(
     if ( rc < 0 ) {
         return -1;
     }
-    log_info("mvs_pds_member_read: Read completed (member closed)");
+    logmsg_info("NFSIR110I", "mvs_pds_member_read: Read completed (member closed)");
     return 0;
 }

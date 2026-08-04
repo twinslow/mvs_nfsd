@@ -192,7 +192,7 @@ int mvs_get_pds_dsn_and_member(
     /* PDS member: parse the leaf component of the path. */
     last_slash = strrchr(path, '/');
     if (last_slash == NULL) {
-        log_error("mvs_get_pds_dsn_and_member: no slash in member path %s", path);
+        logmsg_error("NFSIO010E", "mvs_get_pds_dsn_and_member: no slash in member path %s", path);
         goto return_exit;
     }
     strncpy(file_name, last_slash + 1, MAX_NAME - 1);
@@ -229,7 +229,7 @@ int mvs_get_pds_dsn_and_member(
            externally altered..." message, whereas NAMETOOLONG gives the clear
            "The filename or extension is too long." which points the user at
            the target filename -- the thing they actually need to fix. */
-        log_debug("mvs_get_pds_dsn_and_member: invalid member name '%s' (errno %d)"
+        logmsg_debug("NFSIO020D", "mvs_get_pds_dsn_and_member: invalid member name '%s' (errno %d)"
                   " -> reporting ENAMETOOLONG", file_name, retcode);
         errno   = ENAMETOOLONG;
         retcode = -1;
@@ -257,7 +257,7 @@ int mvs_get_pds_dsn_and_member(
     }
 
 return_exit:
-    log_debug("mvs_get_pds_dsn_and_member: dsname=%s member=%s (ext '%s' vs '%s') rc=%d",
+    logmsg_debug("NFSIO030D", "mvs_get_pds_dsn_and_member: dsname=%s member=%s (ext '%s' vs '%s') rc=%d",
         pds_dsname, pds_member_name, file_ext,
         (ds != NULL) ? ds->file_ext : "", retcode);
 

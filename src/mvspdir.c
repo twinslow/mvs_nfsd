@@ -25,10 +25,10 @@ int mvs_open_pds_dir(
     char  open_path_name[6 + 45]; // 6 for prefix + 44 for max dsname length + null terminator
     char  *open_mode = "rb,klen=0,lrecl=256,blksize=256,recfm=u,force";
 
-    log_debug("mvs_open_pds_dir: Opening PDS %s for directory read", dsname);
+    logmsg_debug("NFSID010D", "mvs_open_pds_dir: Opening PDS %s for directory read", dsname);
 
     if (strlen(dsname) > 44) {
-        log_error("mvs_open_pds_dir: Dataset name %s is too long", dsname);
+        logmsg_error("NFSID020E", "mvs_open_pds_dir: Dataset name %s is too long", dsname);
         errno = EINVAL; // Dataset name too long
         return -1;
     }
@@ -37,17 +37,17 @@ int mvs_open_pds_dir(
     strcat(open_path_name, dsname);
 
     // Open the dataset ... recfm=U and return a handle for reading directory blocks
-    log_debug("mvs_open_pds_dir: Calling fopen on Opening PDS %s for directory read, mode \"%s\"", 
+    logmsg_debug("NFSID030D", "mvs_open_pds_dir: Calling fopen on Opening PDS %s for directory read, mode \"%s\"", 
         open_path_name, open_mode);
     pds_dir_fh_local = fopen(open_path_name, open_mode);
     if (pds_dir_fh_local == NULL) {
-        log_error("mvs_open_pds_dir: fopen for %s failed, error %s", 
+        logmsg_error("NFSID040E", "mvs_open_pds_dir: fopen for %s failed, error %s", 
             dsname, strerror(errno));
         return -1;
     }
 
     *pds_dir_fh = pds_dir_fh_local;
-    log_debug("mvs_open_pds_dir: fopen OK for %s", dsname);
+    logmsg_debug("NFSID050D", "mvs_open_pds_dir: fopen OK for %s", dsname);
     return 0; // Success
 }
 
@@ -87,7 +87,7 @@ int mvspdir_mlist_init(pds_member_list_t *mlist)
     new_list = (pds_member_entry_t *)malloc(
         (size_t)MVSPDIR_MLIST_INITIAL_SIZE * sizeof(pds_member_entry_t));
     if (new_list == NULL) {
-        log_error("mvspdir_mlist_init: malloc of %d entries failed",
+        logmsg_error("NFSID060E", "mvspdir_mlist_init: malloc of %d entries failed",
                   MVSPDIR_MLIST_INITIAL_SIZE);
         errno = ENOMEM;
         return -1;
@@ -111,7 +111,7 @@ int mvspdir_mlist_expand(pds_member_list_t *mlist)
     new_list = (pds_member_entry_t *)realloc(mlist->list,
         (size_t)new_size * sizeof(pds_member_entry_t));
     if (new_list == NULL) {
-        log_error("mvspdir_mlist_expand: realloc to %d entries failed",
+        logmsg_error("NFSID070E", "mvspdir_mlist_expand: realloc to %d entries failed",
                   new_size);
         errno = ENOMEM;
         return -1;
@@ -178,7 +178,7 @@ int mvspdir_mlist_shrink(pds_member_list_t *mlist)
     new_list = (pds_member_entry_t *)realloc(mlist->list,
         (size_t)mlist->number_in_list * sizeof(pds_member_entry_t));
     if (new_list == NULL) {
-        log_error("mvspdir_mlist_shrink: realloc to %d entries failed",
+        logmsg_error("NFSID080E", "mvspdir_mlist_shrink: realloc to %d entries failed",
                   mlist->number_in_list);
         errno = ENOMEM;
         return -1;
@@ -551,7 +551,7 @@ int mvs_pds_member_entry_set(
     // Copy member name, trim trailing blanks and null terminate.
     bytes_to_string((unsigned char *)entry->name, blockptr, 8);
     blockptr += 8;
-    // log_debug("mvs_pds_member_entry_set:   Processing member %s", entry->name);
+    // logmsg_debug("NFSID090D", "mvs_pds_member_entry_set:   Processing member %s", entry->name);
 
     // Copy TTR - relative track number and record number
     entry->first_block_tt = *( (uint16_t *)blockptr );
@@ -647,16 +647,16 @@ int mvs_process_dir_block(
     dir_block_end = blockptr + *(uint16_t *)blockptr;
     blockptr += 2;
 
-    //log_debug("mvs_process_dir_block: Looking for members starting at %s", start_member);
+    //logmsg_debug("NFSID100D", "mvs_process_dir_block: Looking for members starting at %s", start_member);
 
     while (blockptr < dir_block_end) {
         if ( memcmp(blockptr, MVS_PDSDIR_ENDMARK, 8) == 0) {
             // We've reached the end of the directory
-            //log_debug("mvs_process_dir_block: Found PDS directory end mark - set end_of_dir = 1");
+            //logmsg_debug("NFSID110D", "mvs_process_dir_block: Found PDS directory end mark - set end_of_dir = 1");
             *end_of_dir = 1;
             break;
         }
-    //  log_debug("mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
+    //  logmsg_debug("NFSID120D", "mvs_process_dir_block:   Looking at member name %-8.8s", blockptr);
         if (memcmp(blockptr, start_member, 8) >= 0) {
             len_entry = mvs_extract_dir_entry(blockptr, mlist);
             if (len_entry < 0) {
@@ -682,18 +682,18 @@ int mvs_read_pds_dir(
 
     *end_of_dir = 0;
 
-    log_debug("mvs_read_pds_dir: Start reading at member %s", start_member);
+    logmsg_debug("NFSID130D", "mvs_read_pds_dir: Start reading at member %s", start_member);
 
     read_and_skip_block_length(pds_dir_fh);
     while (fread(block, 1, sizeof(block), pds_dir_fh) == 256) {
-        //log_debug("mvs_read_pds_dir: Read directory block ... first mem %-8.8s", &block[2]);
+        //logmsg_debug("NFSID140D", "mvs_read_pds_dir: Read directory block ... first mem %-8.8s", &block[2]);
         // Append every member >= start_member from this block into the list.
         rc = mvs_process_dir_block(block, start_member, mlist, end_of_dir);
         if (rc < 0) {
             return -1;  // List expansion failed -- errno already set.
         }
         if ( *end_of_dir ) {
-            //log_debug("mvs_read_pds_dir: Reached end of directory");
+            //logmsg_debug("NFSID150D", "mvs_read_pds_dir: Reached end of directory");
             break;
         }
 
@@ -756,7 +756,7 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     int                end_of_dir = 0;
     pds_member_list_t  mlist;
 
-    log_debug("mvs_pds_get_member_entry: Getting member info for '%s(%s)'",
+    logmsg_debug("NFSID160D", "mvs_pds_get_member_entry: Getting member info for '%s(%s)'",
         dsname, member);
 
     if (mvspdir_mlist_init(&mlist) != 0) {
@@ -767,7 +767,7 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     /* Read from 'member' to the end of the directory into the list.  The
        first entry (if any) is the smallest member name >= 'member'. */
     rc = mvs_pds_member_list(dsname, export_idx, member, &mlist, &end_of_dir);
-    log_debug("mvs_pds_get_member_entry: mvs_pds_member_list rc = %d, members = %d",
+    logmsg_debug("NFSID170D", "mvs_pds_get_member_entry: mvs_pds_member_list rc = %d, members = %d",
         rc, mlist.number_in_list);
     if (rc < 0) {
         mvspdir_mlist_free(&mlist);
@@ -783,7 +783,7 @@ pds_member_entry_t *mvs_pds_get_member_entry(
 
     // The list is sorted; the first entry may merely be the next member
     // greater than the one we asked for, so confirm an exact match.
-    log_debug("mvs_pds_get_member_entry: first entry name = %s", mlist.list[0].name);
+    logmsg_debug("NFSID180D", "mvs_pds_get_member_entry: first entry name = %s", mlist.list[0].name);
     if (strcmp(mlist.list[0].name, member) != 0) {
         mvspdir_mlist_free(&mlist);
         errno = ENOENT; // Member not found

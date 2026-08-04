@@ -94,18 +94,18 @@ static int cfg_set_fileext(const char *val, cfg_opts_t *out, const char *ctx)
     int j;
 
     if (val[0] == '\0') {
-        log_error("exports_load: %s: 'fileext' needs a value"
+        logmsg_error("NFSCF500E", "exports_load: %s: 'fileext' needs a value"
                   " (e.g. fileext=jcl)", ctx);
         return -1;
     }
     if ((int)strlen(val) > CFG_FILEEXT_MAX - 1) {
-        log_error("exports_load: %s: fileext '%s' too long"
+        logmsg_error("NFSCF510E", "exports_load: %s: fileext '%s' too long"
                   " (max %d chars)", ctx, val, CFG_FILEEXT_MAX - 1);
         return -1;
     }
     for (j = 0; val[j] != '\0'; j++) {
         if (val[j] == '.' || val[j] == '/') {
-            log_error("exports_load: %s: fileext '%s' must not contain"
+            logmsg_error("NFSCF520E", "exports_load: %s: fileext '%s' must not contain"
                       " '.' or '/'", ctx, val);
             return -1;
         }
@@ -135,26 +135,26 @@ int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
             out->readonly     = 0;
         } else if (cfg_kw_match(t, "DIRPERM", &val)) {
             if (cfg_parse_octal(val, &out->dirperm) < 0) {
-                log_error("exports_load: %s: bad dirperm value '%s'"
+                logmsg_error("NFSCF530E", "exports_load: %s: bad dirperm value '%s'"
                           " (want octal 0..777)", ctx, val);
                 return -1;
             }
             out->has_dirperm = 1;
         } else if (cfg_kw_match(t, "MEMPERM", &val)) {
             if (cfg_parse_octal(val, &out->memperm) < 0) {
-                log_error("exports_load: %s: bad memperm value '%s'"
+                logmsg_error("NFSCF540E", "exports_load: %s: bad memperm value '%s'"
                           " (want octal 0..777)", ctx, val);
                 return -1;
             }
             out->has_memperm = 1;
         } else if (cfg_kw_match(t, "ROOTPERM", &val)) {
             if (level != CFG_LEVEL_EXPORT) {
-                log_error("exports_load: %s: 'rootperm' is an export-level"
+                logmsg_error("NFSCF550E", "exports_load: %s: 'rootperm' is an export-level"
                           " keyword, not valid on a dataset", ctx);
                 return -1;
             }
             if (cfg_parse_octal(val, &out->rootperm) < 0) {
-                log_error("exports_load: %s: bad rootperm value '%s'"
+                logmsg_error("NFSCF560E", "exports_load: %s: bad rootperm value '%s'"
                           " (want octal 0..777)", ctx, val);
                 return -1;
             }
@@ -165,14 +165,14 @@ int cfg_parse_keywords(char *toks[], int n, cfg_opts_t *out,
         } else if (cfg_stricmp(t, "NOFILEEXT") == 0) {
             out->has_nofileext = 1;
         } else {
-            log_error("exports_load: %s: unknown keyword '%s'", ctx, t);
+            logmsg_error("NFSCF570E", "exports_load: %s: unknown keyword '%s'", ctx, t);
             return -1;
         }
     }
 
     /* 'fileext=' and 'nofileext' on the same line are contradictory. */
     if (out->has_fileext && out->has_nofileext) {
-        log_error("exports_load: %s: 'fileext' and 'nofileext' are mutually"
+        logmsg_error("NFSCF580E", "exports_load: %s: 'fileext' and 'nofileext' are mutually"
                   " exclusive", ctx);
         return -1;
     }
@@ -200,7 +200,7 @@ int cfg_resolve_opts(const cfg_opts_t *exp_opts, const cfg_opts_t *ds_opts,
     if (ds_opts->has_readonly) {
         if (ds_opts->readonly == 0) {   /* explicit rw */
             if (exp_opts != NULL && exp_opts->has_readonly && exp_opts->readonly) {
-                log_error("exports_load: %s: 'rw' dataset inside a read-only"
+                logmsg_error("NFSCF590E", "exports_load: %s: 'rw' dataset inside a read-only"
                           " export is not allowed", ctx);
                 return -1;
             }

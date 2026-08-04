@@ -163,7 +163,7 @@ static int cfg_parse_section(char *p)
 
     close = strchr(p, CFG_SECT_CLOSE);
     if (close == NULL) {
-        log_error("exports_load: malformed section header (no closing"
+        logmsg_error("NFSCF010E", "exports_load: malformed section header (no closing"
                   " bracket): %s", p);
         return CFG_SECT_UNKNOWN;
     }
@@ -192,9 +192,9 @@ static void cfg_do_init_line(const char *cmd)
 
     rc = log_handle_modify(cmd);
     if (rc == 1) {
-        log_warn("exports_load: [Init] unrecognised command: %s", cmd);
+        logmsg_warn("NFSCF020W", "exports_load: [Init] unrecognised command: %s", cmd);
     } else if (rc == 0) {
-        log_debug("exports_load: [Init] applied: %s", cmd);
+        logmsg_debug("NFSCF030D", "exports_load: [Init] applied: %s", cmd);
     }
     /* rc < 0: the handler already reported the specific fault. */
 }
@@ -298,7 +298,7 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
     pds_dataset_t *ds;
 
     if (exp->ndatasets >= MAX_PDS_PER_EXPORT) {
-        log_error("exports_load: max datasets (%d) reached for export %s,"
+        logmsg_error("NFSCF040E", "Export load -- max datasets (%d) reached for export %s,"
             " failing export", MAX_PDS_PER_EXPORT, exp->export_path_ebcdic);
         cfg_fail_export(exp_idx);
         return;
@@ -318,7 +318,7 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
     /* Honour it, but a directory with no execute bit cannot be entered --
        almost always a typo (design §9). */
     if ((ds->dirperm & 0111) == 0)
-        log_warn("exports_load: %s: dirperm=%03o has no execute bit --"
+        logmsg_warn("NFSCF050W", "Export load: %s dirperm=%03o has no execute bit --"
             " clients will not be able to enter the directory",
             ds->dsname_ebcdic, (unsigned)ds->dirperm);
 
@@ -335,7 +335,7 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
         exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
     }
 
-    log_info("nfsd: export '%s' + dataset '%s' -> dir '%s' (ext '%s',"
+    logmsg_info("NFSCF060I", "Export '%s' / '%s' -> dir '%s' (ext '%s',"
         " %s dirperm=%03o memperm=%03o)",
         exp->export_path_ebcdic, ds->dsname_ebcdic, ds->dirname_ebcdic,
         ds->file_ext, ds->readonly ? "ro" : "rw",
@@ -354,7 +354,7 @@ static void cfg_open_block(char *toks[], int n)
     /* n is the token count with the trailing "{" already removed; toks[0]
        must be the export path.  A lone "{" (n == 0) has no path. */
     if (n < 1) {
-        log_error("exports_load: '{' with no export path");
+        logmsg_error("NFSCF070E", "Export load -- '{' with no export path");
         g_blk_open    = 1;    /* swallow the body so it is not misread */
         g_blk_exp_idx = -1;
         memset(&g_blk_opts, 0, sizeof(g_blk_opts));
@@ -363,7 +363,7 @@ static void cfg_open_block(char *toks[], int n)
 
     exp_idx = find_or_create_export(toks[0]);
     if (exp_idx < 0) {
-        log_error("exports_load: max exports (%d) reached, ignoring %s",
+        logmsg_error("NFSCF080E", "Export load -- max exports (%d) reached, ignoring %s",
             MAX_EXPORTS, toks[0]);
         /* No export to fail; open a "swallow" block so its body is skipped. */
         g_blk_open    = 1;
@@ -386,7 +386,7 @@ static void cfg_open_block(char *toks[], int n)
     if (g_blk_opts.has_readonly && g_blk_opts.readonly) exp->readonly = 1;
     if (g_blk_opts.has_rootperm)                        exp->rootperm = g_blk_opts.rootperm;
 
-    log_info("nfsd: export '%s' block (%s rootperm=%03o)",
+    logmsg_info("NFSCF090I", "Export '%s' block (%s rootperm=%03o)",
         exp->export_path_ebcdic, exp->readonly ? "ro" : "rw",
         (unsigned)exp->rootperm);
 }
@@ -406,7 +406,7 @@ static void cfg_do_export_line(char *p)
     /* A lone "}" closes an open block. */
     if (p[0] == CFG_BLOCK_CLOSE && p[1] == '\0') {
         if (!g_blk_open) {
-            log_error("exports_load: stray '}' with no open block");
+            logmsg_error("NFSCF100E", "Export load -- stray '}' with no open block");
             return;
         }
         g_blk_open = 0;
@@ -415,7 +415,7 @@ static void cfg_do_export_line(char *p)
 
     n = cfg_tokenize(p, toks, CFG_MAX_TOKS);
     if (n < 0) {
-        log_error("exports_load: too many tokens on line: %s", p);
+        logmsg_error("NFSCF110E", "Export load -- too many tokens on line: %s", p);
         if (g_blk_open) cfg_fail_export(g_blk_exp_idx);
         return;
     }
@@ -428,7 +428,7 @@ static void cfg_do_export_line(char *p)
     /* ---- Inside an open block: each line is a dataset ---- */
     if (g_blk_open) {
         if (has_open) {
-            log_error("exports_load: nested '{' is not supported (export %s)",
+            logmsg_error("NFSCF120E", "Export load -- nested '{' is not supported (export %s)",
                 g_exports[g_blk_exp_idx >= 0 ? g_blk_exp_idx : 0].export_path_ebcdic);
             cfg_fail_export(g_blk_exp_idx);
             return;
@@ -458,13 +458,13 @@ static void cfg_do_export_line(char *p)
 
     /* Flat form: "<path> <dsname> [dataset-kw...]" */
     if (n < 2) {
-        log_error("exports_load: missing dataset name for export %s", toks[0]);
+        logmsg_error("NFSCF130E", "Export load -- missing dataset name for export %s", toks[0]);
         return;
     }
     {
         int exp_idx = find_or_create_export(toks[0]);
         if (exp_idx < 0) {
-            log_error("exports_load: max exports (%d) reached, ignoring %s",
+            logmsg_error("NFSCF140E", "Export load -- max exports (%d) reached, ignoring %s",
                 MAX_EXPORTS, toks[0]);
             return;
         }
@@ -527,7 +527,7 @@ static int cfg_enter_section(char *p, int *warned_unknown)
     int section;
 
     if (g_blk_open) {
-        log_error("exports_load: new section started inside an open"
+        logmsg_error("NFSCF150E", "Export load -- new section started inside an open"
                   " '{' block -- failing that export");
         cfg_fail_export(g_blk_exp_idx);
         g_blk_open = 0;
@@ -535,10 +535,10 @@ static int cfg_enter_section(char *p, int *warned_unknown)
 
     section = cfg_parse_section(p);
     if (section == CFG_SECT_UNKNOWN) {
-        log_warn("exports_load: ignoring unknown section: %s", p + 1);
+        logmsg_warn("NFSCF160W", "Export load -- ignoring unknown section: %s", p + 1);
         *warned_unknown = 1;
     } else {
-        log_debug("exports_load: entering section %s", p + 1);
+        logmsg_debug("NFSCF170D", "Export load -- entering section %s", p + 1);
     }
     return section;
 }
@@ -597,7 +597,7 @@ static void cfg_load_dscb_info(void)
             char           str_recfm[4];
 
             if (raw[j].status != MVS_DSCB_ST_OK) {
-                log_error("exports_load: %s -- no DSCB (status=%d);"
+                logmsg_error("NFSCF180E", "Export load %s -- no DSCB (status=%d);"
                           " failing export '%s'",
                           ds->dsname_ebcdic, (int)raw[j].status,
                           exp->export_path_ebcdic);
@@ -608,7 +608,7 @@ static void cfg_load_dscb_info(void)
             /* DSORG from the DSCB, NOT the DCB: the two use opposite bits
                for PO and PS (see asmutils.h). */
             if ((raw[j].dsorg[0] & MVS_DSCB_DSORG_PO) == 0) {
-                log_error("exports_load: %s is not a PDS (DSORG=%04X);"
+                logmsg_error("NFSCF190E", "Export load %s is not a PDS (DSORG=%04X);"
                           " failing export '%s'",
                           ds->dsname_ebcdic, MVS_DSCB_U16(raw[j].dsorg),
                           exp->export_path_ebcdic);
@@ -618,7 +618,7 @@ static void cfg_load_dscb_info(void)
 
             base = (uint8_t)(raw[j].recfm & MVS_DSCB_RECFM_MASK);
             if (base != MVS_DSCB_RECFM_F && base != MVS_DSCB_RECFM_V) {
-                log_error("exports_load: %s is RECFM=%02X, only F/FB and"
+                logmsg_error("NFSCF200E", "Export load %s is RECFM=%02X, only F/FB and"
                           " V/VB are supported; failing export '%s'",
                           ds->dsname_ebcdic, raw[j].recfm,
                           exp->export_path_ebcdic);
@@ -636,7 +636,7 @@ static void cfg_load_dscb_info(void)
              */
             if (base == MVS_DSCB_RECFM_V &&
                 MVS_DSCB_U16(raw[j].lrecl) > MVS_DSCB_U16(raw[j].blksize) - 4) {
-                log_error("exports_load: %s has LRECL=%d over the limit of"
+                logmsg_error("NFSCF210E", "Export load %s has LRECL=%d over the limit of"
                           " BLKSIZE-4=%d for a variable format dataset;"
                           " failing export '%s'",
                           ds->dsname_ebcdic, MVS_DSCB_U16(raw[j].lrecl),
@@ -647,7 +647,7 @@ static void cfg_load_dscb_info(void)
             }
 
             if (blkcalc_dataset_init(&ds->dscb, &raw[j]) != 0) {
-                log_error("exports_load: %s -- DSCB unusable for space"
+                logmsg_error("NFSCF220E", "Export load %s -- DSCB unusable for space"
                           " prediction (bpt=%d blksize=%d lrecl=%d"
                           " tracks=%lu); failing export '%s'",
                           ds->dsname_ebcdic, ds->dscb.blocks_per_track,
@@ -658,13 +658,13 @@ static void cfg_load_dscb_info(void)
                 continue;
             }
 
-            log_info("exports_load: %s DSCB DSORG=%s RECFM=%s LRECL=%d BLKSIZE=%d",
+            logmsg_info("NFSCF230I", "Export load %s DSCB DSORG=%s RECFM=%s LRECL=%d BLKSIZE=%d",
                      ds->dsname_ebcdic,
                      mvs_dscb_dsorg_str(ds->dscb.dsorg, str_dsorg),
                      mvs_dscb_recfm_str(ds->dscb.recfm, str_recfm),
                      ds->dscb.lrecl,
                      ds->dscb.blksize );
-            log_info("exports_load: %s VOL=%s %s alloc-tracks=%lu ext=%d"
+            logmsg_info("NFSCF240I", "Export load %s VOL=%s %s alloc-tracks=%lu ext=%d"
                      " blk/trk=%d lstar=%lu.%d trbal=%d sec=%lu trk",
                      ds->dsname_ebcdic, ds->dscb.volser,
                      MVS_DSCB_MODEL_T(raw[j].devtype),
@@ -692,7 +692,7 @@ static void cfg_drop_failed_exports(void)
 
     for (i = 0; i < g_nexports; i++) {
         if (g_exports[i].failed) {
-            log_error("exports_load: DROPPING export '%s' due to config"
+            logmsg_error("NFSCF250E", "Export load -- DROPPING export '%s' due to config"
                       " error(s) above", g_exports[i].export_path_ebcdic);
             continue;
         }
@@ -753,7 +753,7 @@ int exports_load(const char *config_file)
     /* An unterminated block would otherwise silently swallow whatever came
        after it; fail that export. */
     if (g_blk_open) {
-        log_error("exports_load: end of file inside an open '{' block --"
+        logmsg_error("NFSCF260E", "Export load -- end of file inside an open '{' block --"
                   " failing that export");
         cfg_fail_export(g_blk_exp_idx);
         g_blk_open = 0;
@@ -762,7 +762,7 @@ int exports_load(const char *config_file)
     fclose(fp);
 
     if (warned_unknown)
-        log_warn("exports_load: one or more unknown sections were skipped");
+        logmsg_warn("NFSCF270W", "Export load -- one or more unknown sections were skipped");
 
     /* VTOC pass BEFORE the drop, so anything it fails is dropped with it. */
     cfg_load_dscb_info();
@@ -885,7 +885,7 @@ void export_dataset_touch(int export_idx, int dataset_idx)
     if (ds != NULL)
         ds->dir_mtime = (uint32_t)time(NULL);
     else {
-        log_warn("Server tried to upd dir_mtime for exp_idx %d, "
+        logmsg_warn("NFSCF280W", "Server tried to update dir_mtime for exp_idx %d, "
             "ds_idx %d, which was not found\n",
             export_idx, dataset_idx);
     }

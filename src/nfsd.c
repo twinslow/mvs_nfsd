@@ -104,7 +104,7 @@ static int getopt(int argc, char *argv[], const char *optstring)
     /* Look the letter up in the option string */
     p = strchr(optstring, (int)(unsigned char)c);
     if (p == NULL) {
-        log_error("unknown option -- %c", c);
+        logmsg_error("NFSDM010E", "unknown option -- %c", c);
         optopt = (int)(unsigned char)c;
         return (int)'?';
     }
@@ -119,7 +119,7 @@ static int getopt(int argc, char *argv[], const char *optstring)
             optarg = argv[optind];
             optind++;
         } else {
-            log_error("option requires an argument -- %c", c);
+            logmsg_error("NFSDM020E", "option requires an argument -- %c", c);
             optopt = (int)(unsigned char)c;
             return (int)'?';
         }
@@ -218,7 +218,7 @@ static int make_listen_sock(int port)
     addr.sin_port        = htons((uint16_t)port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        log_error("nfsd: bind port %d: %s", port, strerror(errno));
+        logmsg_error("NFSDM030E", "nfsd: bind port %d: %s", port, strerror(errno));
         exit(1);
     }
     if (listen(fd, 8) < 0) { perror("listen"); exit(1); }
@@ -256,7 +256,7 @@ static void accept_conn(int lsock, int proto)
 #endif
 
     if (g_nconns >= MAX_CONNECTIONS) {
-        log_error("nfsd: connection table full (%d), dropping",
+        logmsg_error("NFSDM040E", "nfsd: connection table full (%d), dropping",
                 MAX_CONNECTIONS);
         sock_close(cfd);
         return;
@@ -316,7 +316,7 @@ static void set_write_verifier() {
         NULL name as zero-length, so this is NULL-safe. */
     uint32_t pid = mvs_fid_ino32(job_id, NULL);
 
-    log_info("NFSD running as %s ... using pseudo-pid 0x%08X",
+    logmsg_info("NFSDM050I", "NFSD running as %s ... using pseudo-pid 0x%08X",
                 (job_id != NULL) ? job_id : "(unknown)", pid);
 
 #else
@@ -348,8 +348,9 @@ static int process_operator_command() {
                     &modify_len);
     if (cib_rc == 2) {
         /* STOP (P) command received -- exit RC = 2 for shutdown */
+        log_set_level(LOG_INFO);
         log_set_wto_level(LOG_INFO);
-        log_info("MVS STOP command received, shutting down");
+        logmsg_info("NFSDM060I", "MVS STOP command received, shutting down");
         return 2;
     } else if (cib_rc == 1) {
         /* MODIFY (F) command received.  Hand the operand text to the
@@ -366,13 +367,13 @@ static int process_operator_command() {
             handle_rc = mvsprf_handle_modify(modify_buf);
             if ( handle_rc == 1 ) {
                 /* If cmd unrecognized then write out warning */
-                log_warn("MVS MODIFY ignored (unrecognised): %s",
+                logmsg_warn("NFSDM070W", "MVS MODIFY ignored (unrecognised): %s",
                             modify_buf);
                 return 0;
             }
 
         } else {
-            log_error("MVS MODIFY received (no data)");
+            logmsg_error("NFSDM080E", "MVS MODIFY received (no data)");
         }
     }
 #endif
@@ -409,7 +410,7 @@ static void server_init_subsystems(void)
     log_set_timestamps(1);
     log_proc_init();       /* per-procedure log levels -> inherit global */
 
-    log_info("nfsd: starting up");
+    logmsg_info("NFSDM090I", "NFSD Starting up");
 
     dir_openlist_init();
     mvs_rcache_init();
@@ -421,7 +422,7 @@ static void server_init_subsystems(void)
        convert ISPF member stats (stored in local time) to/from UTC epoch.
        time()/gettimeofday() already return UTC, so they need no correction. */
     mvs_tz_init();
-    log_info("nfsd: MVS local-time offset = %d seconds (0 = no offset)",
+    logmsg_info("NFSDM100I", "NFSD MVS local-time offset = %d seconds (0 = no offset)",
              mvs_tz_offset());
 }
 
@@ -436,32 +437,32 @@ static int parse_args(int argc, char *argv[], server_opts_t *opts)
         switch (opt) {
         case 'p':
             if (parse_port(optarg, &opts->port_pmap)  < 0) {
-                log_error("nfsd: invalid port: %s", optarg);
+                logmsg_error("NFSDM110E", "Invalid port-mapper port: %s", optarg);
                 return 101;
             }
             break;
         case 'm':
             if (parse_port(optarg, &opts->port_mount) < 0) {
-                log_error("nfsd: invalid port: %s", optarg);
+                logmsg_error("NFSDM120E", "Invalid mount port: %s", optarg);
                 return 102;
             }
             break;
         case 'n':
             if (parse_port(optarg, &opts->port_nfs)   < 0) {
-                log_error("nfsd: invalid port: %s", optarg);
+                logmsg_error("NFSDM130E", "Invalid NFS port: %s", optarg);
                 return 103;
             }
             break;
         case 'v': g_verbose  = 1;            break;
         default:
-            log_error("usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
+            logmsg_error("NFSDM140E", "usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
                 argv[0]);
             return 104;
         }
     }
 
     if (optind >= argc) {
-        log_error("usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
+        logmsg_error("NFSDM150E", "usage: %s [-p pmap] [-m mount] [-n nfs] <config>",
             argv[0]);
         return 105;
     }
@@ -482,7 +483,7 @@ static void open_listeners(const server_opts_t *opts, listeners_t *lsn)
     lsn->mount = make_listen_sock(opts->port_mount);
     lsn->nfs   = make_listen_sock(opts->port_nfs);
 
-    log_info("Listening -- portmapper=%d  mount=%d  nfs=%d",
+    logmsg_info("NFSDM160I", "Listening on ports portmapper=%d mount=%d nfs=%d",
         opts->port_pmap, opts->port_mount, opts->port_nfs);
 }
 
@@ -496,7 +497,7 @@ static int write_path_is_fatal(void)
 {
     if (!pww_fatal_abend())
         return 0;
-    log_error("unrecoverable abend in the write path -- shutting down");
+    logmsg_error("NFSDM170E", "Unrecoverable ABEND in the write path -- shutting down");
     return 1;
 }
 
@@ -540,7 +541,7 @@ static void service_ready(const listeners_t *lsn, fd_set *rfds)
                 /* Peer closed (or the RPC failed): close OUR half so a FIN
                    goes back and the descriptor is released.  Must be
                    sock_close() -- see its comment. */
-                log_warn("nfsd: closing connection fd=%d (proto=%d)",
+                logmsg_warn("NFSDM180W", "NFSD Closing connection fd=%d (proto=%d)",
                          g_conns[i].fd, g_conns[i].proto);
                 sock_close(g_conns[i].fd);
                 g_conns[i] = g_conns[--g_nconns];
@@ -560,7 +561,7 @@ static void server_shutdown(const listeners_t *lsn)
 
     pww_flush_all();
 
-    log_info("Closing sockets");
+    logmsg_info("NFSDM190I", "Closing sockets");
 
     for (i = 0; i < g_nconns; i++)
         sock_close(g_conns[i].fd);
@@ -571,7 +572,7 @@ static void server_shutdown(const listeners_t *lsn)
     sock_close(lsn->nfs);
 
     mvsprf_dump();
-    log_info("Shutting down");
+    logmsg_info("NFSDM200I", "Shutting down");
 }
 
 /* ------------------------------------------------------------------ */
@@ -599,10 +600,10 @@ int main(int argc, char *argv[])
     /* Load export configuration */
     n = exports_load(opts.config_path);
     if (n < 0) {
-        log_error("nfsd: cannot open config: %s", opts.config_path);
+        logmsg_error("NFSDM210E", "Cannot open config: %s", opts.config_path);
         return 106;
     }
-    log_info("nfsd: loaded %d export(s) from %s", n, opts.config_path);
+    logmsg_info("NFSDM220I", "Loaded %d export(s) from %s", n, opts.config_path);
 
     /* File handles are self-describing -- no handle cache to initialise. */
 

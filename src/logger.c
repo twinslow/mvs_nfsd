@@ -164,15 +164,22 @@ static void log_emit(FILE *fp, const char *prefix, const char *body)
     }
 }
 
-static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
+/*
+ * 'msgid' is the 9-character MVS style message id, or NULL for the older
+ * log_*() forms that carry none.  When present it REPLACES the "[LEVEL]"
+ * tag entirely -- the severity is already its last character, so printing
+ * both would just be noise.  See logger.h for the id format.
+ */
+static void vlog_msg(log_level_t level, const char *msgid,
+                     const char *fmt, va_list ap)
 {
     FILE       *fp;
     struct tm  *tm_ptr;
     time_t      now;
     char        ts_buf[22];   /* "YYYY-MM-DD HH:MM:SS " + NUL */
-    char        pfx_buf[32];  /* ts_buf + "[LEVEL] "           */
+    char        pfx_buf[40];  /* ts_buf + "NFSXXnnnS " or "[LEVEL] "      */
     char        msg_buf[480]; /* formatted message body        */
-    char        wto_buf[490]; /* "[LEVEL] " + msg_buf          */
+    char        wto_buf[490]; /* prefix + msg_buf              */
 
     /* The log-stream level gates everything: a line that is too detailed
        for the stream is never written to the console either.  The console
@@ -206,8 +213,11 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
      * No timestamp -- operator messages stay concise.
      */
     if (level >= g_wto_level) {
-        snprintf(wto_buf, sizeof(wto_buf), "[%s] %s",
-                 level_tag(level), msg_buf);
+        if (msgid != NULL)
+            snprintf(wto_buf, sizeof(wto_buf), "%s %s", msgid, msg_buf);
+        else
+            snprintf(wto_buf, sizeof(wto_buf), "[%s] %s",
+                     level_tag(level), msg_buf);
         wto_buf[sizeof(wto_buf) - 1] = '\0';
         _write2op(wto_buf);
     }
@@ -231,7 +241,10 @@ static void vlog_msg(log_level_t level, const char *fmt, va_list ap)
 
     /* The timestamp counts against the record limit, so it is part of the
        prefix rather than a separate write. */
-    sprintf(pfx_buf, "%s[%s] ", ts_buf, level_tag(level));
+    if (msgid != NULL)
+        sprintf(pfx_buf, "%s%s ", ts_buf, msgid);
+    else
+        sprintf(pfx_buf, "%s[%s] ", ts_buf, level_tag(level));
     log_emit(fp, pfx_buf, msg_buf);
     fflush(fp);
 }
@@ -244,7 +257,7 @@ void log_msg(log_level_t level, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(level, fmt, ap);
+    vlog_msg(level, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -252,7 +265,7 @@ void log_debug(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_DEBUG, fmt, ap);
+    vlog_msg(LOG_DEBUG, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -260,7 +273,7 @@ void log_trace(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_TRACE, fmt, ap);
+    vlog_msg(LOG_TRACE, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -268,7 +281,7 @@ void log_info(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_INFO, fmt, ap);
+    vlog_msg(LOG_INFO, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -276,7 +289,7 @@ void log_warn(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_WARN, fmt, ap);
+    vlog_msg(LOG_WARN, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -284,7 +297,7 @@ void log_error(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_ERROR, fmt, ap);
+    vlog_msg(LOG_ERROR, NULL, fmt, ap);
     va_end(ap);
 }
 
@@ -292,7 +305,60 @@ void log_fatal(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vlog_msg(LOG_FATAL, fmt, ap);
+    vlog_msg(LOG_FATAL, NULL, fmt, ap);
+    va_end(ap);
+}
+
+/* -------------------------------------------------------------------- */
+/* Message-id forms (see logger.h).  Identical behaviour to the log_*    */
+/* functions above; the id replaces the "[LEVEL]" tag in the output.     */
+/* -------------------------------------------------------------------- */
+
+void logmsg_debug(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_DEBUG, msgid, fmt, ap);
+    va_end(ap);
+}
+
+void logmsg_trace(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_TRACE, msgid, fmt, ap);
+    va_end(ap);
+}
+
+void logmsg_info(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_INFO, msgid, fmt, ap);
+    va_end(ap);
+}
+
+void logmsg_warn(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_WARN, msgid, fmt, ap);
+    va_end(ap);
+}
+
+void logmsg_error(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_ERROR, msgid, fmt, ap);
+    va_end(ap);
+}
+
+void logmsg_fatal(const char *msgid, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlog_msg(LOG_FATAL, msgid, fmt, ap);
     va_end(ap);
 }
 
@@ -434,11 +500,11 @@ static int handle_set_loglvl(const char *p)
     p = skip_blanks(p);
     p = scan_token(p, tok, (int)sizeof(tok));
     if (tok[0] == '\0') {
-        log_error("SET LOGLVL: missing level");
+        logmsg_error("NFSLG010E", "SET LOGLVL: missing level");
         return -1;
     }
     if (level_from_name(tok, &level) < 0) {
-        log_error("SET LOGLVL: unknown level '%s'", tok);
+        logmsg_error("NFSLG020E", "SET LOGLVL: unknown level '%s'", tok);
         return -1;
     }
 
@@ -446,35 +512,35 @@ static int handle_set_loglvl(const char *p)
     p = skip_blanks(p);
     if (*p == '\0') {
         log_set_level(level);
-        log_info("SET LOGLVL: global log level now %s", level_tag(level));
+        logmsg_info("NFSLG030I", "SET LOGLVL: global log level now %s", level_tag(level));
         return 0;
     }
 
     /* Otherwise expect PROC=<name>. */
     p = scan_token(p, tok, (int)sizeof(tok));
     if (strcmp(tok, "PROC") != 0) {
-        log_error("SET LOGLVL: unexpected operand '%s'", tok);
+        logmsg_error("NFSLG040E", "SET LOGLVL: unexpected operand '%s'", tok);
         return -1;
     }
     p = skip_blanks(p);
     if (*p != '=') {
-        log_error("SET LOGLVL: expected PROC=<name>");
+        logmsg_error("NFSLG050E", "SET LOGLVL: expected PROC=<name>");
         return -1;
     }
     p++;                                /* skip '='                      */
     p = skip_blanks(p);
     p = scan_token(p, tok, (int)sizeof(tok));
     if (tok[0] == '\0') {
-        log_error("SET LOGLVL: missing PROC name");
+        logmsg_error("NFSLG060E", "SET LOGLVL: missing PROC name");
         return -1;
     }
     if (proc_from_name(tok, &proc) < 0) {
-        log_error("SET LOGLVL: unknown PROC '%s'", tok);
+        logmsg_error("NFSLG070E", "SET LOGLVL: unknown PROC '%s'", tok);
         return -1;
     }
 
     log_proc_set_level((int)proc, (int)level);
-    log_info("SET LOGLVL: PROC %s log level now %s", tok, level_tag(level));
+    logmsg_info("NFSLG080I", "SET LOGLVL: PROC %s log level now %s", tok, level_tag(level));
     return 0;
 }
 
@@ -491,22 +557,22 @@ static int handle_set_wtolvl(const char *p)
     p = skip_blanks(p);
     p = scan_token(p, tok, (int)sizeof(tok));
     if (tok[0] == '\0') {
-        log_error("SET WTOLVL: missing level");
+        logmsg_error("NFSLG090E", "SET WTOLVL: missing level");
         return -1;
     }
     if (level_from_name(tok, &level) < 0) {
-        log_error("SET WTOLVL: unknown level '%s'", tok);
+        logmsg_error("NFSLG100E", "SET WTOLVL: unknown level '%s'", tok);
         return -1;
     }
 
     p = skip_blanks(p);
     if (*p != '\0') {
-        log_error("SET WTOLVL: unexpected operand '%s'", p);
+        logmsg_error("NFSLG110E", "SET WTOLVL: unexpected operand '%s'", p);
         return -1;
     }
 
     log_set_wto_level(level);
-    log_info("SET WTOLVL: console (WTO) level now %s", level_tag(level));
+    logmsg_info("NFSLG120I", "SET WTOLVL: console (WTO) level now %s", level_tag(level));
     return 0;
 }
 

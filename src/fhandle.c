@@ -189,7 +189,7 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
 
     exp = fh_find_export(fh->export_id);
     if (exp == NULL) {
-        log_debug("fh_resolve: no export matches id=0x%08X (stale)",
+        logmsg_debug("NFSFH010D", "fh_resolve: no export matches id=0x%08X (stale)",
                   fh->export_id);
         return -1;
     }
@@ -220,7 +220,7 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
         }
     }
     if (ds == NULL) {
-        log_debug("fh_resolve: dataset '%s' not exported (stale)",
+        logmsg_debug("NFSFH020D", "fh_resolve: dataset '%s' not exported (stale)",
                   log_ascii(fh->dsname));
         return -1;
     }

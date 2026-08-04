@@ -191,6 +191,49 @@ void log_error(const char *fmt, ...);
 void log_fatal(const char *fmt, ...);
 
 /* -------------------------------------------------------------------- */
+/* Message-id logging -- PREFERRED for all new code                     */
+/* -------------------------------------------------------------------- */
+/*
+ * The same six severities, but each message carries a 9-character MVS
+ * style message id which REPLACES the "[LEVEL]" tag in the output:
+ *
+ *   logmsg_info("NFSIW060I", "pdsflush_slot: Starting flush for %s(%s)",
+ *               dsname, member);
+ *
+ *   old:  [INFO ] pdsflush_slot: Starting flush for TEMP.ITEST.FB(UM1)
+ *   new:  NFSIW060I pdsflush_slot: Starting flush for TEMP.ITEST.FB(UM1)
+ *
+ * Id format, NNNAAAnnnS:
+ *
+ *   NFS   always -- identifies the NFS server
+ *   AA    functional area, one per module family (see README.md for the
+ *         file -> prefix table; that table is the authority)
+ *   nnn   message number, unique within its prefix.  Allocated in tens so
+ *         a new message can be inserted between two existing ones without
+ *         renumbering anything.
+ *   S     severity: I info, W warning, E error, T trace, D debug,
+ *         S severe (log_fatal)
+ *
+ * The severity letter must agree with the function called -- logmsg_warn
+ * with an id ending 'I' is a bug, and nothing checks it at run time.
+ *
+ * The SAME id may be emitted from more than one place only when a
+ * parameter in the message identifies which -- otherwise a message in a
+ * log cannot be traced back to one point in the code, which is the whole
+ * purpose of carrying an id.
+ *
+ * Level filtering, WTO routing and log_ascii() handling are identical to
+ * the log_* forms above; only the prefix differs.  The log_* forms remain
+ * for code that has no id yet.
+ */
+void logmsg_debug(const char *msgid, const char *fmt, ...);
+void logmsg_trace(const char *msgid, const char *fmt, ...);
+void logmsg_info (const char *msgid, const char *fmt, ...);
+void logmsg_warn (const char *msgid, const char *fmt, ...);
+void logmsg_error(const char *msgid, const char *fmt, ...);
+void logmsg_fatal(const char *msgid, const char *fmt, ...);
+
+/* -------------------------------------------------------------------- */
 /* ASCII -> EBCDIC helper for log arguments (MVS only)                 */
 /* -------------------------------------------------------------------- */
 

@@ -255,7 +255,7 @@ static int vfs_stat_dataset(const char *path, int export_idx,
             if (ds->dir_sig_check != 0 && sig != ds->dir_sig) {
                 ds->dir_mtime = now_secs;
                 dir_openlist_invalidate(ds->dsname_ebcdic);
-                log_debug("vfs_stat_dataset: %s changed out-of-band;"
+                logmsg_debug("NFSVF010D", "vfs_stat_dataset: %s changed out-of-band;"
                           " bumped dir_mtime",
                           log_ascii(ds->dsname_ebcdic));
             }
@@ -357,7 +357,7 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
     if (rc == 0)
         return;
 
-    log_debug("vfs_stat: Result for path=%s ending retcode=%d",
+    logmsg_debug("NFSVF020D", "vfs_stat: Result for path=%s ending retcode=%d",
         log_ascii(path), rc);
     if (rc == 0) {
 
@@ -382,15 +382,15 @@ void dump_stat_result(const char *path, int rc, vfs_stat_t *vs) {
         else
             ctime_buf[0] = '\0';
 
-        log_debug("vfs_stat:      vs->mode      = %04o",             vs->mode);
-        //log_debug("vfs_stat:      vs->size      = %lld",             vs->size);
-        //log_debug("vfs_stat:      vs->used      = %lld",             vs->used);
-        //log_debug("vfs_stat:      vs->fsid      = %lld",             vs->fsid);
-        //log_debug("vfs_stat:      vs->fileid    = 0x%016X",          vs->fileid);
-        //log_debug("vfs_stat:      vs->raw_ino   = 0x%08X",           vs->raw_ino);
-        //log_debug("vfs_stat:      vs->atime_sec = 0x%08X (%s UTC)",  vs->atime_sec, atime_buf);
-        log_debug("vfs_stat:      vs->mtime_sec = 0x%08X (%s UTC)",  vs->mtime_sec, mtime_buf);
-        //log_debug("vfs_stat:      vs->ctime_sec = 0x%08X (%s UTC)",  vs->ctime_sec, ctime_buf);
+        logmsg_debug("NFSVF030D", "vfs_stat:      vs->mode      = %04o",             vs->mode);
+        //logmsg_debug("NFSVF040D", "vfs_stat:      vs->size      = %lld",             vs->size);
+        //logmsg_debug("NFSVF050D", "vfs_stat:      vs->used      = %lld",             vs->used);
+        //logmsg_debug("NFSVF060D", "vfs_stat:      vs->fsid      = %lld",             vs->fsid);
+        //logmsg_debug("NFSVF070D", "vfs_stat:      vs->fileid    = 0x%016X",          vs->fileid);
+        //logmsg_debug("NFSVF080D", "vfs_stat:      vs->raw_ino   = 0x%08X",           vs->raw_ino);
+        //logmsg_debug("NFSVF090D", "vfs_stat:      vs->atime_sec = 0x%08X (%s UTC)",  vs->atime_sec, atime_buf);
+        logmsg_debug("NFSVF100D", "vfs_stat:      vs->mtime_sec = 0x%08X (%s UTC)",  vs->mtime_sec, mtime_buf);
+        //logmsg_debug("NFSVF110D", "vfs_stat:      vs->ctime_sec = 0x%08X (%s UTC)",  vs->ctime_sec, ctime_buf);
     }
 }
 
@@ -403,7 +403,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
     int     retcode;
     clock_t t_start;
 
-    log_debug("vfs_stat: path=%s", log_ascii(path));
+    logmsg_debug("NFSVF120D", "vfs_stat: path=%s", log_ascii(path));
 
     t_start = clock();
 
@@ -430,7 +430,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
         return retcode;
     }
     errno = ENOENT;
-    log_debug("vfs_stat: Result error ... returning -1");
+    logmsg_debug("NFSVF130D", "vfs_stat: Result error ... returning -1");
     return -1;
 }
 
@@ -456,7 +456,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
     vfs_stat_t  vs;
 
 
-    log_debug("vfs_pread: path=%s, count=%d, offset=%lld",
+    logmsg_debug("NFSVF140D", "vfs_pread: path=%s, count=%d, offset=%lld",
         log_ascii(path), count, offset);
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
@@ -464,7 +464,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
 
     /* Is this path to a directory or a member of a PDS */
     path_type = mvs_path_type(ebcdic_path, &export_idx, NULL);
-    log_debug("vfs_pread: mvs_path_type returned type = %d, export_idx = %d",
+    logmsg_debug("NFSVF150D", "vfs_pread: mvs_path_type returned type = %d, export_idx = %d",
         path_type, export_idx);
     if (path_type == MVS_PATH_TYPE_DATASET || path_type == MVS_PATH_TYPE_ROOT) {
         errno = EACCES;
@@ -502,7 +502,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
                 *nread = n;
                 *eof   = ((uint32_t)offset + n >= pm->high_water);
             }
-            log_debug("vfs_pread: served %u bytes from pending %s(%s)",
+            logmsg_debug("NFSVF160D", "vfs_pread: served %u bytes from pending %s(%s)",
                 *nread, pds_dsname, pds_member_name);
             return 0;
         }
@@ -526,7 +526,7 @@ int vfs_pread(const char *path, void *buf, uint32_t count,
         ebcdic_to_ascii(buf, buf, (size_t)*nread);
     }
 
-    log_debug("vfs_pread: Completed path=%s, nread=%d, eof=%d",
+    logmsg_debug("NFSVF170D", "vfs_pread: Completed path=%s, nread=%d, eof=%d",
         log_ascii(path), *nread, *eof);
 
     return rc;
@@ -694,7 +694,7 @@ int vfs_remove(const char *path)
     export_dataset_touch(export_idx, dataset_idx);
     dir_openlist_invalidate(pds_dsname);
 
-    log_debug("vfs_remove: removed %s(%s)", pds_dsname, pds_member_name);
+    logmsg_debug("NFSVF180D", "vfs_remove: removed %s(%s)", pds_dsname, pds_member_name);
     return 0;
 }
 
@@ -799,7 +799,7 @@ int vfs_rename(const char *from, const char *to)
     export_dataset_touch(from_export_idx, from_dataset_idx);
     dir_openlist_invalidate(from_dsname);
 
-    log_debug("vfs_rename: renamed %s(%s) -> (%s)",
+    logmsg_debug("NFSVF190D", "vfs_rename: renamed %s(%s) -> (%s)",
               from_dsname, from_member, to_member);
     return 0;
 }
@@ -1088,20 +1088,20 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     int            retcode;
     int            path_type;
 
-    log_debug("vfs_opendir: Starting with path=%s cookie=0x%016llX",
+    logmsg_debug("NFSVF200D", "vfs_opendir: Starting with path=%s cookie=0x%016llX",
         log_ascii(path), cookie);
 
     ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path, MAX_PATH_LEN - 1);
     ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
     path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
-    log_debug("vfs_opendir: path %s, type = %d", log_ascii(path), path_type);
+    logmsg_debug("NFSVF210D", "vfs_opendir: path %s, type = %d", log_ascii(path), path_type);
 
     /* ---- Export root: a virtual directory listing the PDS dirs. ---- */
     if ( path_type == MVS_PATH_TYPE_ROOT ) {
         dir_entry = dir_openlist_find_free();
         if ( !dir_entry ) {
-            log_error("vfs_opendir: no free slot for root of export %d", export_idx);
+            logmsg_error("NFSVF220E", "vfs_opendir: no free slot for root of export %d", export_idx);
             goto error;
         }
         dir_entry->status      = MVSVFS_DIR_OPENLIST_USED;
@@ -1137,7 +1137,7 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     if ( dir_entry != NULL ) {
         if ( dir_entry->end_of_dir_read ) {
             /* Full cache hit -- all members known, no disk read needed */
-            log_debug("vfs_opendir: Full cache hit for PDS %s, %d members cached",
+            logmsg_debug("NFSVF230D", "vfs_opendir: Full cache hit for PDS %s, %d members cached",
                 ds->dsname_ebcdic, dir_entry->member_list.number_in_list);
             return dir_entry;
         }
@@ -1146,7 +1146,7 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
         dir_entry->end_of_dir_read            = 0;
         retcode = mvs_open_pds_dir(ds->dsname_ebcdic, export_idx, &dir_entry->pds_fh);
         if ( retcode == 0 && dir_entry->pds_fh ) {
-            log_debug("vfs_opendir: Partial cache hit for PDS %s, reopened", ds->dsname_ebcdic);
+            logmsg_debug("NFSVF240D", "vfs_opendir: Partial cache hit for PDS %s, reopened", ds->dsname_ebcdic);
             return dir_entry;
         }
         /* Re-open failed; fall through to allocate a fresh slot        */
@@ -1156,7 +1156,7 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     /* Slow path: allocate a free (or LRU-evicted) pool slot.           */
     dir_entry = dir_openlist_find_free();
     if ( !dir_entry ) {
-        log_error("vfs_opendir: no free open dir entry for %s", ds->dsname_ebcdic);
+        logmsg_error("NFSVF250E", "vfs_opendir: no free open dir entry for %s", ds->dsname_ebcdic);
         goto error;
     }
 
@@ -1173,18 +1173,18 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
     /* Open the PDS for the directory read */
     retcode = mvs_open_pds_dir(ds->dsname_ebcdic, export_idx, &dir_entry->pds_fh);
     if ( retcode < 0 || !dir_entry->pds_fh ) {
-        log_error("vfs_opendir: Unable to open PDS %s for directory read", ds->dsname_ebcdic);
+        logmsg_error("NFSVF260E", "vfs_opendir: Unable to open PDS %s for directory read", ds->dsname_ebcdic);
         dir_openlist_free(dir_entry);
         goto error;
     }
 
-    log_debug("vfs_opendir: Opened PDS %s, pds_fh = 0x%08X",
+    logmsg_debug("NFSVF270D", "vfs_opendir: Opened PDS %s, pds_fh = 0x%08X",
         ds->dsname_ebcdic, dir_entry->pds_fh);
 
     return dir_entry;
 
 error:
-    log_debug("vfs_opendir: path=%s ending with error %s",
+    logmsg_debug("NFSVF280D", "vfs_opendir: path=%s ending with error %s",
         log_ascii(path), strerror(errno));
     return NULL;
 }
@@ -1221,7 +1221,7 @@ static int root_readdir_next(vfs_dir_t *dir_entry,
     *fileid = mvs_fid_hash(ds->dsname_ebcdic, NULL);
     *cookie = (uint64_t)(index + 1);
 
-    log_debug("root_readdir_next: entry %d = %s", index, ds->dirname_ebcdic);
+    logmsg_debug("NFSVF290D", "root_readdir_next: entry %d = %s", index, ds->dirname_ebcdic);
     return 0;
 }
 
@@ -1247,7 +1247,7 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     if (dir_entry->dir_level == MVS_PATH_TYPE_ROOT)
         return root_readdir_next(dir_entry, name, maxname, fileid, cookie);
 
-    //log_debug("vfs_readdir_next: path=%s cookie='%-8.8s' (0x%016llX)",
+    //logmsg_debug("NFSVF300D", "vfs_readdir_next: path=%s cookie='%-8.8s' (0x%016llX)",
     //    dir_entry->pds_dsname_ebcdic, (char *)cookie, *cookie);
 
     /* Convert cookie back to EBCDIC string with null terminator */
@@ -1272,7 +1272,7 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     if ( load_from_dir ) {
         if (dir_entry->end_of_dir_read) {
             /* We already reached end of PDS directory ... nothing to load */
-            log_debug("vfs_readdir_next: end of directory on path=%s", dir_entry->pds_dsname_ebcdic);
+            logmsg_debug("NFSVF310D", "vfs_readdir_next: end of directory on path=%s", dir_entry->pds_dsname_ebcdic);
             retcode = -1;
             goto error_exit_no_log;
         }
@@ -1287,7 +1287,7 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
             /* member-list  */ &dir_entry->member_list,
             &(dir_entry->end_of_dir_read) );
         if ( retcode ) {
-            log_debug("vfs_readdir_next: mvs_read_pds_dir returned error %d", retcode);
+            logmsg_debug("NFSVF320D", "vfs_readdir_next: mvs_read_pds_dir returned error %d", retcode);
             retcode = -1;
             goto error_exit;
         }
@@ -1297,14 +1297,14 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     retcode = dir_openlist_search_members(
         dir_entry, member_name, SEARCH_OP_GT, &member_info);
     if ( retcode ) {
-        log_debug("vfs_readdir_next: dir_openlist_search_members returned error %d", retcode);
+        logmsg_debug("NFSVF330D", "vfs_readdir_next: dir_openlist_search_members returned error %d", retcode);
         retcode = -1;
         goto error_exit;
     }
 
     if ( !member_info ) {
         /* No member found */
-        log_debug("vfs_readdir_next: member not found");
+        logmsg_debug("NFSVF340D", "vfs_readdir_next: member not found");
         retcode = -1;
         goto error_exit;
     }
@@ -1323,14 +1323,14 @@ int vfs_readdir_next(vfs_dir_t *dir_entry,
     *cookie = to_cookie(member_info->name);
     dir_entry->next_cookie = *cookie;
 
-    log_debug("vfs_readdir_next: Ending and returning filename %s for path %s",
+    logmsg_debug("NFSVF350D", "vfs_readdir_next: Ending and returning filename %s for path %s",
         log_ascii(name), dir_entry->pds_dsname_ebcdic);
 
     return 0;
 
 error_exit:
 
-    log_debug("vfs_readdir_next: Returning error ... retcode %d on path=%s",
+    logmsg_debug("NFSVF360D", "vfs_readdir_next: Returning error ... retcode %d on path=%s",
         retcode, dir_entry->pds_dsname_ebcdic);
 
 error_exit_no_log:
@@ -1364,7 +1364,7 @@ void vfs_seekdir_to(vfs_dir_t *d, uint64_t cookie)
 /* -------------------------------------------------------------------- */
 void vfs_closedir(vfs_dir_t *dir_entry)
 {
-    log_debug("vfs_closedir: path=%s", dir_entry->pds_dsname_ebcdic);
+    logmsg_debug("NFSVF370D", "vfs_closedir: path=%s", dir_entry->pds_dsname_ebcdic);
 
     if ( dir_entry->pds_fh ) {
         mvs_close_pds_dir(dir_entry->pds_fh);
@@ -1397,7 +1397,8 @@ int mvsvfs_find_cached_member(
     t_start = clock();
     dir = dir_openlist_find_by_dsname(pds_dsname);
     if (dir == NULL) {
-        log_debug("mvsvfs_find_cached_member: No valid vfs_dir_t pool entry found for PDS %s", pds_dsname);
+        logmsg_debug("NFSVF380D", "mvsvfs_find_cached_member: No valid"
+                     " vfs_dir_t pool entry found for PDS %s", pds_dsname);
         mvsprf_record(PERF_MVSPOOL_MISS, clock() - t_start);
         return -1;
     }
@@ -1405,10 +1406,14 @@ int mvsvfs_find_cached_member(
     retcode = dir_openlist_search_members(
         dir, member_name, SEARCH_OP_EQ, member_entry);
     if ( retcode != 0 ) {
-        log_debug("mvsvfs_find_cached_member: Member entry not found for PDS %s member %s", pds_dsname, member_name);
+        logmsg_debug("NFSVF390D", "mvsvfs_find_cached_member: Member entry"
+                     " not found for PDS %s member %s",
+                     pds_dsname, member_name);
         mvsprf_record(PERF_MVSPOOL_MISS, clock() - t_start);
     } else {
-        log_debug("mvsvfs_find_cached_member: Cached member entry found for PDS %s member %s", pds_dsname, member_name);
+        logmsg_debug("NFSVF400D", "mvsvfs_find_cached_member: Cached member"
+                     " entry found for PDS %s member %s",
+                     pds_dsname, member_name);
         mvsprf_record(PERF_MVSPOOL_HIT, clock() - t_start);
     }
     return retcode;

@@ -200,7 +200,7 @@ static int pdsflush_write_member(pending_member_t *pm, const char *open_target,
 
     fh = fopen(open_target, "wt");    /* text mode: record per '\n', STOW on close */
     if (fh == NULL) {
-        log_error("pdsflush_slot: fopen %s failed: %s",
+        logmsg_error("NFSIW500E", "pdsflush_slot: fopen %s failed: %s",
                   open_target, strerror(errno));
         return -1;
     }
@@ -215,7 +215,7 @@ static int pdsflush_write_member(pending_member_t *pm, const char *open_target,
         if (n > sizeof(g_pww_xlate))
             n = sizeof(g_pww_xlate);
         if (pww_read_range(pm, off, g_pww_xlate, n) != 0) {
-            log_error("pdsflush_slot: read-back failed on %s at %u",
+            logmsg_error("NFSIW510E", "pdsflush_slot: read-back failed on %s at %u",
                       open_target, off);
             fclose(fh);
             PWW_FLUSH_FP(NULL);
@@ -230,7 +230,7 @@ static int pdsflush_write_member(pending_member_t *pm, const char *open_target,
         {
             int rpc_at = pww_find_rpc_header(g_pww_xlate, n);
             if (rpc_at >= 0)
-                log_error("pdsflush_slot: CORRUPT CHUNK -- RPC CALL header at"
+                logmsg_error("NFSIW520E", "pdsflush_slot: CORRUPT CHUNK -- RPC CALL header at"
                           " in-chunk offset %d (member offset %u) flushing %s"
                           " (chunk off=%u len=%u)",
                           rpc_at, off + (uint32_t)rpc_at, open_target, off, n);
@@ -243,7 +243,7 @@ static int pdsflush_write_member(pending_member_t *pm, const char *open_target,
         ascii_to_ebcdic(g_pww_xlate, g_pww_xlate, (size_t)n);   /* in place */
         w = fwrite(g_pww_xlate, 1, (size_t)n, fh);
         if (w != (size_t)n) {
-            log_error("pdsflush_slot: short write on %s (%u of %u)",
+            logmsg_error("NFSIW530E", "pdsflush_slot: short write on %s (%u of %u)",
                       open_target, (unsigned)w, n);
             fclose(fh);
             PWW_FLUSH_FP(NULL);
@@ -257,7 +257,7 @@ static int pdsflush_write_member(pending_member_t *pm, const char *open_target,
 
     if (fclose(fh) != 0) {            /* STOW happens here */
         PWW_FLUSH_FP(NULL);
-        log_error("pdsflush_slot: fclose(STOW) %s failed: %s",
+        logmsg_error("NFSIW540E", "pdsflush_slot: fclose(STOW) %s failed: %s",
                   open_target, strerror(errno));
         return -1;
     }
@@ -290,7 +290,7 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
     if (rc == 0) {                          /* armed -- do the work */
         int frc = pdsflush_write_member(pm, open_target, lines_out);
         if (_setjmp_canc() != 0)
-            log_error("pdsflush_slot: _setjmp_canc FAILED after writing %s(%s)"
+            logmsg_error("NFSIW550E", "pdsflush_slot: _setjmp_canc FAILED after writing %s(%s)"
                       " -- a STAE is left established", pm->dsname_ebcdic,
                       pm->member_name);
         return frc;
@@ -308,12 +308,12 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
                is refused up front instead of costing another abend -- and so
                the client gets a synchronous ENOSPC it can actually see. */
             pdsflush_dataset_mark_full(pm->dsname_ebcdic, time(NULL));
-            log_error("pdsflush_slot: %s(%s) ABENDED S%03X (dataset out of"
+            logmsg_error("NFSIW560E", "pdsflush_slot: %s(%s) ABENDED S%03X (dataset out of"
                       " space) -- member NOT written; refusing writes to this"
                       " dataset for %d seconds",
                       pm->dsname_ebcdic, pm->member_name, code,
                       PWW_FULL_EXPIRY_SEC);
-            log_error("pdsflush_slot: %s(%s) This abend happened with pm->high_water = %d",
+            logmsg_error("NFSIW570E", "pdsflush_slot: %s(%s) This abend happened with pm->high_water = %d",
                 pm->dsname_ebcdic, pm->member_name,
                 pm->high_water);
             err = ENOSPC;
@@ -323,7 +323,7 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
                error and carry on -- that would hide the bug and keep serving
                from state we no longer trust.  Say so unmistakably and ask for
                an orderly shutdown. */
-            log_error("pdsflush_slot: %s(%s) ABENDED S%03X -- UNEXPECTED abend"
+            logmsg_error("NFSIW580E", "pdsflush_slot: %s(%s) ABENDED S%03X -- UNEXPECTED abend"
                       " (probable PROGRAM ERROR, not out of space);"
                       " requesting server shutdown",
                       pm->dsname_ebcdic, pm->member_name, code);
@@ -339,7 +339,7 @@ static int pdsflush_write_member_guarded(pending_member_t *pm,
     /* The STAE could not be established.  Refusing to flush would guarantee
        data loss, whereas this is rare and usually means the system is already
        in trouble -- so proceed, but say so loudly (this reaches the console). */
-    log_error("pdsflush_slot: STAE not established (rc=%ld) -- writing"
+    logmsg_error("NFSIW590E", "pdsflush_slot: STAE not established (rc=%ld) -- writing"
               " %s(%s) UNPROTECTED", rc, pm->dsname_ebcdic, pm->member_name);
     return pdsflush_write_member(pm, open_target, lines_out);
 }
@@ -357,7 +357,7 @@ static int pdsflush_apply_stats(pending_member_t *pm, uint8_t *stats_ud)
     rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, MVS_DYNALLOC_OPT_FREECLOSE,
                       pm->dsname_ebcdic, NULL, ddname);
     if (rc != 0) {
-        log_debug("pdsflush_slot: mvs_dynalloc failed for %s (rc=%d)",
+        logmsg_debug("NFSIW600D", "pdsflush_slot: mvs_dynalloc failed for %s (rc=%d)",
                   pm->dsname_ebcdic, rc);
         return rc;
     }
@@ -391,7 +391,7 @@ static int pdsflush_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
     if (rc == 0) {                          /* armed -- do the work */
         int src = pdsflush_apply_stats(pm, stats_ud);
         if (_setjmp_canc() != 0)
-            log_error("pdsflush_slot: _setjmp_canc FAILED after stats on %s(%s)"
+            logmsg_error("NFSIW610E", "pdsflush_slot: _setjmp_canc FAILED after stats on %s(%s)"
                       " -- a STAE is left established", pm->dsname_ebcdic,
                       pm->member_name);
         return src;
@@ -403,7 +403,7 @@ static int pdsflush_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
         if (!pdsflush_abend_recoverable(code)) {
             /* Same rule as region A: only the out-of-space family is expected
                here (a full PDS directory).  Anything else is a program error. */
-            log_error("pdsflush_slot: stats update for %s(%s) ABENDED S%03X --"
+            logmsg_error("NFSIW620E", "pdsflush_slot: stats update for %s(%s) ABENDED S%03X --"
                       " UNEXPECTED abend (probable PROGRAM ERROR);"
                       " requesting server shutdown",
                       pm->dsname_ebcdic, pm->member_name, code);
@@ -412,7 +412,7 @@ static int pdsflush_apply_stats_guarded(pending_member_t *pm, uint8_t *stats_ud)
         return -1;                          /* caller warns; flush still OK */
     }
 
-    log_warn("pdsflush_slot: STAE not established (rc=%ld) -- applying stats"
+    logmsg_warn("NFSIW630W", "pdsflush_slot: STAE not established (rc=%ld) -- applying stats"
              " to %s(%s) UNPROTECTED", rc, pm->dsname_ebcdic, pm->member_name);
     return pdsflush_apply_stats(pm, stats_ud);
 }
@@ -435,7 +435,7 @@ int pdsflush_slot(pending_member_t *pm)
        Sec 7.3).  The content is lost either way -- the flush this replaces
        would have abended -- but the server survives. */
     if (pdsflush_dataset_is_full(pm->dsname_ebcdic, time(NULL))) {
-        log_error("pdsflush_slot: %s(%s) NOT flushed -- %s is already known"
+        logmsg_error("NFSIW640E", "pdsflush_slot: %s(%s) NOT flushed -- %s is already known"
                   " out of space; content discarded",
                   pm->dsname_ebcdic, pm->member_name, pm->dsname_ebcdic);
         pm->dirty = 0;    /* as the abend path below: nothing retryable */
@@ -443,7 +443,7 @@ int pdsflush_slot(pending_member_t *pm)
         return -1;
     }
 
-    log_info("pdsflush_slot: Starting flush for %s(%s)",
+    logmsg_info("NFSIW650I", "pdsflush_slot: Starting flush for %s(%s)",
         pm->dsname_ebcdic, pm->member_name);
 
     /* Read the member's current directory entry (if any) BEFORE opening it
@@ -469,7 +469,7 @@ int pdsflush_slot(pending_member_t *pm)
            so without this the decision that was actually at fault leaves no
            trace in a production log (doc/design_pds_full_prediction.md). */
         if (pm->blkcalc.last_need != 0) {
-            log_error("pdsflush_slot: %s(%s) failed though predicted to fit"
+            logmsg_error("NFSIW660E", "pdsflush_slot: %s(%s) failed though predicted to fit"
                       " -- need %lu avail %lu hw=%u",
                       pm->dsname_ebcdic, pm->member_name,
                       (unsigned long)pm->blkcalc.last_need,
@@ -494,7 +494,7 @@ int pdsflush_slot(pending_member_t *pm)
     /* The dataset clearly has room, so drop any "out of space" memory of it
        (Sec 7.3): recovery is immediate once an operator adds space. */
     pdsflush_dataset_clear_full(pm->dsname_ebcdic);
-    log_info("pdsflush_slot: stowed %s(%s), %u bytes",
+    logmsg_info("NFSIW670I", "pdsflush_slot: stowed %s(%s), %u bytes",
         pm->dsname_ebcdic, pm->member_name, pm->high_water);
 
     /* Apply ISPF statistics.  This runs AFTER the member has been stowed by
@@ -538,7 +538,7 @@ int pdsflush_slot(pending_member_t *pm)
             if (g_stats_abend != 0) {
                 if (!warned_abend) {
                     warned_abend = 1;
-                    log_warn("pdsflush_slot: ISPF stats update ABENDED S%03X"
+                    logmsg_warn("NFSIW680W", "pdsflush_slot: ISPF stats update ABENDED S%03X"
                              " for %s(%s) -- PDS directory may be full; member"
                              " IS stowed but without ISPF stats"
                              " (further warnings suppressed)",
@@ -547,7 +547,7 @@ int pdsflush_slot(pending_member_t *pm)
                 }
             } else if (!warned_rc) {
                 warned_rc = 1;
-                log_warn("pdsflush_slot: ISPF stats update failed for %s(%s)"
+                logmsg_warn("NFSIW690W", "pdsflush_slot: ISPF stats update failed for %s(%s)"
                          " (rc=%d) -- members stowed without ISPF stats"
                          " (further warnings suppressed)",
                          pm->dsname_ebcdic, pm->member_name, rc);

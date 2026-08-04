@@ -207,15 +207,15 @@ void mvsprf_dump(void)
         if (g_stats[i].count > 0) { any = 1; break; }
     }
     if (!any) {
-        log_info("perf: no statistics recorded");
+        logmsg_info("NFSST010I", "perf: no statistics recorded");
         return;
     }
 
-    log_info("perf: CLOCKS_PER_SEC = %lu",
+    logmsg_info("NFSST020I", "perf: CLOCKS_PER_SEC = %lu",
              (unsigned long)CLOCKS_PER_SEC);
-    log_info("perf: %-16s %8s %12s %10s %10s %10s",
+    logmsg_info("NFSST030I", "perf: %-16s %8s %12s %10s %10s %10s",
              "Slot", "Count", "Total(ms)", "Avg(ms)", "Min(ms)", "Max(ms)");
-    log_info("perf: %-16s %8s %12s %10s %10s %10s",
+    logmsg_info("NFSST040I", "perf: %-16s %8s %12s %10s %10s %10s",
              "----------------", "--------",
              "------------", "----------", "----------", "----------");
 
@@ -236,11 +236,11 @@ void mvsprf_dump(void)
         }
         avg_ms   = (s->count > 0) ? (total_ms / s->count) : 0UL;
 
-        log_info("perf: %-16s %8lu %12lu %10lu %10lu %10lu",
+        logmsg_info("NFSST050I", "perf: %-16s %8lu %12lu %10lu %10lu %10lu",
                  s->name, s->count, total_ms, avg_ms, min_ms, max_ms);
     }
 
-    log_info("perf: %-16s %8s %12s %10s %10s %10s",
+    logmsg_info("NFSST060I", "perf: %-16s %8s %12s %10s %10s %10s",
              "----------------", "--------",
              "------------", "----------", "----------", "----------");
 }
@@ -265,7 +265,7 @@ static int handle_stats_reset(const char *p)
     log_set_wto_level(LOG_INFO);
 
     mvsprf_init();
-    log_info("mvsprf: Statistics have been reset");
+    logmsg_info("NFSST070I", "mvsprf: Statistics have been reset");
 
     /* Restore previous log/wto level */
     log_set_level(saved_log_level);

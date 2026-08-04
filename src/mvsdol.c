@@ -59,7 +59,7 @@ void dir_openlist_init(void)
     /* Give every slot an initialised (empty) member list. */
     for (i = 0; i < MAX_OPEN_DIRS; i++) {
         if (mvspdir_mlist_init(&g_dir_pool[i].member_list) != 0)
-            log_error("dir_openlist_init: member list init failed for slot %d", i);
+            logmsg_error("NFSID500E", "dir_openlist_init: member list init failed for slot %d", i);
     }
 }
 
@@ -95,7 +95,7 @@ vfs_dir_t *dir_openlist_find_free(void)
         }
     }
     /* All slots USED and non-expired: evict the least-recently-used    */
-    log_debug("dir_openlist_find_free: evicting LRU slot %d (idle %ds)",
+    logmsg_debug("NFSID510D", "dir_openlist_find_free: evicting LRU slot %d (idle %ds)",
               lru_idx, (int)lru_age);
     dir_openlist_claim(&g_dir_pool[lru_idx], now);
     return &g_dir_pool[lru_idx];
@@ -150,7 +150,7 @@ void dir_openlist_invalidate(const char *pds_dsname_ebcdic)
     for (i = 0; i < MAX_OPEN_DIRS; i++) {
         if (g_dir_pool[i].status == MVSVFS_DIR_OPENLIST_USED &&
             strcmp(g_dir_pool[i].pds_dsname_ebcdic, pds_dsname_ebcdic) == 0) {
-            log_debug("dir_openlist_invalidate: dropping cached listing for %s",
+            logmsg_debug("NFSID520D", "dir_openlist_invalidate: dropping cached listing for %s",
                       pds_dsname_ebcdic);
             dir_openlist_free(&g_dir_pool[i]);
         }

@@ -170,7 +170,7 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
             unsigned long gap = now_ms - g_pww_recent[i].last_write_ms;
 
             mvsprf_record_ms(PERF_PWW_LATE_GAP, gap);
-            log_warn("pww_write: %s(%s) REFUSED at offset %lu -- idle sweep"
+            logmsg_warn("NFSIW010W", "pww_write: %s(%s) REFUSED at offset %lu -- idle sweep"
                      " flushed it %lu ms ago; raise PWW_IDLE_TIMEOUT_SECONDS",
                      dsname_ebcdic, member_name,
                      (unsigned long)offset, gap);
@@ -186,7 +186,7 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
        write to a member we have not buffered -- unsupported, because the
        existing content is never read back.  Reported so the difference
        between the NZSTART and LATE_GAP counts can be accounted for. */
-    log_warn("pww_write: %s(%s) REFUSED at offset %lu -- append and random"
+    logmsg_warn("NFSIW020W", "pww_write: %s(%s) REFUSED at offset %lu -- append and random"
              " write are not supported (member must be written from 0)",
              dsname_ebcdic, member_name, (unsigned long)offset);
 }
@@ -274,7 +274,7 @@ static int pww_lock(pending_member_t *pm)
        single-threaded server. */
     pww_spfedit_rname(pm->dsname_ebcdic, pm->member_name, rname);
     if (mvs_enq(MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
-        log_warn("pww_lock: %s(%s) is held (SPFEDIT enqueue) -- refused",
+        logmsg_warn("NFSIW030W", "pww_lock: %s(%s) is held (SPFEDIT enqueue) -- refused",
                  pm->dsname_ebcdic, pm->member_name);
         errno = EACCES;
         return -1;
@@ -287,7 +287,7 @@ static int pww_lock(pending_member_t *pm)
     ddname[0] = '\0';
     if (mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
                      pm->dsname_ebcdic, pm->member_name, ddname) != 0) {
-        log_error("pww_lock: dynalloc %s(%s) failed",
+        logmsg_error("NFSIW040E", "pww_lock: dynalloc %s(%s) failed",
                   pm->dsname_ebcdic, pm->member_name);
         (void)mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname);
         pm->enq_held = 0;
@@ -300,7 +300,7 @@ static int pww_lock(pending_member_t *pm)
     strcpy(pm->ddname, ddname);
     pm->allocated = 1;
 
-    log_debug("pww_lock: %s(%s) enqueued + allocated ddname=%s",
+    logmsg_debug("NFSIW050D", "pww_lock: %s(%s) enqueued + allocated ddname=%s",
               pm->dsname_ebcdic, pm->member_name, pm->ddname);
     return 0;
 }
@@ -320,18 +320,18 @@ static void pww_unalloc_guarded(pending_member_t *pm)
     rc = _setjmp_stae(env, (unsigned char *)sdwa);
     if (rc == 0) {
         char scratch[9];   /* the ddname arg is unused for UNALLOC */
-        log_debug("pww_unlock: unalloc %s(%s) ddname=%s ...",
+        logmsg_debug("NFSIW060D", "pww_unlock: unalloc %s(%s) ddname=%s ...",
                   pm->dsname_ebcdic, pm->member_name, pm->ddname);
         if (mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
                          pm->dsname_ebcdic, pm->member_name, scratch) != 0)
-            log_warn("pww_unlock: unalloc %s(%s) failed",
+            logmsg_warn("NFSIW070W", "pww_unlock: unalloc %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
         if (_setjmp_canc() != 0)
-            log_error("pww_unlock: _setjmp_canc FAILED after unalloc %s(%s)"
+            logmsg_error("NFSIW080E", "pww_unlock: _setjmp_canc FAILED after unalloc %s(%s)"
                       " -- a STAE is left established", pm->dsname_ebcdic,
                       pm->member_name);
     } else if (rc == 1) {
-        log_error("pww_unlock: ABEND S%03X unallocating %s(%s) -- ddname may"
+        logmsg_error("NFSIW090E", "pww_unlock: ABEND S%03X unallocating %s(%s) -- ddname may"
                   " leak; continuing to the DEQ, and requesting shutdown so"
                   " MVS reclaims it", SDWA_ABEND_CODE(sdwa),
                   pm->dsname_ebcdic, pm->member_name);
@@ -355,18 +355,18 @@ static void pww_deq_guarded(pending_member_t *pm)
     rc = _setjmp_stae(env, (unsigned char *)sdwa);
     if (rc == 0) {
         char rname[44 + 8 + 1];
-        log_debug("pww_unlock: DEQ %s(%s) ...",
+        logmsg_debug("NFSIW100D", "pww_unlock: DEQ %s(%s) ...",
                   pm->dsname_ebcdic, pm->member_name);
         pww_spfedit_rname(pm->dsname_ebcdic, pm->member_name, rname);
         if (mvs_enq(MVS_ENQ_REQ_DEQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0)
-            log_warn("pww_unlock: DEQ %s(%s) failed",
+            logmsg_warn("NFSIW110W", "pww_unlock: DEQ %s(%s) failed",
                      pm->dsname_ebcdic, pm->member_name);
         if (_setjmp_canc() != 0)
-            log_error("pww_unlock: _setjmp_canc FAILED after DEQ %s(%s)"
+            logmsg_error("NFSIW120E", "pww_unlock: _setjmp_canc FAILED after DEQ %s(%s)"
                       " -- a STAE is left established", pm->dsname_ebcdic,
                       pm->member_name);
     } else if (rc == 1) {
-        log_error("pww_unlock: ABEND S%03X releasing the SPFEDIT enqueue on"
+        logmsg_error("NFSIW130E", "pww_unlock: ABEND S%03X releasing the SPFEDIT enqueue on"
                   " %s(%s) -- the member may stay LOCKED against ISPF;"
                   " requesting shutdown so MVS releases it",
                   SDWA_ABEND_CODE(sdwa), pm->dsname_ebcdic, pm->member_name);
@@ -392,7 +392,7 @@ static void pww_unlock(pending_member_t *pm)
        task.  Separate guards mean BOTH are always attempted. */
     pww_unalloc_guarded(pm);
     pww_deq_guarded(pm);
-    log_debug("pww_unlock: released %s(%s)",
+    logmsg_debug("NFSIW140D", "pww_unlock: released %s(%s)",
               pm->dsname_ebcdic, pm->member_name);
 }
 
@@ -430,20 +430,20 @@ static void pww_slot_release(pending_member_t *pm)
     if (rc == 0) {
         pww_slot_release_inner(pm);
         if (_setjmp_canc() != 0)
-            log_error("pww_slot_release: _setjmp_canc FAILED releasing %s(%s)"
+            logmsg_error("NFSIW150E", "pww_slot_release: _setjmp_canc FAILED releasing %s(%s)"
                       " -- a STAE is left established", pm->dsname_ebcdic,
                       pm->member_name);
         return;
     }
     if (rc == 1) {
-        log_error("pww_slot_release: ABEND S%03X cleaning up %s(%s) -- the"
+        logmsg_error("NFSIW160E", "pww_slot_release: ABEND S%03X cleaning up %s(%s) -- the"
                   " allocation and/or SPFEDIT enqueue may still be held",
                   SDWA_ABEND_CODE(sdwa), pm->dsname_ebcdic, pm->member_name);
         memset(pm, 0, sizeof(*pm));
         pm->status = PWW_STATUS_FREE;
         return;
     }
-    log_warn("pww_slot_release: STAE not established (rc=%ld) --"
+    logmsg_warn("NFSIW170W", "pww_slot_release: STAE not established (rc=%ld) --"
              " releasing unprotected", rc);
     pww_slot_release_inner(pm);
 }
@@ -498,7 +498,7 @@ static pending_member_t *pww_slot_take(void)
                              now_ms - g_pww_pool[lru].first_write_ms);
     }
 
-    log_warn("pww_slot_take: pool full, evicting %s(%s)",
+    logmsg_warn("NFSIW180W", "pww_slot_take: pool full, evicting %s(%s)",
         g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
     if (g_pww_pool[lru].dirty)
         (void)pdsflush_slot(&g_pww_pool[lru]);
@@ -573,7 +573,7 @@ static int pww_slot_ensure_cap(pending_member_t *pm, uint32_t need)
 
     new_buf = (uint8_t *)realloc(pm->buf, (size_t)new_cap);
     if (new_buf == NULL) {
-        log_error("pww_slot_ensure_cap: realloc to %u bytes failed", new_cap);
+        logmsg_error("NFSIW190E", "pww_slot_ensure_cap: realloc to %u bytes failed", new_cap);
         errno = ENOMEM;
         return -1;
     }
@@ -601,7 +601,7 @@ static int pww_spill_transition(pending_member_t *pm)
         pm->buf     = NULL;
         pm->buf_cap = 0;
     }
-    log_debug("pww_spill_transition: %s(%s) now on disk (%u bytes)",
+    logmsg_debug("NFSIW200D", "pww_spill_transition: %s(%s) now on disk (%u bytes)",
         pm->dsname_ebcdic, pm->member_name, pm->high_water);
     return 0;
 }
@@ -636,7 +636,7 @@ static void pww_check_payload_corruption(const char *dsname_ebcdic,
     int rpc_at = pww_find_rpc_header(data, count);
 
     if (rpc_at >= 0)
-        log_error("pww_write: CORRUPT PAYLOAD ON ARRIVAL -- RPC CALL header at"
+        logmsg_error("NFSIW210E", "pww_write: CORRUPT PAYLOAD ON ARRIVAL -- RPC CALL header at"
                   " payload offset %d of %s(%s) (write offset=%llu count=%u)."
                   "  Corruption is UPSTREAM of the write pool.",
                   rpc_at, dsname_ebcdic, member_name,
@@ -652,7 +652,7 @@ static int pww_check_member_cap(const char *dsname_ebcdic,
     if (offset + (uint64_t)count <= (uint64_t)PWW_MAX_MEMBER_BYTES)
         return 0;
 
-    log_warn("pww_write: %s(%s) exceeds %d-byte cap (offset=%llu count=%u)",
+    logmsg_warn("NFSIW220W", "pww_write: %s(%s) exceeds %d-byte cap (offset=%llu count=%u)",
         dsname_ebcdic, member_name, PWW_MAX_MEMBER_BYTES,
         (unsigned long long)offset, count);
     errno = ENOSPC;   /* JCC has no EFBIG; NOSPC maps to NFS3ERR_NOSPC */
@@ -671,7 +671,7 @@ static int pww_check_dataset_space(const char *op, const char *dsname_ebcdic,
     if (!pdsflush_dataset_is_full(dsname_ebcdic, time(NULL)))
         return 0;
 
-    log_debug("%s: %s is out of space -- refusing %s",
+    logmsg_debug("NFSIW230D", "%s: %s is out of space -- refusing %s",
               op, dsname_ebcdic, member_name);
     errno = ENOSPC;
     return -1;
@@ -845,7 +845,7 @@ int pww_create(int export_idx, int dataset_idx,
        still writes an EOF marker, which blkcalc charges as one block. */
     if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
         int saved_errno = errno;
-        log_warn("pww_create: %s(%s) refused -- predicted not to fit",
+        logmsg_warn("NFSIW240W", "pww_create: %s(%s) refused -- predicted not to fit",
                  dsname_ebcdic, member_name);
         if (created)
             pww_slot_release(pm);   /* nothing buffered yet; give it all back */
@@ -856,7 +856,7 @@ int pww_create(int export_idx, int dataset_idx,
     /* An empty create still needs to stow an empty member on COMMIT. */
     pww_set_dirty(pm);
 
-    log_debug("pww_create: %s(%s)", dsname_ebcdic, member_name);
+    logmsg_debug("NFSIW250D", "pww_create: %s(%s)", dsname_ebcdic, member_name);
     return 0;
 }
 
@@ -913,7 +913,7 @@ int pww_write(int export_idx, int dataset_idx,
 
     pww_set_dirty(pm);
 
-    log_debug("pww_write: %s(%s) off=%llu cnt=%u hw=%u",
+    logmsg_debug("NFSIW260D", "pww_write: %s(%s) off=%llu cnt=%u hw=%u",
         dsname_ebcdic, member_name, (unsigned long long)offset, count,
         pm->high_water);
     return 0;
@@ -948,14 +948,14 @@ int pww_truncate(int export_idx, int dataset_idx,
            EOF block). */
         if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
             int saved_errno = errno;
-            log_warn("pww_truncate: %s(%s) refused -- predicted not to fit",
+            logmsg_warn("NFSIW270W", "pww_truncate: %s(%s) refused -- predicted not to fit",
                      dsname_ebcdic, member_name);
             pww_slot_release(pm);         /* nothing buffered yet */
             errno = saved_errno;
             return -1;
         }
         pww_set_dirty(pm);
-        log_debug("pww_truncate: %s(%s) -> 0 (new empty)",
+        logmsg_debug("NFSIW280D", "pww_truncate: %s(%s) -> 0 (new empty)",
             dsname_ebcdic, member_name);
         return 0;
     }
@@ -978,7 +978,7 @@ int pww_truncate(int export_idx, int dataset_idx,
        'size' zero bytes.  Shrinking only frees space, so it needs no check. */
     if (size > pm->high_water) {
         if (blkcalc_admit_write(pm, NULL, 0, (uint64_t)size) < 0) {
-            log_warn("pww_truncate: %s(%s) grow to %u refused -- predicted"
+            logmsg_warn("NFSIW290W", "pww_truncate: %s(%s) grow to %u refused -- predicted"
                      " not to fit", dsname_ebcdic, member_name, size);
             return -1;                   /* errno set (ENOSPC) */
         }
@@ -1012,7 +1012,7 @@ int pww_truncate(int export_idx, int dataset_idx,
 
     pm->high_water      = size;
     pww_set_dirty(pm);
-    log_debug("pww_truncate: %s(%s) -> %u", dsname_ebcdic, member_name, size);
+    logmsg_debug("NFSIW300D", "pww_truncate: %s(%s) -> %u", dsname_ebcdic, member_name, size);
     return 0;
 }
 
@@ -1059,7 +1059,7 @@ void pww_flush_idle(time_t now)
 
         if (pm->dirty) {
             if (pdsflush_slot(pm) < 0) {
-                log_error("pww_flush_idle: flush failed for %s(%s)",
+                logmsg_error("NFSIW310E", "pww_flush_idle: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
             }
         }
@@ -1081,7 +1081,7 @@ void pww_flush_all(void)
             continue;
         if (pm->dirty) {
             if (pdsflush_slot(pm) < 0)
-                log_error("pww_flush_all: flush failed for %s(%s)",
+                logmsg_error("NFSIW320E", "pww_flush_all: flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
         }
         pww_slot_release(pm);
@@ -1133,7 +1133,7 @@ int pww_touch_stats(int export_idx, int dataset_idx,
     if (pm == NULL || !pm->enq_held) {
         pww_spfedit_rname(dsname_ebcdic, member_name, rname);
         if (mvs_enq(MVS_ENQ_REQ_ENQ, MVS_ENQ_OPT_EXC, "SPFEDIT", rname) != 0) {
-            log_debug("pww_touch_stats: %s(%s) is held -- skipping stats touch",
+            logmsg_debug("NFSIW330D", "pww_touch_stats: %s(%s) is held -- skipping stats touch",
                 dsname_ebcdic, member_name);
             return 0;
         }
@@ -1151,7 +1151,7 @@ int pww_touch_stats(int export_idx, int dataset_idx,
         rc = mvs_stow(ddname, member_name, stats_ud, (int)MVS_ISPF_STATS_LEN);
     }
     if (rc != 0) {
-        log_warn("pww_touch_stats: stats update failed for %s(%s) rc=%d",
+        logmsg_warn("NFSIW340W", "pww_touch_stats: stats update failed for %s(%s) rc=%d",
             dsname_ebcdic, member_name, rc);
     } else {
         /* The directory entry just changed, so invalidate exactly as every

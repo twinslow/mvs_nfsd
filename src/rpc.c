@@ -88,7 +88,7 @@ static int rpc_wait_io(int fd, int for_write)
         /* A signal is not a failure: reissue the wait. */
         if (errno == EINTR) continue;
 #endif
-        log_error("rpc: select() failed on fd=%d while waiting to %s",
+        logmsg_error("NFSRP010E", "rpc: select() failed on fd=%d while waiting to %s",
                   fd, for_write ? "send" : "receive");
         return -1;
     }
@@ -101,7 +101,7 @@ static int recv_all(int fd, uint8_t *buf, uint32_t len)
 
     while (done < len) {
         if (rpc_wait_io(fd, 0) < 0) {
-            log_error("rpc_recv: fd=%d stalled after %u of %u byte(s) --"
+            logmsg_error("NFSRP020E", "rpc_recv: fd=%d stalled after %u of %u byte(s) --"
                       " no data for %d seconds; dropping the connection",
                       fd, done, len, RPC_IO_TIMEOUT_SECONDS);
             return -1;
@@ -120,7 +120,7 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 
     while (done < len) {
         if (rpc_wait_io(fd, 1) < 0) {
-            log_error("rpc_send: fd=%d blocked after %u of %u byte(s) --"
+            logmsg_error("NFSRP030E", "rpc_send: fd=%d blocked after %u of %u byte(s) --"
                       " peer stopped reading for %d seconds; dropping the"
                       " connection", fd, done, len, RPC_IO_TIMEOUT_SECONDS);
             return -1;
@@ -291,7 +291,7 @@ static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
        mismatch is conclusive on its own even when no second handle shows. */
     if (rpc_write_expected_len(buf, total, &expected) == 0 && expected != total) {
         bad_len = 1;
-        log_error("rpc_recv: WRITE LENGTH DESYNC -- record mark(s) delivered"
+        logmsg_error("NFSRP040E", "rpc_recv: WRITE LENGTH DESYNC -- record mark(s) delivered"
                   " %u bytes but the call's own fields account for %u"
                   " (%s by %u bytes)", total, expected,
                   (total > expected) ? "over" : "under",
@@ -346,15 +346,15 @@ static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     /* normal: a WRITE has exactly one handle and a consistent length */
     if (hits <= 1 && !bad_len) return 0;
 
-    log_error("rpc_recv: CORRUPT RECEIVE BUFFER -- WRITE call with 'NFS3'"
+    logmsg_error("NFSRP050E", "rpc_recv: CORRUPT RECEIVE BUFFER -- WRITE call with 'NFS3'"
               " handle magic x%u (first two at off %u, %u) in a %u-byte"
               " message reassembled from %d fragment(s):",
               hits, off1, off2, total, nfrag);
     for (k = 0; k < nfrag && k < RPC_MAX_FRAGS; k++)
-        log_error("rpc_recv:   frag %d: buf_off=%u len=%u",
+        logmsg_error("NFSRP060E", "rpc_recv:   frag %d: buf_off=%u len=%u",
                   k, frag_off[k], frag_len[k]);
     if (nfrag > RPC_MAX_FRAGS)
-        log_error("rpc_recv:   ... %d fragments total, only first %d shown",
+        logmsg_error("NFSRP070E", "rpc_recv:   ... %d fragments total, only first %d shown",
                   nfrag, RPC_MAX_FRAGS);
 
     /* Identify the embedded message by XID -- the field that says WHICH
@@ -376,19 +376,19 @@ static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
             rpc_peek_uint32(buf, base2 + RPC_CALL_PROG_OFF) == RPC_PROG_NFS) {
             xid_outer = rpc_peek_uint32(buf, 0);
             xid_inner = rpc_peek_uint32(buf, base2);
-            log_error("rpc_recv:   embedded RPC CALL confirmed at off %u:"
+            logmsg_error("NFSRP080E", "rpc_recv:   embedded RPC CALL confirmed at off %u:"
                       " xid=x%08X proc=%u  (this message xid=x%08X)",
                       base2, xid_inner,
                       rpc_peek_uint32(buf, base2 + RPC_CALL_PROC_OFF),
                       xid_outer);
-            log_error("rpc_recv:   -> %s",
+            logmsg_error("NFSRP090E", "rpc_recv:   -> %s",
                       (xid_inner == xid_outer)
                         ? "SAME xid: this request captured TWICE"
                         : "DIFFERENT xid: a later request bled in"
                           " (framing desync)");
             confirmed = 1;      /* structurally proven, not a guess */
         } else {
-            log_error("rpc_recv:   no RPC CALL header at the inferred"
+            logmsg_error("NFSRP100E", "rpc_recv:   no RPC CALL header at the inferred"
                       " embedded start (off %u) -- the second handle is not"
                       " a whole message copied from its beginning", base2);
         }
@@ -410,7 +410,7 @@ static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
      * so the cost is a hiccup, and the benefit is that corrupt data can never
      * be written to a PDS member. */
     if (bad_len || confirmed) {
-        log_error("rpc_recv: DROPPING CONNECTION -- refusing to process a"
+        logmsg_error("NFSRP110E", "rpc_recv: DROPPING CONNECTION -- refusing to process a"
                   " corrupt message (the client will reconnect and resend;"
                   " see spill_corruption_open: a partial recv() on this"
                   " socket layer can replay data from the start)");

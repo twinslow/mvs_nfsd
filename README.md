@@ -392,6 +392,104 @@ sudo journalctl -kf
 | LINK | NFS3ERR_NOTSUPP |
 | MKNOD | NFS3ERR_NOTSUPP |
 
+## Server messages and message IDs
+
+Every message the server writes — to STDERR and to the MVS console (WTO) —
+carries a 9-character MVS-style message ID in place of the old `[LEVEL]` tag:
+
+```
+old:  [INFO ] pdsflush_slot: Starting flush for TEMP.ITEST.FB(UM1)
+new:  NFSIW500I pdsflush_slot: Starting flush for TEMP.ITEST.FB(UM1)
+```
+
+On the log stream the date and time still precede it; the console line is
+just the ID and the text.
+
+### ID format — `NFS` + `AA` + `nnn` + `S`
+
+| Part | Width | Meaning |
+|---|---|---|
+| `NFS` | 3 | Fixed — identifies the NFS server |
+| `AA` | 2 | Functional area, from the table below |
+| `nnn` | 3 | Message number, unique within its prefix |
+| `S` | 1 | Severity |
+
+Severity letters:
+
+| Letter | Meaning | Function |
+|---|---|---|
+| `I` | Information | `logmsg_info()` |
+| `W` | Warning | `logmsg_warn()` |
+| `E` | Error | `logmsg_error()` |
+| `T` | Trace | `logmsg_trace()` |
+| `D` | Diagnostic / debug | `logmsg_debug()` |
+| `S` | Severe | `logmsg_fatal()` |
+
+The letter must agree with the function called — `logmsg_warn` with an ID
+ending `I` is a bug, and nothing checks it at run time.
+
+### Writing a message
+
+```c
+logmsg_info("NFSIW500I", "pdsflush_slot: Starting flush for %s(%s)",
+            pds_name, member_name);
+```
+
+Level filtering, WTO routing and `log_ascii()` handling are unchanged — only
+the prefix differs.  The older `log_info()` / `log_warn()` / … forms still
+exist for code that has no ID yet, and print `[LEVEL]` as before.
+
+The **same ID may appear at more than one call site only if a parameter in
+the message identifies which one it is**.  Otherwise a message in a log
+cannot be traced back to a single point in the code, which is the whole
+purpose of carrying an ID.
+
+### Functional area prefixes
+
+| File | Prefix | Range in use | Notes |
+|---|---|---|---|
+| `nfsd.c` | `NFSDM` | 010–220 | Daemon / main |
+| `xdr.c` | `NFSXD` | — | |
+| `rpc.c` | `NFSRP` | 010–110 | |
+| `exports.c` | `NFSCF` | 010–280 | Config |
+| `cfgopts.c` | `NFSCF` | 500–590 | Config (shares the prefix) |
+| `fhandle.c` | `NFSFH` | 010–020 | |
+| `portmap.c` | `NFSPM` | — | |
+| `mount3.c` | `NFSMN` | — | |
+| `nfs3.c` | `NFSOP` | 010–310 | NFS operations |
+| `vfs.c` | `NFSVF` | 700– | |
+| `mockvfs.c` | `NFSVF` | 500– | |
+| `mvsvfs.c` | `NFSVF` | 010–400 | |
+| `mvsio.c` | `NFSIO` | 010–030 | |
+| `mvspdir.c` | `NFSID` | 010–180 | PDS directory |
+| `mvsdol.c` | `NFSID` | 500–520 | Directory open-list (shares the prefix) |
+| `mvspww.c` | `NFSIW` | 010–340 | Member write |
+| `mvspwfl.c` | `NFSIW` | 500–690 | Member flush (shares the prefix) |
+| `mvsprw.c` | `NFSIR` | 010–110 | Member read |
+| `mvsspl.c` | `NFSIS` | 010–100 | Write spill store |
+| `mvsblkc.c` | `NFSIB` | 010–050 | Block/space calculation |
+| `mvsprf.c` | `NFSST` | 010–070 | Statistics |
+| `mvsfsz.c` | `NFSFZ` | — | |
+| `mvsfid.c` | `NFSFI` | — | |
+| `mvsutl.c` | `NFSUT` | — | |
+| `ebcdic.c` | `NFSEA` | — | |
+| `hexdump.c` | `NFSLH` | — | |
+| `logger.c` | `NFSLG` | 010–120 | |
+
+### Numbering conventions
+
+Numbers are allocated **in tens** (010, 020, 030 …) so a new message can be
+inserted between two existing ones without renumbering anything.
+
+Where several files share a prefix, each file gets its own **range** — the
+first file starts at 010, the second at 500, a third at 700 — so a number
+still identifies one file, not just an area.  When adding a message, take the
+next free ten in that file's range rather than reusing a gap, unless the gap
+was left by a message that was deleted.
+
+Filtering the console or log by message ID is a possible future addition;
+nothing depends on it today.
+
 ## MVS architecture
 
 This is in need of review and updating.

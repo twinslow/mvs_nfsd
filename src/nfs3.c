@@ -256,16 +256,16 @@ static void proc_getattr(xdr_t *in, xdr_t *out, uint32_t xid)
 
     if (!ok) { 
         xdr_write_uint32(out, NFS3ERR_BADHANDLE); 
-        log_debug("nfs3.proc_getattr: Returning error NFS3ERR_BADHANDLE");
+        logmsg_debug("NFSOP010D", "nfs3.proc_getattr: Returning error NFS3ERR_BADHANDLE");
         return; 
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE); 
-        log_debug("nfs3.proc_getattr: Returning error NFS3ERR_STALE");
+        logmsg_debug("NFSOP020D", "nfs3.proc_getattr: Returning error NFS3ERR_STALE");
         return;
     }
 
-    log_debug("nfs3.proc_getattr: Starting for path %s",
+    logmsg_debug("NFSOP030D", "nfs3.proc_getattr: Starting for path %s",
         log_ascii(path));
 
     if (vfs_stat(path, &st) < 0) {
@@ -308,7 +308,7 @@ static void proc_setattr(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_setattr: Starting for path %s",
+    logmsg_debug("NFSOP040D", "nfs3.proc_setattr: Starting for path %s",
         log_ascii(path));
 
     has_pre  = (vfs_stat(path, &pre) == 0);
@@ -354,26 +354,26 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
     if (!ok || in->error) {
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
-        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_BADHANDLE");
+        logmsg_debug("NFSOP050D", "nfs3.proc_lookup: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (!name_is_valid(name)) {
         xdr_write_uint32(out, NFS3ERR_INVAL);
         xdr_write_post_op_attr(out, NULL, 0);
-        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_INVAL");
+        logmsg_debug("NFSOP060D", "nfs3.proc_lookup: Returning error NFS3ERR_INVAL");
         return;
     }
     if (fh_resolve(&dir_fh, dir_path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
-        log_debug("nfs3.proc_lookup: Returning error NFS3ERR_STALE");
+        logmsg_debug("NFSOP070D", "nfs3.proc_lookup: Returning error NFS3ERR_STALE");
         return;
     }
 
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
 
-    log_debug("nfs3.proc_lookup: Starting for obj_path %s",
+    logmsg_debug("NFSOP080D", "nfs3.proc_lookup: Starting for obj_path %s",
         log_ascii(obj_path));
 
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
@@ -390,7 +390,7 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
     if (fh_from_path(obj_path, &obj_fh) < 0) {
         xdr_write_uint32(out, NFS3ERR_SERVERFAULT);
         xdr_write_post_op_attr(out, &dir_st, has_dir);
-        log_warn("nfs3.proc_lookup: cannot build handle for %s",
+        logmsg_warn("NFSOP090W", "nfs3.proc_lookup: cannot build handle for %s",
                  log_ascii(obj_path));
         return;
     }
@@ -423,18 +423,18 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
-        log_debug("nfs3.proc_access: Returning error NFS3ERR_BADHANDLE");
+        logmsg_debug("NFSOP100D", "nfs3.proc_access: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
-        log_debug("nfs3.proc_access: Returning error NFS3ERR_STATE");
+        logmsg_debug("NFSOP110D", "nfs3.proc_access: Returning error NFS3ERR_STATE");
         return;
     }
 
-    log_debug("nfs3.proc_access: Starting for path %s, requested 0x%08X, auth_uid=%d, auth_gid=%d",
+    logmsg_debug("NFSOP120D", "nfs3.proc_access: Starting for path %s, requested 0x%08X, auth_uid=%d, auth_gid=%d",
         log_ascii(path), requested, auth_uid, auth_gid);
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -447,7 +447,7 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
     xdr_write_post_op_attr(out, &st, has_st);
     xdr_write_uint32(out, granted);
 
-    log_debug("nfs3.proc_access: Returned granted 0x%08X", granted);
+    logmsg_debug("NFSOP130D", "nfs3.proc_access: Returned granted 0x%08X", granted);
 }
 
 /* ------------------------------------------------------------------ */
@@ -473,19 +473,19 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
     if (!ok) {
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
-        log_debug("nfs3.proc_read: Returning error NFS3ERR_BADHANDLE");
+        logmsg_debug("NFSOP140D", "nfs3.proc_read: Returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
-        log_debug("nfs3.proc_read: Returning error NFS3ERR_STALE");
+        logmsg_debug("NFSOP150D", "nfs3.proc_read: Returning error NFS3ERR_STALE");
         return;
     }
 
     if (count > MAX_READ_SIZE) count = MAX_READ_SIZE;
 
-    log_info("nfs3.proc_read: Starting %s, offset=%llu, count=%u",
+    logmsg_info("NFSOP160I", "nfs3.proc_read: Starting %s, offset=%llu, count=%u",
         log_ascii(path), offset, count);
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -539,7 +539,7 @@ static void proc_write(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_write: Starting for path %s with count %d and offset %llu",
+    logmsg_debug("NFSOP170D", "nfs3.proc_write: Starting for path %s with count %d and offset %llu",
         log_ascii(path), count, offset);
 
     has_pre  = (vfs_stat(path, &pre) == 0);
@@ -630,7 +630,7 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
 
-        log_debug("nfs3.proc_create: Starting for path %s",
+        logmsg_debug("NFSOP180D", "nfs3.proc_create: Starting for path %s",
         log_ascii(obj_path));
 
     has_dir_pre = (vfs_stat(dir_path, &dir_pre) == 0);
@@ -736,7 +736,7 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
     snprintf(obj_path, MAX_PATH, "%s%c%s", 
         dir_path, ebcdic_to_ascii_c('/'), name);
 
-    log_debug("nfs3.proc_remove: Starting for path %s",
+    logmsg_debug("NFSOP190D", "nfs3.proc_remove: Starting for path %s",
         log_ascii(obj_path));
 
     has_pre = (vfs_stat(dir_path, &dir_pre) == 0);
@@ -791,7 +791,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_readdir: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
+    logmsg_debug("NFSOP200D", "nfs3.proc_readdir: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
         log_ascii(dir_path), (char *)&cookie, cookie);
 
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
@@ -838,7 +838,7 @@ static void proc_readdir(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
 
-    log_debug("nfs3.proc_readdir: Ending for path %s, wrote_one=%d eof=%d",
+    logmsg_debug("NFSOP210D", "nfs3.proc_readdir: Ending for path %s, wrote_one=%d eof=%d",
        log_ascii(dir_path), wrote_one, eof);
 
 }
@@ -886,7 +886,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_readdirplus: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
+    logmsg_debug("NFSOP220D", "nfs3.proc_readdirplus: Starting for path %s, cookie = '%-8.8s' (0x%016llX)",
         log_ascii(dir_path), (char *)&cookie, cookie);
 
     has_dir = (vfs_stat(dir_path, &dir_st) == 0);
@@ -930,7 +930,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
            entry we cannot name is skipped rather than sent with a handle
            the client could not use. */
         if (fh_from_path(entry_path, &efh) < 0) {
-            log_warn("nfs3.proc_readdirplus: skipping unnameable entry %s",
+            logmsg_warn("NFSOP230W", "nfs3.proc_readdirplus: skipping unnameable entry %s",
                      log_ascii(entry_path));
             continue;
         }
@@ -950,9 +950,9 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
 
-    log_info("nfs3.proc_readdirplus: The last response entry cookie was = '%-8.8s' (0x%016llX)",
+    logmsg_info("NFSOP240I", "nfs3.proc_readdirplus: The last response entry cookie was = '%-8.8s' (0x%016llX)",
         (char *)&lrcookie, lrcookie);
-    log_info("nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d xdr_bytes=%u",
+    logmsg_info("NFSOP250I", "nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d xdr_bytes=%u",
        log_ascii(dir_path), wrote_one, eof, xdr_get_pos(out));
        
 }
@@ -977,7 +977,7 @@ static void proc_fsstat(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
 
-    log_debug("nfs3.proc_fsstat: Starting for path %s",
+    logmsg_debug("NFSOP260D", "nfs3.proc_fsstat: Starting for path %s",
         log_ascii(path));
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -1018,7 +1018,7 @@ static void proc_fsinfo(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
 
-    log_debug("nfs3.proc_fsinfo: Starting for path %s",
+    logmsg_debug("NFSOP270D", "nfs3.proc_fsinfo: Starting for path %s",
         log_ascii(path));
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -1057,7 +1057,7 @@ static void proc_pathconf(xdr_t *in, xdr_t *out, uint32_t xid)
         xdr_write_uint32(out, NFS3ERR_STALE); return;
     }
 
-    log_debug("nfs3.proc_pathconf: Starting for path %s",
+    logmsg_debug("NFSOP280D", "nfs3.proc_pathconf: Starting for path %s",
         log_ascii(path));
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -1099,7 +1099,7 @@ static void proc_commit(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    log_debug("nfs3.proc_commit: Starting for path %s",
+    logmsg_debug("NFSOP290D", "nfs3.proc_commit: Starting for path %s",
         log_ascii(path));
 
     has_pre = (vfs_stat(path, &pre) == 0);
@@ -1165,7 +1165,7 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
     snprintf(to_path,   MAX_PATH, "%s%c%s", 
         tdir_path, ebcdic_to_ascii_c('/'), tname);
 
-    log_debug("nfs3.proc_rename: Starting for from_path %s to_path %s",
+    logmsg_debug("NFSOP300D", "nfs3.proc_rename: Starting for from_path %s to_path %s",
         log_ascii(from_path), log_ascii(to_path));
 
     has_fpre = (vfs_stat(fdir_path, &fpre) == 0);
@@ -1193,7 +1193,7 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
 /* ------------------------------------------------------------------ */
 static void proc_notsupp(xdr_t *out, uint32_t xid)
 {
-    log_debug("nfs3.proc_notsupp: Starting");
+    logmsg_debug("NFSOP310D", "nfs3.proc_notsupp: Starting");
 
     rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
     xdr_write_uint32(out, NFS3ERR_NOTSUPP);
