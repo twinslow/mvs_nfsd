@@ -19,8 +19,12 @@
  * exports_load() takes a file path and fopen()s it, so each test writes a small
  * config to a temp file and then inspects the result through the public
  * accessors.  exports_load() resets the table (g_nexports = 0) on entry, so the
- * tests are independent.  mvs_get_dcb_info_dsn() (its only non-cfg/ebcdic/log
- * dependency, and MVS-only) is stubbed below so no real dataset is needed.
+ * tests are independent.  Its MVS-only dependencies -- mvs_dscb(),
+ * blkcalc_dataset_init() and the two DSCB field formatters -- are stubbed
+ * below, so no real dataset is needed and the VTOC is never touched.  That
+ * matters now that a dataset whose DSCB cannot be read FAILS its whole export
+ * (see cfg_load_dscb_info): unstubbed, every test here would see an empty
+ * table.
  *
  * Encoding: config text and the expected dsname/keyword strings both use native
  * char literals, so a byte written as 'A' is compared against the same native
@@ -45,25 +49,101 @@
 
 #include "munit.h"
 #include "nfsd.h"      /* export_t / pds_dataset_t + exports_* accessors */
-#include "mvsio.h"     /* mvs_dcb_info_t (for the stub) */
+
+#ifdef __MVS__
+#include "asmutils.h"  /* mvs_dscb_info_t, MVS_DSCB_* (for the stubs)      */
+#include "mvsblkc.h"   /* blkcalc_dataset_init + its 8-char alias          */
+#include "mvsutl.h"    /* mvs_dscb_dsorg_str / mvs_dscb_recfm_str, MVS_DEV_*/
+#endif
 
 /* ------------------------------------------------------------------ */
-/* Link stub: exports.c calls mvs_get_dcb_info_dsn() once per dataset  */
-/* to fill RECFM/LRECL.  It is MVS-only and needs a real dataset, so   */
-/* here it just reports a plausible FB/80 dataset.  A failure return   */
-/* would also be fine (exports.c logs it and carries on), but success  */
-/* keeps the test output clean.                                        */
+/* Link stubs -- MVS only                                              */
+/*                                                                     */
+/* Under __MVS__, exports_load() runs cfg_load_dscb_info(), which reads */
+/* the VTOC for every exported dataset and FAILS any export it cannot   */
+/* account for; cfg_drop_failed_exports() then removes it.  The configs */
+/* these tests write name datasets that do not exist, so without these  */
+/* stubs every test would find an empty export table.                   */
+/*                                                                     */
+/* Stubbing rather than linking the real thing is deliberate: the real  */
+/* blkcalc_dataset_init() lives in MVSBLKC, which needs pww_slot_at()   */
+/* and pww_read_range() and so drags MVSPWW -> MVSSPL / MVSPWFL /       */
+/* MVSDALC / MVSENQ / MVSSTOW ... i.e. most of the server, into a job   */
+/* whose whole purpose is the config parser.  The real decoder has its  */
+/* own coverage in tests/tmvsblkc.c (/dsinit).                          */
 /* ------------------------------------------------------------------ */
-int mvs_get_dcb_info_dsn(const char *dsname, mvs_dcb_info_t *dcb)
+#ifdef __MVS__
+
+/* Report a plausible PO / FB 80 / 8000 dataset on a 3390 for every name
+   asked about, so every export survives validation. */
+int mvs_dscb(uint8_t request_type, uint8_t options,
+             const char **dsnlist, mvs_dscb_info_t *data)
 {
-    (void)dsname;
-    memset(dcb, 0, sizeof(*dcb));
-    dcb->dsorg   = 0x40;      /* PO   */
-    dcb->recfm   = 0x90;      /* FB   */
-    dcb->lrecl   = 80;
-    dcb->blksize = 8000;
+    int i;
+
+    (void)request_type;
+    (void)options;
+    if (dsnlist == NULL || data == NULL)
+        return 8;
+
+    for (i = 0; dsnlist[i] != NULL; i++) {
+        mvs_dscb_info_t *e = &data[i];
+
+        memset(e, 0, sizeof(*e));
+        e->status     = MVS_DSCB_ST_OK;
+        memcpy(e->volser, "WORK01", 6);
+        e->nextents   = 1;
+        e->tracks     = 100;
+        e->dsorg[0]   = MVS_DSCB_DSORG_PO;
+        e->recfm      = (uint8_t)(MVS_DSCB_RECFM_F | MVS_DSCB_RECFM_BLK);
+        e->blksize[0] = (uint8_t)(8000 >> 8);
+        e->blksize[1] = (uint8_t)(8000 & 0xFF);
+        e->lrecl[1]   = 80;
+        e->devtype[3] = MVS_DEV_3390;
+        e->trklen[0]  = (uint8_t)(58786 >> 8);
+        e->trklen[1]  = (uint8_t)(58786 & 0xFF);
+        e->trkcyl[1]  = 15;
+    }
     return 0;
 }
+
+/* Leave a VALID dataset behind so the export is not dropped.  The figures
+   only have to be self-consistent; nothing in exports.c does arithmetic
+   with them beyond logging. */
+int blkcalc_dataset_init(dataset_dscb_info_t *out, const mvs_dscb_info_t *raw)
+{
+    (void)raw;
+    if (out == NULL)
+        return -1;
+
+    memset(out, 0, sizeof(*out));
+    out->valid            = 1;
+    out->dsorg            = MVS_DSCB_DSORG_PO;
+    out->recfm            = (uint8_t)(MVS_DSCB_RECFM_F | MVS_DSCB_RECFM_BLK);
+    out->blksize          = 8000;
+    out->lrecl            = 80;
+    out->tracks           = 100;
+    out->nextents         = 1;
+    out->blocks_per_track = 6;
+    strcpy(out->volser, "WORK01");
+    return 0;
+}
+
+char *mvs_dscb_dsorg_str(uint8_t dsorg, char *str)
+{
+    (void)dsorg;
+    strcpy(str, "PO");
+    return str;
+}
+
+char *mvs_dscb_recfm_str(uint8_t recfm, char *str)
+{
+    (void)recfm;
+    strcpy(str, "FB");
+    return str;
+}
+
+#endif /* __MVS__ */
 
 /* ------------------------------------------------------------------ */
 /* Temp config file: written with native-encoding text, then handed   */

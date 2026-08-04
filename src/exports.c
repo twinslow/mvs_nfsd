@@ -235,16 +235,6 @@ static void dataset_init(pds_dataset_t *ds, const char *dsname_ebcdic)
         ds->file_ext[0] = '\0';
     }
 
-#if 0
-    /* DCB info (record format / lengths) for member size estimation. */
-    if (mvs_get_dcb_info_dsn(ds->dsname_ebcdic, &ds->dcbinfo) < 0)
-        log_error("exports_load: get dcb failed for %s", ds->dsname_ebcdic);
-    else
-        log_info("exports_load: %s DSORG=0x%02X RECFM=0x%02X LRECL=%d BLKSIZE=%d",
-            ds->dsname_ebcdic, ds->dcbinfo.dsorg, ds->dcbinfo.recfm,
-            ds->dcbinfo.lrecl, ds->dcbinfo.blksize);
-#endif
-
     /* Option defaults.  memset above left these 0, and 0 is a valid but
        catastrophic 0000 mode -- assign the real defaults explicitly.
        cfg_resolve_opts() overwrites them once keywords are parsed. */

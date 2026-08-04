@@ -72,6 +72,7 @@ other important datasets that could prevent an IPL from completing.
 | `mvspdir.c/h` | PDS directory block parsing; ISPF statistics decode **and** encode |
 | `mvspww.c/h` | Pending-member write pool — buffers WRITEs, STOWs on COMMIT, applies ISPF stats; spills to `mvsspl` past the in-memory threshold |
 | `mvsspl.c/h` | Write-spill store — backs a large pending member with a temporary PS dataset (random `fseek` write/read) so memory use per member stays bounded |
+| `mvsblkc.c/h` | PDS space prediction — counts the blocks a pending member will occupy once stowed and compares them against the dataset's free space, so a write that cannot fit is refused before the flush abends out of space |
 | `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
 | `mvsprw.c/h` | PDS member read with sequential-read position cache |
 | `mvsprf.c/h` | Performance stats tracking |
@@ -117,6 +118,7 @@ other important datasets that could prevent an IPL from completing.
 | `tests/tmvsprf.c` | Tests for the performance stats tracking (`mvsprf.c`) |
 | `tests/tmvspww.c` | Tests for `mvspww.c` — the pending-member write pool (in-memory buffer management) |
 | `tests/tmvsspl.c` | Tests for `mvsspl.c` — the write-spill store, driven with a reference-model verifier (odd offsets, holes, overwrites, reuse, large sizes, fuzz) |
+| `tests/tmvsblkc.c` | Tests for `mvsblkc.c` — record counting for F/FB and V/VB (line wrap, empty lines, unterminated tails, chunk boundaries), the fit test against a synthetic DSCB, and VTOC decoding |
 | `tests/tcfgopts.c` | Tests for `cfgopts.c` — export keyword parsing and option resolution |
 | `tests/tlogger.c` | Tests for `logger.c` — log-level and per-procedure level handling |
 | `tests/txdr.c` | Tests for `xdr.c` — XDR encode/decode primitives (byte layout, uint64 word order, opaque/string padding, bounds checks and error latching, handle framing) |
@@ -485,6 +487,30 @@ position on it, then STOW REPLACE with the encoded stats).  A `touch` (SETATTR
 time change) refreshes just the ISPF changed date the same way.  The full
 design, including the record-conversion and durability model, is in
 [`doc/design_nfs_write.md`](doc/design_nfs_write.md).
+
+### Full-dataset prediction (`mvsblkc.c`)
+
+Writing into a PDS with no room left abends `SB14`, and an abend recovered by
+`_setjmp_stae` can leave the JCC runtime's file lock held — after which the
+next file operation deadlocks and the whole server hangs silently.  Rather
+than try to survive that abend, the server predicts it.
+
+`mvsblkc.c` maintains a running estimate of the blocks each pending member
+will occupy once stowed — reproducing how JCC splits the byte stream into
+records for F/FB and V/VB — and checks it against the dataset's free space
+read fresh from the VTOC (`DS1LSTAR` / `DS1TRBAL`, via `mvsdscb.asm`) on every
+decision.  All three routes into the pending pool are gated: CREATE, WRITE and
+SETATTR(size).  A member that will not fit is refused with `NFS3ERR_NOSPC`
+before anything is buffered, so the flush is never attempted.
+
+Every ambiguous choice is resolved towards "predict full", because a wrong
+"fits" costs an abend while a wrong "full" only costs an error the client
+reports.  Exports whose DSCB cannot be read, or that are not PO with a
+usable F/FB or V/VB record format, are rejected at config load.
+
+See [`doc/design_pds_full_prediction.md`](doc/design_pds_full_prediction.md)
+for the design and [`doc/analysis_io_lock_hang.md`](doc/analysis_io_lock_hang.md)
+for the hang investigation that motivated it.
 
 ### File-size cache (`mvsfsz.c`)
 

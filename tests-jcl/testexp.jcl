@@ -19,8 +19,19 @@
 //*       its own main() (tests/texports.c).
 //*
 //*       Linked: EXPORTS + CFGOPTS + EBCDIC + LOGGER + MUNIT + the
-//*       test module TEXPORTS.  mvs_get_dcb_info_dsn() is stubbed
-//*       inside TEXPORTS, so MVSIO is NOT linked.
+//*       test module TEXPORTS.
+//*
+//*       EXPORTS' MVS-only dependencies are STUBBED inside TEXPORTS
+//*       rather than linked: mvs_dscb(), blkcalc_dataset_init() and
+//*       the two DSCB field formatters.  Linking the real ones would
+//*       pull MVSBLKC in, and MVSBLKC needs MVSPWW, which needs
+//*       MVSSPL / MVSPWFL / MVSDALC / MVSENQ / MVSSTOW ... i.e. most
+//*       of the server, into a job that exists to test the config
+//*       parser.  MVSIO, MVSUTL and MVSDSCB are therefore NOT linked.
+//*
+//*       The stubs are not optional: cfg_load_dscb_info() FAILS any
+//*       export whose DSCB it cannot read, and the configs these
+//*       tests write name datasets that do not exist.
 //*
 //********************************************************************
 //*

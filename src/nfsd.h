@@ -471,9 +471,6 @@ typedef struct {
     /*
      * VTOC view of the same dataset, loaded once at config time by
      * cfg_load_dscb_info() and used by the write-space prediction.
-     * dcbinfo and dscb overlap on RECFM/LRECL/BLKSIZE; they come from
-     * different places (open-time DCB vs the format 1 DSCB) and are
-     * cross-checked at load time.
      */
     dataset_dscb_info_t dscb;
 

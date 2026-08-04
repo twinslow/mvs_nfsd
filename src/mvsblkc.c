@@ -80,12 +80,19 @@ static int blkc_recs_for_line(int n, int reclen)
    this is pure division -- no need to walk record by record. */
 static void blkc_emit_line_f(blkcalc_info_t *bi, int n)
 {
-    int recs_per_blk = bi->dcb_blksize / bi->dcb_lrecl;
+    int recs_per_blk;
     int recs_open;
     int total;
 
-    if (recs_per_blk <= 0)
+    if (bi->dcb_lrecl <= 0 || bi->dcb_blksize <= 0)
         return;                       /* rejected at config time */
+
+    recs_per_blk = bi->dcb_blksize / bi->dcb_lrecl;
+    if (recs_per_blk <= 0)
+        return;                       /* BLKSIZE < LRECL: a malformed DCB.
+                                         Unlike V/VB there is no config-time
+                                         check for this, and the division
+                                         below would be by zero. */
 
     recs_open = bi->size_last_partial_block / bi->dcb_lrecl;
     total     = recs_open + blkc_recs_for_line(n, bi->dcb_lrecl);
@@ -695,7 +702,13 @@ void blkcalc_slot_reset(void *pmv)
         return;
 
     ds = export_dataset_get(pm->export_idx, pm->dataset_idx);
-    if (ds == NULL) {
+
+    /* No usable DSCB means no usable RECFM/LRECL/BLKSIZE either, and a zero
+       LRECL must never reach the record counters -- so leave the estimate
+       zeroed rather than seeding it with nonsense.  Nothing will read it:
+       blkcalc_admit_write() declines to run at all without a valid DSCB.
+       Config load drops such exports, so this is belt and braces. */
+    if (ds == NULL || !ds->dscb.valid) {
         memset(&pm->blkcalc, 0, sizeof(pm->blkcalc));
         return;
     }
