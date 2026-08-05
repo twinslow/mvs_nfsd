@@ -117,8 +117,13 @@ python run_tests.py --config config.json --probe-ftp
 It tries all four combinations against your first configured dataset and prints
 the ones that work, ready to paste into the `ftp` section of `config.json`.
 | `datasets.<key>` | `nfs_dir` (the directory under the mount = lower-cased dsname on dino-nfs), `dsname` (for FTP), `ext`, `recfm`, `lrecl`. |
+| `datasets.ro` | Optional. A dataset the **server** exports read-only — add it to the test export in `nfsd.conf` with the `ro` keyword, then give it this key. Used only by test 16, which skips when it is absent. Nothing writes to it, so an existing reference PDS is a fine choice. |
 | `options.large_lines` | Line count for "large" members (default 1500 ≈ 108 KB — exceeds the server's in-memory/spill threshold, exercising the spill path). |
 | `options.mtime_tolerance_sec` | Slack when checking a set mtime (120 on MVS to absorb ISPF minute/second granularity; a *large* miss usually means a server timezone problem). |
+| `options.readdir_members` | Members created by test 14.3 (default 40). At ~196 bytes per entry on the wire this fits in ONE reply for any normal `maxcount`, so 14.3 checks listing integrity rather than paging — use 14.5 for paging. Each extra member costs one small write. *Measured:* the Windows client asks for `maxcount` 8192, giving ~41 entries per page, so 40 sits one entry inside a single reply. Raising it past that would page on **this** client but not on one using a 32 KB budget (~167 entries), which is why paging is 14.5's job and not this test's. |
+| `options.readdir_big_dir` | Directory **under the mount** with hundreds of entries, used by 14.5 to exercise multi-page READDIRPLUS for free (e.g. `"sys1.samplib"`). It must be inside the *mounted* export — a PDS exported under a different path is not reachable. Unset ⇒ 14.5 falls back to the largest configured dataset, and skips if none is big enough. |
+| `options.readdir_big_min` | Entries a directory needs before 14.5 will use it (default 60). Below this it cannot span a page, so the test skips rather than passing vacuously. |
+| `options.pool_members` | Members test 21 writes back-to-back to force pending-pool eviction (default 16 = 2 × the server's `PWW_MAX_PENDING`). Raise it if that constant grows. |
 
 The harness understands these dataset **keys**: `fb`, `vb` (primary FB/VB text
 datasets), `fb2`, `vb2` (rename/copy targets), and `small` (the tiny full-dataset
@@ -170,6 +175,26 @@ Numbers match `--section`. "MVS-only" tests skip automatically in `plain` mode.
 | 10 | unzip_to_multiple | Extract a zip whose entry paths route members into several datasets. |
 | 11 | zip_from_dataset | Read a dataset's members via NFS into a zip; verify the archive. |
 | 12 | zip_from_multiple | Same, spanning several datasets. |
+| 13.1 | truncate_shrink | `truncate()` a stowed member down to a line boundary; assert the tail is gone. |
+| 13.2 | truncate_to_zero | Truncate to 0; assert the member survives as an empty one, not deleted and not stale. |
+| 13.3 | preallocate_then_write | CREATE → `SETATTR(size)` → WRITE, the sequence a Linux client actually uses; assert the member holds the data, not the zero-fill. |
+| 14.1 | listing_reflects_changes | A create, a rename and a delete each reach the directory listing. |
+| 14.2 | listing_matches_backend | The NFS listing equals the real PDS member list (cross-checked out-of-band). |
+| 14.3 | listing_large_directory | A directory needing several READDIR pages: no duplicates, nothing missing, and it terminates. |
+| 14.4 | root_listing | The export root lists every configured dataset directory. |
+| 14.5 | listing_pages | List a directory large enough to span several READDIRPLUS replies: no duplicates, reproducible, and every name stat-able. Skipped unless such a directory is reachable. |
+| 15 | long_line_wrap | Lines longer than the record length must WRAP into whole records, not truncate. |
+| 16 | readonly_dataset | A `ro` dataset serves reads and listings but refuses create, overwrite and delete; content unchanged. Skipped unless a `ro` dataset is configured. |
+| 17.1 | mkdir_not_supported | MKDIR inside a PDS and at the export root must both fail. |
+| 17.2 | symlink_not_supported | SYMLINK must fail. Skipped on Windows (client refuses locally, so the server is never asked). |
+| 17.3 | hardlink_not_supported | LINK must fail. |
+| 18 | invalid_member_names *(MVS-only)* | Names over 8 chars, starting with a digit, or holding an invalid character are refused — not truncated into a collision. Includes a valid-name control. |
+| 19.1 | stat_size_matches_content | `st_size` equals the bytes a read actually returns, small and large (spilled). |
+| 19.2 | stat_size_while_pending | Same, for a member still buffered in the write pool — stat and read are both served from the pool and must agree. |
+| 20 | concurrent_same_member | Four threads write one member at once (identical content); the member must stay coherent. Does **not** cover the SPFEDIT → `EACCES` path — see the note below. |
+| 21 | pool_eviction | Write twice `PWW_MAX_PENDING` members back-to-back so the pool must evict and reuse slots; every member's content must survive. |
+| 22.1 | delete_pending_new | Delete a member that was never stowed; it must not be resurrected by the queued flush. |
+| 22.2 | delete_pending_rewrite | Delete a member that exists on disk and is mid-rewrite; likewise. |
 
 ---
 
@@ -191,8 +216,20 @@ with `\n` line endings (even on Windows) so the server sees clean record breaks.
   reads back through the same mount; that proves the operations and the harness
   work, which is the point of the plain mode ("testable and can pass on a
   standard server"), but it is not an independent oracle.
-- **MVS-only tests** (`1.3`, `1.5`) assert behaviour only a real PDS shows (a
-  finite dataset; member-name validation), so they skip on a plain server.
+- **MVS-only tests** (`1.3`, `1.5`, `18`) assert behaviour only a real PDS shows
+  (a finite dataset; member-name validation), so they skip on a plain server.
+- **The SPFEDIT → `EACCES` path is NOT covered, and cannot be from here.**
+  `pww_lock()` takes that enqueue once per *slot*, so a second NFS writer for
+  the same member finds the existing slot and shares it — no second enqueue and
+  no conflict, which is why test 20 asserts coherence rather than a refusal.
+  `EACCES` fires only when something *outside* the server holds the member.
+  To check it by hand: open a member in ISPF edit, then try to write that
+  member over NFS — the write must fail rather than wait or corrupt anything.
+- **Tests that skip until configured.** `14.5` needs `options.readdir_big_dir`
+  (a large directory under the mount), `16` needs a `datasets.ro` entry backed
+  by a `ro` export, and `17.2` skips on Windows because the client refuses
+  symlink creation locally, so the server is never asked. Each reports the
+  reason rather than passing vacuously.
 - **`update_stats` and timezones.** dino-nfs stores mtime in ISPF stats (local
   time, corrected to UTC). A set-then-read that is off by *hours* points at a
   server TZ misconfiguration; the `mtime_tolerance_sec` slack only absorbs

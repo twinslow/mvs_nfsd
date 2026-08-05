@@ -202,6 +202,39 @@ class Context(object):
                 return False
             time.sleep(0.5)
 
+    def list_dir(self, key):
+        """Member file names the NFS client sees in the dataset's directory.
+
+        LOWER-CASED, because that is what the server emits: generate_file_name()
+        in mvsvfs.c lower-cases the PDS member name and appends the (lower-case)
+        file extension, so member SMALL lists as 'small.txt' while
+        ctx.filename() -- which builds paths for open() -- yields 'SMALL.txt'.
+        Comparing either against the other without folding case fails on every
+        entry."""
+        return sorted(n.lower() for n in os.listdir(str(self.pds_dir(key))))
+
+    def wait_listed(self, key, name, want=True):
+        """Poll the NFS directory listing until 'name' is (or is not) present.
+
+        Distinct from wait_visible(), which judges by OPENING the member: a
+        member still pending in the write pool is readable but is NOT yet in
+        the PDS directory, so it opens fine and does not list.  Directory
+        changes also reach the client late by design -- the server re-reads a
+        directory it did not change itself only on a throttled schedule
+        (DIR_REFRESH_THROTTLE_SECS), and the client caches the listing on top
+        of that.  Returns True if the listing reached the wanted state."""
+        end  = self._deadline()
+        want_name = self.filename(key, name).lower()
+        while True:
+            try:
+                if (want_name in self.list_dir(key)) == want:
+                    return True
+            except OSError:
+                pass
+            if time.time() >= end:
+                return False
+            time.sleep(1.0)
+
     def read_member(self, key, name):
         """Read a member over NFS.
 
