@@ -175,7 +175,7 @@ Numbers match `--section`. "MVS-only" tests skip automatically in `plain` mode.
 | 10 | unzip_to_multiple | Extract a zip whose entry paths route members into several datasets. |
 | 11 | zip_from_dataset | Read a dataset's members via NFS into a zip; verify the archive. |
 | 12 | zip_from_multiple | Same, spanning several datasets. |
-| 13.1 | truncate_stowed_refused | Resizing a member that is already stowed must FAIL (`NFS3ERR_IO`) rather than silently do nothing — and must leave the member untouched. |
+| 13.1 | truncate_stowed_no_silent_lie | Shrinking a stowed member must either succeed **and** shorten it, or fail **and** leave it alone — never report success while keeping the old content. Asserts the invariant, not the mechanism: Linux sends `SETATTR(size)` (refused, `NFS3ERR_IO`), Windows re-writes through the WRITE path (succeeds). |
 | 13.2 | truncate_to_zero | Truncate to 0; assert the member survives as an empty one, not deleted and not stale. |
 | 13.3 | preallocate_then_write | CREATE → `SETATTR(size)` → WRITE, the sequence a Linux client actually uses; assert the member holds the data, not the zero-fill. |
 | 13.4 | truncate_pending | Shrink a member still buffered in the write pool — the path that *is* supported. Accepts shortened (slot live) or unchanged (slot already flushed), but never half-applied. |

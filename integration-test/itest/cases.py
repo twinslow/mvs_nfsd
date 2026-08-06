@@ -663,29 +663,32 @@ def _byte_len(text):
     return len(text.encode("latin-1"))
 
 
-@testcase("13.1", "truncate_stowed_refused")
-def truncate_stowed_refused(ctx):
-    """Resizing a member that is already STOWED must FAIL, not lie.
+@testcase("13.1", "truncate_stowed_no_silent_lie")
+def truncate_stowed_no_silent_lie(ctx):
+    """Shrinking a STOWED member: succeed and shorten it, or fail and leave
+    it alone.  What must never happen is success with nothing changed.
 
-    Rewriting a member on disk is not something this server does, and it
-    used to accept the request silently and change nothing -- telling the
-    client the file was now N bytes while the next read returned the old,
-    longer content.  It is now refused with EIO -> NFS3ERR_IO, matching the
-    answer a random write at a non-zero offset already gets.
+    Asserting the INVARIANT rather than the mechanism, because os.truncate()
+    does not map to one server operation:
 
-    Two things are asserted, and the second matters as much as the first: it
-    fails, AND the member is untouched.  A refusal that still damaged the
-    member would be the worst of both.
+      * Linux sends a bare SETATTR(size).  With no pending slot the server
+        cannot rewrite the member on disk, so it refuses -- EIO ->
+        NFS3ERR_IO, matching a random write at a non-zero offset.
+      * Windows re-writes the file through the ordinary WRITE path instead,
+        which the server fully supports, so it succeeds and the member
+        really is shorter.
 
-    The SAME-SIZE case is deliberately NOT an error and is covered below:
-    clients routinely confirm the size after writing, and once the idle
-    sweep has released the slot that trailing SETATTR arrives on this very
-    path."""
+    Both are correct.  Earlier versions of this test asserted one mechanism
+    or the other and so failed on whichever platform it was not written
+    against -- twice.  The thing worth protecting is neither: it is that the
+    server never reports success while silently keeping the old, longer
+    content, which is what it used to do."""
     for key in _text_keys(ctx):
         name  = "TRUNCSH"
         full  = _alt_text(ctx, key, 12, "TSHRINK")
         lines = full.split("\n")[:-1]
-        shorter = _byte_len("\n".join(lines[:5]) + "\n")
+        keep    = "\n".join(lines[:5]) + "\n"
+        shorter = _byte_len(keep)
 
         ctx.reset(key, name)
         ctx.write_member(key, name, full)
@@ -694,13 +697,13 @@ def truncate_stowed_refused(ctx):
         try:
             os.truncate(str(ctx.member_path(key, name)), shorter)
         except OSError:
-            ctx.verify_member(key, name, full, updated=True)   # unchanged
+            # Refused.  The member must be untouched -- a refusal that still
+            # damaged it would be the worst of both outcomes.
+            ctx.verify_member(key, name, full, updated=True)
             continue
-        raise AssertionError(
-            "%s(%s): resizing a stowed member SUCCEEDED; it must be refused"
-            " rather than silently ignored -- the client would be told the"
-            " member is %d bytes while a read still returns the original"
-            % (ctx.ds(key)["nfs_dir"], name, shorter))
+
+        # Accepted.  Then it has to be TRUE: the member really is shorter.
+        ctx.verify_member(key, name, keep, updated=True)
 
 
 @testcase("13.5", "truncate_same_size_ok")
