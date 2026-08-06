@@ -470,7 +470,7 @@ STC02347's dump carries the usual signature exactly: `ILC 2 / INTC 0001`
 `809BCD10` (the same value in every dump taken), `TCBS = 1`. The eight words
 around the lock word are byte-identical to STC02317's and STC02322's.
 
-### Reporting it to JCC
+### For the record — a small reproduction was not found
 
 **The obvious minimal case does NOT reproduce it.** `jcl/t#wrfull` does exactly
 this and the task does not hang:
@@ -513,24 +513,46 @@ to see whether a probe hangs.
 rather than a cause. It is used here as a signal to aim at, not as a
 mechanism.)
 
-The differences between `t#wrfull` and the NFSD flush path, most structural
-first:
+The differences between `t#wrfull` and the NFSD flush path were, most
+structural first:
 
-1. **How the member is opened.** NFSD never opens by DSN. `pww_lock`
-   dynamically allocates `DSN(member)` with SVC 99, and the flush then opens
-   the existing DD by ddname -- `fopen("//DDN:SYS00002", "wt")`
-   (`mvspwfl.c`). `//DSN:` makes the C library do its own allocation;
-   `//DDN:` does not. Different path through the runtime's open logic.
-2. **The same PDS was opened for a directory read moments before.** In
-   STC02347 the flush is preceded by
-   `mvs_open_pds_dir ... mode "rb,klen=0,...,recfm=u,force"` on the same
-   dataset, opened and closed through an entirely different DCB.
-3. **An exclusive SPFEDIT ENQ is held** on the member throughout.
+1. ~~**How the member is opened.**~~ **TESTED, does NOT reproduce.** NFSD never
+   opens by DSN: `pww_lock` allocates `DSN(member)` with SVC 99 and the flush
+   opens the existing DD by ddname, `fopen("//DDN:SYS00002", "wt")`
+   (`mvspwfl.c`). `t#wrfull` was changed to do the same and the task still did
+   not hang. The open path is not the missing ingredient.
+2. ~~**The same PDS was opened for a directory read moments before.**~~
+   **TESTED, does NOT reproduce.** `t#wrfull` was given the same
+   `mvs_open_pds_dir`-style read by DSN (`recfm=u,force`, blocks walked,
+   closed) between the SVC 99 allocation and the `//DDN:` open, outside the
+   STAE exactly as `pdsflush_slot` has it. Still no hang. So the
+   double-allocated state is not the missing ingredient either.
+3. **An exclusive SPFEDIT ENQ is held** on the member throughout. Untested,
+   and now the only difference left that anyone has identified.
 
-Bisecting those against `t#wrfull` is the route to a small reproduction.
-Until then the reportable case is the server-level one, which is
-deterministic and single-variable (STC02346 vs STC02347 above), with a dump
-for each side.
+There is also a measurable difference nobody has explained (see the EOV table
+above): the server's empty-member case drives EOV **once**, while
+`t#wrfull`'s drives it **twice** — and one E37 is what every hang has in
+common. Whatever ingredient is missing, its signature is that count.
+
+**CLOSED 2026-08-05. Do not resume this on reasoning alone.**
+
+Two plausible, well-argued hypotheses were built from a careful reading of
+the server path -- the `//DDN:` open and the preceding directory read -- and
+BOTH were tested and BOTH failed to reproduce anything. The remaining
+candidates are of the same kind, and the record above is now mostly a list of
+intelligent guesses that turned out to be wrong.
+
+JCC has no effective support channel either, so a small reproduction has no
+destination beyond this file.
+
+Resume only on **new concrete information**: a hang whose log or dump shows
+something not already recorded here, or a change in the failure's behaviour.
+Not on a new theory about what `t#wrfull` might be missing.
+
+The practical position never depended on finding the small case: the space
+prediction (doc/design_pds_full_prediction.md) stops the abend happening at
+all, and no abend means no exposure.
 
 Added 2026-08-03, and it **supersedes Theories B and D**, both of which turn
 out to have been measuring this variable indirectly.

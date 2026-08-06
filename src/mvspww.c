@@ -1,8 +1,8 @@
 /*
  * mvspww.c - Pending-member write pool (PDS member Write).
  *
- * See mvspww.h and doc/design_nfs_write.md.  Phase 1: in-memory buffers
- * only, per-member cap PWW_MAX_MEMBER_BYTES, pool of PWW_MAX_PENDING.
+ * See mvspww.h and doc/design_nfs_write.md.
+ * Per-member size cap PWW_MAX_MEMBER_BYTES, pool of PWW_MAX_PENDING.
  *
  * JCC C89 compliance: declarations precede statements; block comments only.
  */
@@ -706,15 +706,16 @@ static void pww_record_write_gap(pending_member_t *pm)
     pm->nwrites++;
 }
 
-/* Place count bytes of data at offset in the member's content, and advance
-   its logical size.  The mirror of pww_read_range(): between them they are
-   the only two places that care whether a member is backed by memory or by
-   the spill dataset, so nothing else has to.
+/* ==================================================================== */
+/* Flush machinery -- write the buffered member to the PDS and STOW it   */
+/* ==================================================================== */
 
-   In memory while the member stays under the spill threshold; once it (or
-   this write) would exceed it, the member moves to a temp dataset and stays
-   there.  Either way memory use per pending member is bounded by the
-   threshold.  Returns 0, or -1 with errno set. */
+/* -------------------------------------------------------------------- */
+/* Store the specified data into the slot's memory buffer, or the       */
+/* spill file if one is in use.                                         */
+/*                                                                      */
+/* Returns 0, or -1 with errno set.                                     */
+/* -------------------------------------------------------------------- */
 static int pww_store_range(pending_member_t *pm, uint64_t offset,
                            const uint8_t *data, uint32_t count)
 {
@@ -748,13 +749,12 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
     return 0;
 }
 
-/* ==================================================================== */
-/* Flush machinery -- write the buffered member to the PDS and STOW it   */
-/* ==================================================================== */
-
-/* Read len bytes at off from a pending member's content into dst, from the
-   in-memory buffer or the spill dataset -- the single accessor the flush and
-   vfs_pread both use so neither cares where the member is backed. */
+/* -------------------------------------------------------------------- */
+/* Read the specified range from the slot's memory buffer, or the       */
+/* spill file if one is in use.                                         */
+/*                                                                      */
+/* Returns 0, or -1 with errno set.                                     */
+/* -------------------------------------------------------------------- */
 int pww_read_range(pending_member_t *pm, uint32_t off,
                    uint8_t *dst, uint32_t len)
 {
@@ -935,9 +935,16 @@ int pww_truncate(int export_idx, int dataset_idx,
     if (pm == NULL) {
         /* No pending member.  A truncate-to-empty (the O_TRUNC case) starts a
            fresh empty member so COMMIT replaces the on-disk member with the
-           new content.  A truncate to a non-zero size of an on-disk-only
-           member is not supported in Phase 1; accept it as a no-op so the
-           client is not blocked (see doc/design_nfs_write.md). */
+           new content.
+
+           A truncate to a NON-ZERO size of an on-disk-only member would mean
+           rewriting the member on disk, which this server does not do.  It
+           is refused one level up, in vfs_truncate(), which has the member's
+           real size to hand and so can tell a genuine resize from the
+           trailing SETATTR(size) clients send after a write -- the latter
+           asks for no change and must stay a no-op.  Reaching here with a
+           non-zero size therefore means "size already matches"; do nothing,
+           and in particular do not create a slot. */
         if (size != 0)
             return 0;
         pm = pww_slot_new(export_idx, dataset_idx, dsname_ebcdic, member_name);

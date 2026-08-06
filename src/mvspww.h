@@ -171,10 +171,10 @@ int  pww_truncate(int export_idx, int dataset_idx,
  * (not-yet-stowed) member is visible with its current size. */
 pending_member_t *pww_find(const char *dsname_ebcdic, const char *member_name);
 
-/* Read len bytes at off from a pending member's content -- from its in-memory
- * buffer, or transparently from the spill dataset once spilled.  off+len must
- * be <= high_water.  Returns 0, or -1 on a spill read error (errno set).  Lets
- * vfs_pread serve a not-yet-stowed member regardless of where it is backed. */
+/* Read the specified range from the slot's memory buffer, or the       */
+/* spill file if one is in use.                                         */
+/*                                                                      */
+/* Returns 0, or -1 with errno set.                                     */
 int  pww_read_range(pending_member_t *pm, uint32_t off,
                     uint8_t *dst, uint32_t len);
 

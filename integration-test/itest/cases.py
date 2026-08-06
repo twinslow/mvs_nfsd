@@ -663,26 +663,115 @@ def _byte_len(text):
     return len(text.encode("latin-1"))
 
 
-@testcase("13.1", "truncate_shrink")
-def truncate_shrink(ctx):
-    """Shrink a stowed member to a line boundary; the tail must be gone.
+@testcase("13.1", "truncate_stowed_refused")
+def truncate_stowed_refused(ctx):
+    """Resizing a member that is already STOWED must FAIL, not lie.
 
-    Truncating at a LINE boundary rather than an arbitrary offset keeps the
-    expectation exact: a cut mid-record would leave a partial line whose
-    read-back depends on RECFM padding, which is a different question from
-    'does SETATTR(size) shorten the member'."""
+    Rewriting a member on disk is not something this server does, and it
+    used to accept the request silently and change nothing -- telling the
+    client the file was now N bytes while the next read returned the old,
+    longer content.  It is now refused with EIO -> NFS3ERR_IO, matching the
+    answer a random write at a non-zero offset already gets.
+
+    Two things are asserted, and the second matters as much as the first: it
+    fails, AND the member is untouched.  A refusal that still damaged the
+    member would be the worst of both.
+
+    The SAME-SIZE case is deliberately NOT an error and is covered below:
+    clients routinely confirm the size after writing, and once the idle
+    sweep has released the slot that trailing SETATTR arrives on this very
+    path."""
     for key in _text_keys(ctx):
         name  = "TRUNCSH"
         full  = _alt_text(ctx, key, 12, "TSHRINK")
         lines = full.split("\n")[:-1]
-        keep  = "\n".join(lines[:5]) + "\n"
+        shorter = _byte_len("\n".join(lines[:5]) + "\n")
 
         ctx.reset(key, name)
         ctx.write_member(key, name, full)
-        ctx.verify_now(key, name, full)
+        ctx.verify_now(key, name, full)      # stows it, releasing the slot
 
-        os.truncate(str(ctx.member_path(key, name)), _byte_len(keep))
-        ctx.verify_member(key, name, keep, updated=True)
+        try:
+            os.truncate(str(ctx.member_path(key, name)), shorter)
+        except OSError:
+            ctx.verify_member(key, name, full, updated=True)   # unchanged
+            continue
+        raise AssertionError(
+            "%s(%s): resizing a stowed member SUCCEEDED; it must be refused"
+            " rather than silently ignored -- the client would be told the"
+            " member is %d bytes while a read still returns the original"
+            % (ctx.ds(key)["nfs_dir"], name, shorter))
+
+
+@testcase("13.5", "truncate_same_size_ok")
+def truncate_same_size_ok(ctx):
+    """SETATTR(size) to the size the member ALREADY has must succeed.
+
+    This is not a corner case: it is part of the normal write sequence --
+    Windows sends WRITE -> COMMIT -> SETATTR -> COMMIT -- and when the idle
+    sweep has already released the slot that trailing SETATTR lands on the
+    same path 13.1 exercises.  Refusing it there would break ordinary writes
+    at random, depending on whether the sweep got in first.
+
+    Guards the exemption that makes 13.1's refusal safe."""
+    keys = _text_keys(ctx)
+    key  = keys[0] if keys else "fb"
+    _have(ctx, key)
+    name = "TRUNCSM"
+    text = _alt_text(ctx, key, 10, "TSAME")
+
+    ctx.reset(key, name)
+    ctx.write_member(key, name, text)
+    ctx.verify_now(key, name, text)          # stows it, releasing the slot
+
+    size = os.stat(str(ctx.member_path(key, name))).st_size
+    try:
+        os.truncate(str(ctx.member_path(key, name)), size)
+    except OSError as e:
+        raise AssertionError(
+            "%s(%s): SETATTR to the member's CURRENT size (%d) was refused"
+            " (%s).  Clients send this after every write, so it has to be"
+            " accepted as the no-op it is"
+            % (ctx.ds(key)["nfs_dir"], name, size, e))
+
+    ctx.verify_member(key, name, text, updated=True)
+
+
+@testcase("13.4", "truncate_pending")
+def truncate_pending(ctx):
+    """Shrink a member that is still PENDING -- the path that IS supported.
+
+    With a slot in the pool, pww_truncate() adjusts the buffered content to
+    exactly 'size'.  Whether the slot still exists when the SETATTR lands is
+    a race against the idle sweep, so BOTH outcomes are accepted: shortened
+    (the slot was there) or unchanged (it had been flushed and released, so
+    13.1's no-op applies).  What is NOT accepted is anything else -- a
+    partial line or mixed content means the truncate was half-applied."""
+    keys = _text_keys(ctx)
+    key  = keys[0] if keys else "fb"
+    _have(ctx, key)
+    name  = "TRUNCPD"
+    full  = _alt_text(ctx, key, 12, "TPEND")
+    lines = full.split("\n")[:-1]
+    keep  = "\n".join(lines[:5]) + "\n"
+
+    ctx.reset(key, name)
+    ctx.track(key, name)
+    ctx.write_member(key, name, full, track=False)
+    os.truncate(str(ctx.member_path(key, name)), _byte_len(keep))
+
+    ctx.settle()                                # let the slot be released
+    ctx.check(ctx.wait_exists(key, name, True),
+              "%s(%s): member never reached the PDS after the truncate"
+              % (ctx.ds(key)["nfs_dir"], name))
+    got = ctx.backend.fetch(ctx, key, name)
+    if textutil.text_equal(keep, got):
+        return                                  # applied: the slot was live
+    ctx.check(textutil.text_equal(full, got),
+              "%s(%s): after truncating a pending member the content is"
+              " neither shortened nor untouched -- it was half applied. %s"
+              % (ctx.ds(key)["nfs_dir"], name,
+                 textutil.diff_summary(keep, got)))
 
 
 @testcase("13.2", "truncate_to_zero")

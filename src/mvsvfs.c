@@ -837,6 +837,40 @@ int vfs_truncate(const char *path, uint64_t size)
         return -1;
     }
 
+    /*
+     * Resizing a member that is ALREADY STOWED, with nothing buffered for
+     * it, would mean rewriting it on disk -- which this server does not do.
+     * pww_truncate() used to accept that silently and change nothing, which
+     * lies to the client: it is told the file is now N bytes while the next
+     * read still returns the old, longer content.  Report it instead, with
+     * the same EIO -> NFS3ERR_IO a random write at a non-zero offset already
+     * gets (mvspww.c), so the two unsupported shapes answer alike.
+     *
+     * THE SIZE TEST IS NOT OPTIONAL.  Clients confirm the size after writing
+     * -- Windows sends WRITE -> COMMIT -> SETATTR -> COMMIT -- and once the
+     * idle sweep has released the slot that trailing SETATTR arrives HERE.
+     * Failing it would break ordinary writes at random, depending on whether
+     * the sweep happened to get there first.  A SETATTR to the size the
+     * member already has asks for no change, so it is answered as the no-op
+     * it is (the pending-slot path does the same, see pww_truncate).
+     */
+    if (size != 0 && pww_find(pds_dsname, pds_member_name) == NULL) {
+        vfs_stat_t st;
+
+        if (vfs_stat(path, &st) < 0)
+            return -1;               /* errno from vfs_stat, e.g. ENOENT */
+        if (st.size == size)
+            return 0;                /* already that size: nothing to do */
+
+        logmsg_warn("NFSVF410W", "vfs_truncate: %s(%s) resize %lu -> %lu"
+                    " refused -- the member is already stowed and rewriting"
+                    " it is not supported",
+                    pds_dsname, pds_member_name,
+                    (unsigned long)st.size, (unsigned long)size);
+        errno = EIO;                 /* -> NFS3ERR_IO */
+        return -1;
+    }
+
     return pww_truncate(export_idx, dataset_idx, pds_dsname, pds_member_name,
                         (uint32_t)size);
 }

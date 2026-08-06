@@ -52,7 +52,52 @@ void write_to_member(const char *out_file_name, int line_cnt) {
     fclose(ofh);
 }
 
-int protected_write (const char *pds_name, const char *member_name, int line_cnt)
+int dir_read(const char *pds_name) {
+
+    /* Read the PDS directory by DSN before writing the member.     */
+    /* pdsflush_slot() does exactly this, via                       */
+    /* mvs_pds_get_member_entry(), between the SVC 99 allocation    */
+    /* and the //DDN: open for output.                              */
+    /*                                                              */
+    /* It matters because it leaves the dataset allocated TWICE at  */
+    /* the same time: our own SVC 99 allocation, plus the one the   */
+    /* C library makes for this //DSN: open.  That is the state the */
+    /* server is always in at the moment of the abend, and the one  */
+    /* this program has never been in.                              */
+    /*                                                              */
+    /* OUTSIDE the STAE, because the server's directory read is     */
+    /* outside its own -- only the write is guarded.                */
+    /*                                                              */
+    /* SUCCESS SIGNAL: one IEC032I E37-04, not two.  Every hang so  */
+    /* far has had exactly one; this program has always had two.    */
+    {
+        FILE *dfh;
+        char  dsn[60];
+        char  blk[256];
+        int   len;
+
+        sprintf(dsn, "//DSN:%s", pds_name);
+        dfh = fopen(dsn,
+            "rb,klen=0,lrecl=256,blksize=256,recfm=u,force");
+        sprintf(g_wto, "dir read %s, dfh = 0x%08x", dsn, dfh);
+        _write2op(g_wto);
+        if (dfh != NULL) {
+            /* Walk it, as mvs_read_pds_dir does -- opening alone   */
+            /* may not put the dataset in the same state.           */
+            while (len = fread(blk, 1, sizeof(blk), dfh) == sizeof(blk)) {
+                sprintf(g_wto, "   Dir read ... len = %d", len);
+                _write2op(g_wto);
+            }
+            fclose(dfh);
+            _write2op("dir read closed");
+        }
+    }
+
+
+}
+
+int protected_write (const char *pds_name, const char *member_name,
+                     int line_cnt)
 {
     long  * a; // To cause an abend
     long    rc;
@@ -69,7 +114,8 @@ int protected_write (const char *pds_name, const char *member_name, int line_cnt
     char fn_buff[60];
     char wto[120];
 
-    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0, pds_name, member_name, ddname);
+    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_ALLOC, 0,
+                      pds_name, member_name, ddname);
     sprintf(wto, "mvs_dynalloc returned rc = %d", rc);
     _write2op(wto);
     if ( rc != 0 )
@@ -86,6 +132,8 @@ int protected_write (const char *pds_name, const char *member_name, int line_cnt
 
     sprintf(g_wto, "_setjmp_stae() rc = %d", rc);
     _write2op(g_wto);
+
+    dir_read(pds_name);
 
     switch(rc) {
         case 0:
@@ -125,7 +173,8 @@ int protected_write (const char *pds_name, const char *member_name, int line_cnt
             break;
     }
 
-    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0, pds_name, member_name, NULL);
+    rc = mvs_dynalloc(MVS_DYNALLOC_REQ_UNALLOC, 0,
+                      pds_name, member_name, NULL);
     sprintf(wto,
         "mvs_dynalloc UNALLOC %s, rc = %d",
         ddname, rc);
@@ -143,19 +192,24 @@ int main(int argc, char **argv) {
     int        i, len;
 
     _write2op("About to call #1 protected_write() to FBSMALL");
-    rc = protected_write("TEMP.ITEST.FBSMALL", "XXX", 0);
+    rc = protected_write("TEMP.ITEST.FBSMALL", "XXX", 1);
     sprintf(buff, "Return from protected_write() rc = %d", rc);
     _write2op(buff);
 
+    dir_read("TEMP.ITEST.FBSMALL");
+
     _write2op("About to call #2 protected_write(YYY) to FBSMALL");
-    protected_write("TEMP.ITEST.FBSMALL", "YYY", 1);
+    protected_write("TEMP.ITEST.FBSMALL", "YYY", 50);
     _write2op("Returned from protected_write() #2");
+
+    dir_read("TEMP.ITEST.FBSMALL");
 
     _write2op("About to call #3 write_to_member(ZZZ) to FB");
     write_to_member("//DSN:TEMP.ITEST.FB(ZZZ)", 1);
     _write2op("Returned from write_to_member() #3");
 
-    return rc;
+    dir_read("TEMP.ITEST.FB");
+    return 100 + rc;
 }
 
 @@
