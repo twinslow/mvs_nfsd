@@ -10,6 +10,12 @@
 /* -------------------------------------------------------------------- */
 
 #define MVSPDIR_MLIST_INITIAL_SIZE      40
+
+/* NO LONGER USED.  mvspdir_mlist_expand() DOUBLES the capacity instead of
+   adding a fixed increment: linear growth fragmented the C heap badly
+   enough to make the region ratchet upwards (see the note in that
+   function).  Kept only so an out-of-tree caller does not fail to compile;
+   delete once nothing references it. */
 #define MVSPDIR_MLIST_INCREMENT_SIZE    40
 
 typedef struct {

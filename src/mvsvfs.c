@@ -1175,7 +1175,18 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
                 ds->dsname_ebcdic, dir_entry->member_list.number_in_list);
             return dir_entry;
         }
-        /* Partial cache: re-open file handle and reset for fresh read  */
+        /* Partial cache: re-open file handle and reset for fresh read.
+           Close any handle still held first -- opening straight into
+           pds_fh would overwrite it, losing the FILE and the DCB and
+           allocation behind it.  It is normally NULL (vfs_closedir closed
+           it), but that is nfs3.c's invariant, not one this function can
+           see, so do not rely on it. */
+        if (dir_entry->pds_fh != NULL) {
+            logmsg_debug("NFSVF420D", "vfs_opendir: closing handle left open"
+                      " on %s before re-opening", ds->dsname_ebcdic);
+            mvs_close_pds_dir(dir_entry->pds_fh);
+            dir_entry->pds_fh = NULL;
+        }
         dir_entry->member_list.number_in_list = 0;
         dir_entry->end_of_dir_read            = 0;
         retcode = mvs_open_pds_dir(ds->dsname_ebcdic, export_idx, &dir_entry->pds_fh);

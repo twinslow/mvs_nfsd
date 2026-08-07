@@ -99,7 +99,8 @@ int mvspdir_mlist_init(pds_member_list_t *mlist)
 }
 
 /* -------------------------------------------------------------------- */
-/* Expand the list capacity by MVSPDIR_MLIST_INCREMENT_SIZE entries.    */
+/* Double the list capacity (see the note in the body on why not a fixed  */
+/* increment).                                                            */
 /* On failure the original list is left intact.                         */
 /* -------------------------------------------------------------------- */
 int mvspdir_mlist_expand(pds_member_list_t *mlist)
@@ -107,7 +108,23 @@ int mvspdir_mlist_expand(pds_member_list_t *mlist)
     int32_t             new_size;
     pds_member_entry_t *new_list;
 
-    new_size = mlist->list_size + MVSPDIR_MLIST_INCREMENT_SIZE;
+    /* DOUBLE rather than add a fixed increment.  Linear growth is what
+       fragments the C heap: every step frees a block of N bytes and asks for
+       N + increment, so the block just released is ALWAYS smaller than the
+       next request and can never satisfy it.  Reading a 900-member directory
+       took 22 reallocs that way -- 1920, 3840, 5760 ... 44160 bytes -- each
+       one orphaning a block no later request in the ladder could reuse.
+       When nothing on the free list fits, JCC GETMAINs another heap extent,
+       and it never gives one back, so the region ratchets upwards.
+
+       Doubling turns those 22 steps into 5 and makes the sizes repeat across
+       calls, so a freed block is usually exactly what the next directory
+       read wants.  It over-allocates by up to 2x at the peak, which is the
+       deliberate trade: a bigger high-water in exchange for far less
+       fragmentation.  pww_slot_ensure_cap() already grows this way. */
+    new_size = (mlist->list_size > 0)
+             ? mlist->list_size * 2
+             : MVSPDIR_MLIST_INITIAL_SIZE;
     new_list = (pds_member_entry_t *)realloc(mlist->list,
         (size_t)new_size * sizeof(pds_member_entry_t));
     if (new_list == NULL) {

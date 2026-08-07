@@ -33,6 +33,22 @@ static void dir_openlist_claim(vfs_dir_t *slot, time_t now)
 {
     pds_member_list_t saved;
 
+    /* Close any handle the previous owner still held.  The memset below
+       would otherwise just zero pds_fh, losing the FILE -- and with it a
+       DCB, its buffers and the dynamic allocation behind it, with nothing
+       left to close them by.
+       Normally NULL, because vfs_closedir() closes the handle at the end of
+       every readdir and this slot is only claimed between requests.  But
+       that invariant lives in nfs3.c, two modules away: one readdir error
+       path that skips vfs_closedir turns this into a leak per call.  The
+       check costs nothing and keeps the guarantee local. */
+    if (slot->pds_fh != NULL) {
+        logmsg_debug("NFSID530D", "dir_openlist_claim: closing a handle left"
+                  " open on %s", slot->pds_dsname_ebcdic);
+        mvs_close_pds_dir(slot->pds_fh);
+        slot->pds_fh = NULL;
+    }
+
     /* Preserve the member-list allocation across the memset reset. */
     saved = slot->member_list;
     memset(slot, 0, sizeof(vfs_dir_t));
