@@ -177,12 +177,12 @@ are needed:
 MVS source upload
 =================
 FTP target : localhost:2121
-FTP log    : /home/tony/dino_nfs/.mvs_upload_ftp.log
+FTP log    : /home/tony/mvs_nfsd/.mvs_upload_ftp.log
 Mode       : incremental
 Last run   : 2026-05-20 14:32:07
 Jobs       :
-  *.c      /home/tony/dino_nfs/src         -> /TONYW.NFSD.C (3 of 12 file(s) changed)
-  *.h      /home/tony/dino_nfs/src         -> /TONYW.NFSD.H (0 of 6 file(s) changed)
+  *.c      /home/tony/mvs_nfsd/src         -> /TONYW.NFSD.C (3 of 12 file(s) changed)
+  *.h      /home/tony/mvs_nfsd/src         -> /TONYW.NFSD.H (0 of 6 file(s) changed)
   ...
 Total      : 3 of 21 file(s) changed
 
@@ -277,11 +277,11 @@ either begin with a digit (response codes) or contain lowercase letters.
 MVS source download
 ===================
 FTP target       : localhost:2121
-FTP log          : /home/tony/dino_nfs/.mvs_download_ftp.log
+FTP log          : /home/tony/mvs_nfsd/.mvs_download_ftp.log
 C   PDS          : /TONYW.NFSD.C
 H   PDS          : /TONYW.NFSD.H
 JCL PDS          : /TONYW.NFSD.CNTL
-Destination      : /home/tony/dino_nfs/src
+Destination      : /home/tony/mvs_nfsd/src
 
 TSO userid : TONYW
 Password   :
@@ -300,7 +300,7 @@ Logged in as TONYW.
 ===================
 Download complete.
   Succeeded : 21 file(s)
-  Location  : /home/tony/dino_nfs/src
+  Location  : /home/tony/mvs_nfsd/src
 ```
 
 ---

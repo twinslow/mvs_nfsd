@@ -394,7 +394,7 @@ class Context(object):
         lines.append("    expected: " + textutil.hexdump_around(expected, off))
         lines.append("    fetched : " + textutil.hexdump_around(actual, off))
 
-        # MVS FTP reads the PDS member straight off disk, bypassing dino-nfs, so
+        # MVS FTP reads the PDS member straight off disk, bypassing MVS NFSD, so
         # a corrupt fetch already means the on-disk member is corrupt (the write
         # path).  Cross-read via NFS too -- if it ALSO differs the member is
         # definitely bad; if it matches, suspect the fetch/download path.  (NFS

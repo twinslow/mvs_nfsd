@@ -1,6 +1,6 @@
-# Contributing to dino_nfs
+# Contributing to mvs_nfsd
 
-Thanks for your interest in contributing! dino_nfs is a minimal NFSv3 server
+Thanks for your interest in contributing! mvs_nfsd is a minimal NFSv3 server
 for MVS 3.8J on the Hercules emulator. Contributions of all kinds are
 welcome — bug fixes, new NFS procedures, VFS features, tests, and docs.
 
@@ -102,7 +102,7 @@ git rebase --signoff main
 
 ## Code style
 
-dino_nfs targets the JCC C compiler on MVS 3.8J, so contributions to the
+mvs_nfsd targets the JCC C compiler on MVS 3.8J, so contributions to the
 C sources must stay **C89-compatible**:
 
 - All variable declarations precede executable statements within a block.

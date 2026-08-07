@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test _getdcb',
 //             CLASS=A,
 //             MSGCLASS=X,

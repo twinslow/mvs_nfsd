@@ -1,6 +1,6 @@
 # Unit Test Setup
 
-Unit tests for the dino-nfs project use the
+Unit tests for the MVS NFSD project use the
 [munit](https://github.com/nemequ/munit) C testing framework.  Tests run on
 Linux during development and on MVS via JCL for integration verification.
 
@@ -130,7 +130,7 @@ static void *setup_c_export(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
-    stub_add_export("/dinonfs/src", "TEMP.DINONFS.C", "c");
+    stub_add_export("/mvsnfsd/src", "TEMP.NFSD.C", "c");
     return NULL;   /* return value is passed as 'data' to the test */
 }
 ```

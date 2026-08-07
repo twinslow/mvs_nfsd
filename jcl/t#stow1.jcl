@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test BLDL/STOW',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,
@@ -10,16 +10,16 @@
 //* Get JES2 job id
 //*
 //********************************************************************
-//STOWTST EXEC ASMFCLG,PARM.ASM=(OBJ,NODECK),MAC1='SYS2.MACLIB',   
+//STOWTST EXEC ASMFCLG,PARM.ASM=(OBJ,NODECK),MAC1='SYS2.MACLIB',
 //             REGION.GO=128K,PARM.GO='TEMP'
-//ASM.SYSIN DD *                                                  
+//ASM.SYSIN DD *
          YREGS
 PDSUPDTE CSECT
          STM   R14,R12,12(R13)     SAVE REGISTERS IN CALLER'S AREA
          BALR  R12,0               ESTABLISH BASE REGISTER 12
          USING *,R12
          ST    R13,SAVEAREA+4      FORWARD CHAIN SAVEAREAS
-         LA    R11,SAVEAREA         
+         LA    R11,SAVEAREA
          ST    R11,8(,R13)         BACKWARD CHAIN SAVEAREAS
          LR    R13,R11             POINT TO OUR SAVEAREA
          ST    R1,PARMLIST         Save address of parm list
@@ -28,7 +28,7 @@ PDSUPDTE CSECT
 *
          BAL   R6,GETMEMBR         Get the member name from parm fld
          LTR   R15,R15
-         BNZ   ERR@NOPM  
+         BNZ   ERR@NOPM
 *
 *--- STEP 2: OPEN THE PDS VIA BPAM (REQUIRES DSORG=PO)
 *
@@ -36,7 +36,7 @@ PDSUPDTE CSECT
          TM    PDSDCB+48,X'10'     TEST IF OPEN WAS SUCCESSFUL
          BNO   ERR@OPEN            NO -> EXIT WITH OPEN ERROR
 *
-*--- STEP 3: ISSUE BLDL TO GET MEMBER METADATA                  
+*--- STEP 3: ISSUE BLDL TO GET MEMBER METADATA
 *
          BLDL  PDSDCB,BLDLLIST     LOOK UP EXISTING MEMBER STATS
          LTR   R15,R15             WAS MEMBER FOUND IN DIRECTORY?
@@ -46,11 +46,11 @@ PDSUPDTE CSECT
 *--- STEP 4: UPDATE THE ISPF METADATA IN THE USER DATA
 *
          BAL   R6,SETSTOWD         Setup STOW structure
-         LTR   R15,R15             Test for error  
+         LTR   R15,R15             Test for error
          BZ    DOFIND              No error, continue
          C     R15,=F'4'           Did we get rc 4 (no user data)
          BE    DOCLOSE             Continue on to close the PDS DCB
-         B     ERR@OTHR            Other error 
+         B     ERR@OTHR            Other error
 *
 *--- STEP 5: Issue a find with the TTRK value that came from BLDL
 *
@@ -62,7 +62,7 @@ DOFIND   DS    0H
 *--- STEP 6: Issue the STOW REPLACE
 *
          BAL   R6,EXSTOW
-         LTR   R15,R15             Error? 
+         LTR   R15,R15             Error?
          BNZ   ERR@STOW            Yes, Exit with STOW error
 *
 *--- STEP 7: CLOSE PDS AND TERMINATE PROGRAM
@@ -87,7 +87,7 @@ ERR@OTHR DS    0H
          LA    R15,12              RC=4: JCL MISSING PARM MEMBER NAME
          B     EXIT
 *
-ERR@OPEN DS    0H     
+ERR@OPEN DS    0H
          WTO   'Failed to open dataset/DCB'
          LA    R15,8               RC=8: FAILED TO OPEN DATASET
          B     EXIT
@@ -99,7 +99,7 @@ ERR@BLDL DS    0H
 *
 ERR@FIND DS    0H
          LR    R3,R15              Save return code
-         LR    R4,R0               Save reason code 
+         LR    R4,R0               Save reason code
          WTO   'FIND rejected/failed'
          MVC   WTOMSG,=CL30'FIND return code'
          MVC   WTOREG,=CL3'R15'
@@ -162,7 +162,7 @@ SETSTOWD DS    0H
 * THE USER DATA PORTION IN BLDL@USR STARTS AT OFFSET 12 OF THE ENTRY.
 * ISPF FORMAT IS:
 *   OFFSET +0 (1 BYTE):  VERSION (PACKED HEX OR BINARY)
-*   OFFSET +1 (1 BYTE):  MOD LEVEL 
+*   OFFSET +1 (1 BYTE):  MOD LEVEL
 *   OFFSET +4 (4 BYTES): CREATION DATE (00YYDDDF IN PACKED DECIMAL)
 *   OFFSET +8 (4 BYTES): MODIFICATION DATE (00YYDDDF IN PACKED DECIMAL)
 *   OFFSET +12(2 BYTES): MODIFICATION TIME (HHMM IN PACKED DECIMAL)
@@ -196,12 +196,12 @@ HASUD    SLL   R3,1                DOUBLE THE HW COUNT FOR BYTE COUNT
 *
 *
          WTO   'Aboutto copy directory entry user data'
-         EX    R3,EX@CPYUD         COPY USER DATA   
+         EX    R3,EX@CPYUD         COPY USER DATA
          WTO   'Copied directory entry user data'
-* 
+*
          MVI   STOW@USR+0,X'0F'    FORCE VERSION TO 15
          MVI   STOW@USR+1,X'10'    FORCE MODIFICATION LEVEL TO 16
-*                                                     (JULY 9, 2026) 
+*                                                     (JULY 9, 2026)
          MVC   STOW@USR+8(4),=X'0126190F'  MOD DATE: PACKED 2026/190
          MVC   STOW@USR+12(2),=X'1656'     MOD TIME: PACKED 1656
          MVC   STOW@USR+20(8),=CL8'TESTUSER' FORCE NEW USER ID
@@ -222,7 +222,7 @@ EXFIND   DS    0H
          LTR   R15,R15
          BZ    FINDOK
          LA    R15,8               Find error
-         BR    R6 
+         BR    R6
 *
 FINDOK   WTO   'FIND completed'
          BR    R6
@@ -230,7 +230,7 @@ FINDOK   WTO   'FIND completed'
 *---------------------------------------------------------------------*
 * Perform the STOW REPLACE                                            *
 *---------------------------------------------------------------------*
-EXSTOW   DS    0H          
+EXSTOW   DS    0H
 *
          MVC   WTOMSG,=CL30'XXXXXXXX member has UD len'
          MVC   WTOMSG(8),STOW@MEM
@@ -243,7 +243,7 @@ EXSTOW   DS    0H
          BZ    STOWOK              Yes, continue
          LA    R15,8               No, return with error
          BR    R6
-* 
+*
 STOWOK   DS    0H
          WTO   'STOW completed'
          BR    R6
@@ -271,7 +271,7 @@ DEBUGWTO DS    0H
 *--- EXECUTED INSTRUCTIONS & DATA STRUCTS
 *
 EX@MVC   MVC   MEMBER(0),2(R2)     EXTRACTS PARM FROM JCL STORAGE AREA
-EX@CPYUD MVC   STOW@USR(0),BLDL@USR COPIES USER DATA 
+EX@CPYUD MVC   STOW@USR(0),BLDL@USR COPIES USER DATA
 *
 PARMLIST DS    F
 SAVEAREA DC    18F'0'              STANDARD MVS REGISTER SAVE AREA
@@ -296,7 +296,7 @@ MEMBER   DC    CL8' '              TARGET MEMBER NAME STORE
 BLDLTTRK DS    0XL4                The TTRK value from BLDL, for FIND
 BLDL@TTR DC    XL3'00'             TRACK/RECORD POINTER (FROM BLDL)
 BLDL@K   DC    XL1'00'             CONCATENATION NUMBER
-BLDL@Z   DC    XL1'00'             SOURCE LIB... 0 = PRIVATE  
+BLDL@Z   DC    XL1'00'             SOURCE LIB... 0 = PRIVATE
 BLDL@FLG DC    XL1'00'             FLAGS BITMASK & USER DATA SIZE
 BLDL@USR DC    XL40'00'            ISPF USER DATA STORAGE SLOT
 *
@@ -304,10 +304,10 @@ BLDL@USR DC    XL40'00'            ISPF USER DATA STORAGE SLOT
 *
 STOWBUFF DS    0H
 STOW@MEM DS    CL8            Member name
-STOW@TTR DS    XL3            TTR of member 
+STOW@TTR DS    XL3            TTR of member
 STOW@UDL DS    XL1            This is user data len and entry type
 STOW@USR DS    XL40           User data, normally 15 halfwords
-*            
+*
 *--- BPAM DCB
 *
 PDSDCB   DCB   DDNAME=PDS,                                             X

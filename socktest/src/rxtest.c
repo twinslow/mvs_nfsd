@@ -4,7 +4,7 @@
  *
  * THE DEFECT
  * ----------
- * While developing an NFSv3 server (dino-nfs) we saw PDS members
+ * While developing an NFSv3 server (MVS NFSD) we saw PDS members
  * intermittently corrupted: a chunk of an inbound RPC message appeared in
  * the middle of the file data.  Instrumenting the receive path showed a
  * 636-byte message arriving in the buffer as
@@ -54,7 +54,7 @@
  * TWO RECEIVE STRATEGIES
  * ----------------------
  *   default   the ordinary loop -- recv() the whole remainder, advance by
- *             whatever it returns, repeat.  This is what dino-nfs does, and
+ *             whatever it returns, repeat.  This is what MVS NFSD does, and
  *             what every sockets tutorial teaches.
  *
  *   -f        ask ioctlsocket(FIONREAD) how many bytes are actually

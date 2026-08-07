@@ -1,4 +1,4 @@
-//TONYWN1 JOB (NFSD),'MAKE DINO-NFS',
+//TONYWN1 JOB (NFSD),'MAKE MVS NFSD',
 //      CLASS=A,MSGCLASS=X,MSGLEVEL=1,REGION=8M,
 //      COND=(0,LT),
 //      NOTIFY=TONYW
@@ -7,7 +7,7 @@
 //*
 //* NAME: MAKENFSD
 //*
-//* DESC: COMPILE AND LINK DINO NFSD, USING JCC COMPILER
+//* DESC: COMPILE AND LINK MVSNFSD NFSD, USING JCC COMPILER
 //*
 //* NOTE the lower case -o in the JCC compiler options. If this
 //* is upper case -O, then compiler outputs ASM source and not object

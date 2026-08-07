@@ -13,7 +13,7 @@ work — "option 3" — is being implemented separately; see
 > synthetic timestamp is a defect in itself), *not* as a fix for the delete
 > failure, whose cause remains unresolved.
 
-Author: design discussion, dino_nfs.
+Author: design discussion, mvs_nfsd.
 
 ## 1. Problem
 

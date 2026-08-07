@@ -30,7 +30,7 @@
 #   Add one line to the upload_jobs list in the Configuration section:
 #     [list <local-dir> <glob-pattern> <target-pds>]
 #   Example:
-#     [list [file join $script_dir jcl] "*.jcl" "/TEMP.DINONFS.CNTL"]
+#     [list [file join $script_dir jcl] "*.jcl" "/TEMP.NFSD.CNTL"]
 #
 # Member name derivation:
 #   The local filename extension is stripped, the result is uppercased,
@@ -268,7 +268,7 @@ proc upload_files {file_list} {
 #
 #   src_dir   - local directory to read files from
 #   glob_pat  - glob pattern selecting files (e.g. "*.c")
-#   pds       - MVS PDS FTP path to upload into (e.g. "/TEMP.DINONFS.C")
+#   pds       - MVS PDS FTP path to upload into (e.g. "/TEMP.NFSD.C")
 #
 # Handles the CD and reports the section header.  On a CD failure the
 # procedure returns an error count equal to the number of matched files

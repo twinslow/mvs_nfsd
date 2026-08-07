@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test membr write fb3',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,
@@ -31,7 +31,7 @@ char *create_file_content(int num_lines, int *file_mem_size) {
     linelen = strlen(buff);
 
     file_mem = malloc(num_lines * (linelen + 1));
-    buff_out = file_mem;  
+    buff_out = file_mem;
     for ( i = 1; i <= num_lines; i++ ) {
         buff_out += sprintf(buff_out, line_pattern, i);
     }
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     char      *wstart;
     int        wlen;
     int        max_write_size = 256;
-    int        remaining; 
+    int        remaining;
     char      *mode;
     fpos_t     write_fpos;
 
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     remaining = content_size;
 
     i = 0;
-    for ( wstart = file_content; 
+    for ( wstart = file_content;
           wstart < file_content + content_size; ) {
 
         wlen = remaining < max_write_size ? remaining : max_write_size;
@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
         i++;
         if ( i > 100 )
             break;
-    } 
+    }
 
 
 

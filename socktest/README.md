@@ -1,6 +1,6 @@
 # socktest — a minimal reproducer for a socket `recv()` defect on MVS 3.8J
 
-This directory is **self-contained and independent of dino-nfs**. Nothing here
+This directory is **self-contained and independent of MVS NFSD**. Nothing here
 knows about NFS, RPC or PDS members. It exists to demonstrate, in the smallest
 possible way, a defect in the socket receive path on MVS 3.8J under Hercules.
 
@@ -105,7 +105,7 @@ hundred means nothing.
 
 | Mode | Behaviour |
 |---|---|
-| default | The ordinary loop: `recv()` the remainder, advance by what it returns, repeat. What every sockets tutorial teaches, and what dino-nfs does. |
+| default | The ordinary loop: `recv()` the remainder, advance by what it returns, repeat. What every sockets tutorial teaches, and what MVS NFSD does. |
 | `-f` | Ask `ioctlsocket(FIONREAD)` how many bytes are actually available and never request more, so `recv()` should never need to return short. |
 
 Run both with identical sender settings. If the plain loop reports corruption

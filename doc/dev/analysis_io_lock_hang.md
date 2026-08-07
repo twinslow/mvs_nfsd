@@ -40,7 +40,7 @@ which contains a test (`1.3 upload_full_dataset`) that deliberately fills a
 small PDS. Filling the PDS causes `IEC032I E37-04` / `IEC217I B14-10` and the
 `SB14` abend that the flush path traps with `_setjmp_stae`.
 
-Server: dino_nfs on MVS 3.8J under Hercules, single-threaded, one TCB.
+Server: mvs_nfsd on MVS 3.8J under Hercules, single-threaded, one TCB.
 
 ---
 
@@ -286,7 +286,7 @@ same release order, same first-file-operation-afterwards, nothing in between in
 either case. One returned; one deadlocked.
 
 This is the strongest single result in the investigation. It means the outcome
-is not determined by anything in dino_nfs's own sequencing.
+is not determined by anything in mvs_nfsd's own sequencing.
 
 ### 6.3 The victim is whatever comes next
 
@@ -323,7 +323,7 @@ This looked like a leak we could close. It is not, and it is unrelated:
   states `_setjmp_stae` returns 0 = normal, 1 = "Something was caught — the
   STAE has been cleaned up", -1 = OS failure. The abend path is documented to
   tear the exit down by itself, and the vendor example calls `_setjmp_canc()`
-  only on the normal path. dino_nfs does exactly that.
+  only on the normal path. mvs_nfsd does exactly that.
 * **Experiment STC02314**: `_setjmp_canc()` was added to the `rc == 1` path to
   test documentation against observation. It returned **8 = "nothing to
   cancel"** on every one of 5 abends, the SCBs accumulated anyway, and the run

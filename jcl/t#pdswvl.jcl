@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test membr write vb',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,

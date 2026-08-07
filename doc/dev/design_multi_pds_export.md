@@ -3,7 +3,7 @@
 Status: **Implemented** — landed on the `multipds` branch; compiles and
 runs on MVS.  This document is retained as the design record; a few
 implementation details differ from the original draft (noted inline).
-Author: design discussion, dino_nfs.
+Author: design discussion, mvs_nfsd.
 
 ## 1. Goal
 

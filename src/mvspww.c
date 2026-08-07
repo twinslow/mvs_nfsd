@@ -498,7 +498,7 @@ static pending_member_t *pww_slot_take(void)
                              now_ms - g_pww_pool[lru].first_write_ms);
     }
 
-    logmsg_warn("NFSIW180W", "pww_slot_take: pool full, evicting %s(%s)",
+    logmsg_warn("NFSIW180W", "Slot pool is full, evicting %s(%s)",
         g_pww_pool[lru].dsname_ebcdic, g_pww_pool[lru].member_name);
     if (g_pww_pool[lru].dirty)
         (void)pdsflush_slot(&g_pww_pool[lru]);

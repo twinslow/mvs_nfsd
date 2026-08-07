@@ -2,8 +2,8 @@
   "_comment": "MVS mode: verify NFS results over MVS FTP. Copy to config.json and edit. Field notes are in README.md.",
   "mode": "mvs",
   "nfs": {
-    "_mount_point_note": "The location where the NFS export is mounted, and the ONLY place the tests operate. On Linux a directory path (e.g. /mnt/dinonfs); on Windows the NFS drive letter (e.g. \"Z:\\\\\").",
-    "mount_point": "/mnt/dinonfs",
+    "_mount_point_note": "The location where the NFS export is mounted, and the ONLY place the tests operate. On Linux a directory path (e.g. /mnt/mvsnfsd); on Windows the NFS drive letter (e.g. \"Z:\\\\\").",
+    "mount_point": "/mnt/mvsnfsd",
     "export": "192.0.2.10:/exports",
     "windows_export": "\\\\192.0.2.10\\exports",
     "auto_mount": false,

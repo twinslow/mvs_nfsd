@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test directory read',
 //             CLASS=A,
 //             MSGCLASS=X,

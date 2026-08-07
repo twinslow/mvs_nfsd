@@ -1,5 +1,5 @@
 """
-Configuration loading for the dino-nfs integration tests.
+Configuration loading for the MVS NFSD integration tests.
 
 The config is JSON (stdlib only -- no third-party YAML dependency), so the
 harness runs on a bare Python 3 install on Linux or Windows.  See

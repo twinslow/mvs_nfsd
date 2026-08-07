@@ -1,5 +1,5 @@
 //TONYWUT1 JOB (NFSD),
-//            'Test dino-nfs mods',
+//            'Test MVS NFSD mods',
 //            CLASS=A,NOTIFY=TONYW,REGION=8M,
 //            MSGCLASS=X,MSGLEVEL=(1,1),
 //            COND=(0,LT)

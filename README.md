@@ -19,7 +19,7 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 ## Project status
 
 **WARNING:** This is early release code. You shouldn't assume that this code won't trash
-a mounted dataset. I'm sure there are plenty of bugs at this time, even we are fixing
+a mounted dataset. I'm sure there are plenty of bugs at this time, even though we are fixing
 them as we find them. I wouldn't go exporting/mounting `SYS1.PROCLIB` or `SYS1.PARMLIB`, or
 other important datasets that could prevent an IPL from completing.
 
@@ -799,4 +799,4 @@ Origin (DCO): sign off every commit with `git commit -s`.
 
 Released under the [MIT License](LICENSE).
 
-Copyright (c) 2026 Tony Winslow and the dino_nfs contributors.
+Copyright (c) 2026 Tony Winslow and the mvs_nfsd contributors.

@@ -359,7 +359,7 @@ All settled except §7.5, which is deferred out of scope.
 `blkcalc_add_blocks_for_data` is cumulative — it folds each write into a
 running total and carries `last_unterm_text_line_chars` across calls. That is
 correct **only** while writes arrive strictly sequentially with no overlap.
-dino_nfs does not have that guarantee:
+mvs_nfsd does not have that guarantee:
 
 | case | what happens today | effect on a cumulative estimate |
 |---|---|---|

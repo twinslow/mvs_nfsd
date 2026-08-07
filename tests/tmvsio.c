@@ -30,13 +30,15 @@
  * Fixtures
  * ====================================================================== */
 
-/* One export "/dinonfs/src" with a single dataset TEMP.DINONFS.C,
- * seen by clients as directory "temp.dinonfs.c". */
+/* One export "/mvsnfsd/src" with a single dataset TEMP.NFSD.C,
+ * seen by clients as directory "temp.nfsd.c" -- LOWER case, because both
+ * the server and stub_add_dataset() derive the directory name by
+ * lower-casing the dsname, and the lookup is an exact strcmp. */
 static void *setup_single(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
-    stub_add_export("/dinonfs/src", "TEMP.DINONFS.C", "c");
+    stub_add_export("/mvsnfsd/src", "TEMP.NFSD.C", "c");
     return NULL;
 }
 
@@ -60,9 +62,9 @@ static void *setup_multi_exports(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
-    stub_add_export("/dinonfs/src", "TEMP.DINONFS.C",    "c");
-    stub_add_export("/dinonfs/hdr", "TEMP.DINONFS.H",    "h");
-    stub_add_export("/dinonfs/jcl", "TEMP.DINONFS.CNTL", "cntl");
+    stub_add_export("/mvsnfsd/src", "TEMP.NFSD.C",    "c");
+    stub_add_export("/mvsnfsd/hdr", "TEMP.NFSD.H",    "h");
+    stub_add_export("/mvsnfsd/jcl", "TEMP.NFSD.CNTL", "cntl");
     return NULL;
 }
 
@@ -83,7 +85,7 @@ static MunitResult test_export_path_is_root(const MunitParameter params[], void 
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_ROOT);
     munit_assert_int(eidx,   ==, 0);
@@ -96,7 +98,7 @@ static MunitResult test_second_export_path_is_root(const MunitParameter params[]
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/hdr", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/hdr", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_ROOT);
     munit_assert_int(eidx,   ==, 1);
@@ -112,7 +114,7 @@ static MunitResult test_dirname_is_dataset(const MunitParameter params[], void *
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src/temp.nfsd.c", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(eidx,   ==, 0);
@@ -165,7 +167,7 @@ static MunitResult test_dirname_trailing_slash_is_dataset(const MunitParameter p
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src/temp.nfsd.c/", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     munit_assert_int(didx,   ==, 0);
@@ -181,7 +183,7 @@ static MunitResult test_member_path_is_pds_member(const MunitParameter params[],
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/nfsd.c", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src/temp.nfsd.c/nfsd.c", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_PDS_MEMBER);
     munit_assert_int(eidx,   ==, 0);
@@ -208,7 +210,7 @@ static MunitResult test_too_deep_not_exported(const MunitParameter params[], voi
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c/sub/nfsd.c",
+    result = mvs_path_type("/mvsnfsd/src/temp.nfsd.c/sub/nfsd.c",
                            &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
@@ -239,7 +241,7 @@ static MunitResult test_prefix_without_slash_no_match(const MunitParameter param
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/srcextra", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/srcextra", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(eidx, ==, -1);
@@ -264,7 +266,7 @@ static MunitResult test_export_trailing_slash_no_match(const MunitParameter para
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src/", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     return MUNIT_OK;
@@ -276,7 +278,7 @@ static MunitResult test_no_exports_configured(const MunitParameter params[], voi
     int eidx = -1, didx = -1, result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src", &eidx, &didx);
+    result = mvs_path_type("/mvsnfsd/src", &eidx, &didx);
 
     munit_assert_int(result, ==, MVS_PATH_NOT_EXPORTED);
     munit_assert_int(eidx, ==, -1);
@@ -289,7 +291,7 @@ static MunitResult test_null_out_pointers_ok(const MunitParameter params[], void
     int result;
     (void)params; (void)data;
 
-    result = mvs_path_type("/dinonfs/src/temp.dinonfs.c", NULL, NULL);
+    result = mvs_path_type("/mvsnfsd/src/temp.nfsd.c", NULL, NULL);
 
     munit_assert_int(result, ==, MVS_PATH_TYPE_DATASET);
     return MUNIT_OK;

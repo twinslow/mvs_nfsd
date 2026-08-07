@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test membr write fb3',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,
@@ -34,15 +34,15 @@ int format_file() {
         perror("Open failed");
         return 8;
     }
-    
-    for ( i = 0; i < FILE_BLOCK_COUNT; i++) {   
-        memcpy(block, &i, sizeof(i));    
+
+    for ( i = 0; i < FILE_BLOCK_COUNT; i++) {
+        memcpy(block, &i, sizeof(i));
         bwritten = fwrite(block, 1, FILE_BLOCK_SIZE, ofh);
         fprintf(stderr, "Written block %d of %d bytes\n",
             i, bwritten);
     }
 
-    fclose(ofh); 
+    fclose(ofh);
 
     fprintf(stderr, "Format file complete");
 
@@ -70,7 +70,7 @@ int block_read(FILE *fh, int block_num, char *buff) {
         perror("block read error");
         return 8;
     } else if (bread != FILE_BLOCK_SIZE) {
-        fprintf(stderr, 
+        fprintf(stderr,
             "Error: unexpected read size from block %d, size %d\n",
             block_num, bread);
     }
@@ -96,7 +96,7 @@ int block_write(FILE *fh, int block_num, char *buff) {
         perror("block write error");
         return 8;
     } else if (bwritten != FILE_BLOCK_SIZE) {
-        fprintf(stderr, 
+        fprintf(stderr,
             "Error: unexpected write size for block %d, size %d\n",
             block_num, bwritten);
     }
@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
         if ( rc > 0 )
             break;
 
-        sprintf(block + 8, "Random update number %d on block %d      ", 
+        sprintf(block + 8, "Random update number %d on block %d      ",
           i, block_num);
 
         fprintf(stderr, "Writing block %d\n", block_num);
