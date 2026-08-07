@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-dino-nfs automated integration test runner.
+MVS NFSD automated integration test runner.
 
-Drives file operations through the OS NFS client against a mounted dino-nfs
+Drives file operations through the OS NFS client against a mounted MVS NFSD
 export (or any NFS server) and verifies the results out-of-band -- over FTP for
 a real MVS server, or by reading the member back for a plain NFS server.
 
@@ -32,7 +32,7 @@ from itest import cases                       # noqa: F401,E402  (import to regi
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="dino-nfs integration tests")
+    ap = argparse.ArgumentParser(description="MVS NFSD integration tests")
     ap.add_argument("--config", "-c", required=True, help="path to the JSON config file")
     ap.add_argument("--list", "-l", action="store_true", help="list the tests and exit")
     ap.add_argument("--section", "-s", action="append", default=[],
@@ -63,14 +63,14 @@ def main(argv=None):
             return 1
         return backendmod.probe_ftp(cfg)
 
-    print("dino-nfs integration tests  |  mode=%s  mount=%s"
+    print("MVS NFSD integration tests  |  mode=%s  mount=%s"
           % (cfg["mode"], cfg["nfs"]["mount_point"]))
 
     nfsmount.ensure_available(cfg)
     backend = backendmod.build(cfg)
 
     rc = 1
-    workdir = tempfile.mkdtemp(prefix="dinonfs-itest-")
+    workdir = tempfile.mkdtemp(prefix="mvsnfsd-itest-")
     try:
         ctx = Context(cfg, backend, workdir)
         ctx.ensure_dirs()                      # plain mode: create dataset dirs

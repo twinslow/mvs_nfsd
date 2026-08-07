@@ -1,8 +1,8 @@
-# dino-nfs automated integration tests
+# MVS NFSD automated integration tests
 
 An end-to-end test harness that drives file operations through a **real OS NFS
-client** against a mounted dino-nfs export and verifies the results
-**out-of-band**. It exercises the whole stack — NFS client → TCP → dino-nfs
+client** against a mounted MVS NFSD export and verifies the results
+**out-of-band**. It exercises the whole stack — NFS client → TCP → MVS NFSD
 server → PDS — the way a user actually does, which unit tests cannot.
 
 - **Stdlib-only Python 3** (3.6+). No `pip install`. Runs on **Linux and Windows**.
@@ -44,7 +44,7 @@ integration-test/
    - Linux: `nfs-common` (Debian/Ubuntu) or `nfs-utils` (RHEL).
    - Windows: *Services for NFS* → "Client for NFS" (provides `mount`/`umount`).
 3. For `mvs` mode: network access to the MVS **FTP** server, and the test PDSs
-   allocated (see below) and **exported** by dino-nfs.
+   allocated (see below) and **exported** by MVS NFSD.
 
 ---
 
@@ -57,7 +57,7 @@ Submit [`jcl/mkdsets.jcl`](jcl/mkdsets.jcl). It allocates five PDSs
 `FBSMALL` is deliberately tiny so the "upload to full dataset" test fills it.
 Re-run it any time for a clean slate.
 
-Then make sure the dino-nfs server **exports** those datasets (in `nfsd.conf`),
+Then make sure the MVS NFSD server **exports** those datasets (in `nfsd.conf`),
 ideally with a matching extension so members appear as `<name>.txt`, e.g.:
 
 ```
@@ -75,7 +75,7 @@ you. Easiest is to mount it yourself and leave `auto_mount: false`:
 
 - **Linux**
   ```bash
-  sudo mount -t nfs -o vers=3,proto=tcp,nolock,soft,timeo=30 192.0.2.10:/exports /mnt/dinonfs
+  sudo mount -t nfs -o vers=3,proto=tcp,nolock,soft,timeo=30 192.0.2.10:/exports /mnt/mvsnfsd
   ```
 - **Windows** (elevated prompt, Services for NFS installed)
   ```
@@ -101,7 +101,7 @@ Key fields:
 | Field | Meaning |
 |---|---|
 | `mode` | `mvs` (verify over FTP) or `plain` (verify by readback). |
-| `nfs.mount_point` | Where the export is mounted (`/mnt/dinonfs` or `Z:\\`). |
+| `nfs.mount_point` | Where the export is mounted (`/mnt/mvsnfsd` or `Z:\\`). |
 | `nfs.export` / `nfs.windows_export` | Only needed for `auto_mount`. |
 | `ftp.host` / `ftp.port` | MVS FTP endpoint (mode `mvs`). |
 | `ftp.user` / `ftp.password` | Leave `null`. Credentials come from **`MVS_USERID`** / **`MVS_PASSWORD`** (same env vars the expect scripts use); a config value overrides the env, and an interactive run falls back to a prompt. |
@@ -116,7 +116,7 @@ python run_tests.py --config config.json --probe-ftp
 
 It tries all four combinations against your first configured dataset and prints
 the ones that work, ready to paste into the `ftp` section of `config.json`.
-| `datasets.<key>` | `nfs_dir` (the directory under the mount = lower-cased dsname on dino-nfs), `dsname` (for FTP), `ext`, `recfm`, `lrecl`. |
+| `datasets.<key>` | `nfs_dir` (the directory under the mount = lower-cased dsname on MVS NFSD), `dsname` (for FTP), `ext`, `recfm`, `lrecl`. |
 | `datasets.ro` | Optional. A dataset the **server** exports read-only — add it to the test export in `nfsd.conf` with the `ro` keyword, then give it this key. Used only by test 16, which skips when it is absent. Nothing writes to it, so an existing reference PDS is a fine choice. |
 | `options.large_lines` | Line count for "large" members (default 1500 ≈ 108 KB — exceeds the server's in-memory/spill threshold, exercising the spill path). |
 | `options.mtime_tolerance_sec` | Slack when checking a set mtime (120 on MVS to absorb ISPF minute/second granularity; a *large* miss usually means a server timezone problem). |
@@ -232,7 +232,7 @@ with `\n` line endings (even on Windows) so the server sees clean record breaks.
   by a `ro` export, and `17.2` skips on Windows because the client refuses
   symlink creation locally, so the server is never asked. Each reports the
   reason rather than passing vacuously.
-- **`update_stats` and timezones.** dino-nfs stores mtime in ISPF stats (local
+- **`update_stats` and timezones.** MVS NFSD stores mtime in ISPF stats (local
   time, corrected to UTC). A set-then-read that is off by *hours* points at a
   server TZ misconfiguration; the `mtime_tolerance_sec` slack only absorbs
   seconds/minutes.

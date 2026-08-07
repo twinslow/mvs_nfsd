@@ -8,7 +8,7 @@
 //*
 //* Description:
 //*
-//* Allocate the PDS datasets used by the dino-nfs automated
+//* Allocate the PDS datasets used by the MVS NFSD automated
 //* integration tests (integration-test/).  Run this ONCE on MVS
 //* before running the tests, and again whenever you want a clean
 //* slate.
@@ -22,7 +22,7 @@
 //*    TEMP.ITEST.VB2      PO RECFM=VB LRECL=255  rename/copy target
 //*    TEMP.ITEST.FBSMALL  PO RECFM=FB LRECL=80   tiny -> "full ds"
 //*
-//* These datasets must also be EXPORTED by the dino-nfs server
+//* These datasets must also be EXPORTED by the MVS NFSD server
 //* (nfsd.conf) so their members appear under the NFS mount.  Give
 //* them a matching file extension (e.g. fileext=txt) so members
 //* show up as <name>.txt to the NFS client.

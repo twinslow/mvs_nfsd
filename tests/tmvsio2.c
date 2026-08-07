@@ -35,23 +35,25 @@
  * Fixtures
  * ====================================================================== */
 
-/* Export "/dinonfs/src" -> dataset TEMP.DINONFS.C (dir temp.dinonfs.c, ext c) */
+/* Export "/mvsnfsd/src" -> dataset TEMP.NFSD.C (dir temp.nfsd.c, ext c).
+   The directory name is the LOWER-CASED dsname; paths below must match it
+   exactly, as the lookup is a strcmp. */
 static void *setup_c_export(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
-    stub_add_export("/dinonfs/src", "TEMP.DINONFS.C", "c");
+    stub_add_export("/mvsnfsd/src", "TEMP.NFSD.C", "c");
     return NULL;
 }
 
-/* Export "/dinonfs/data" -> dataset TEMP.DINONFS.DATA with an empty file_ext
+/* Export "/mvsnfsd/data" -> dataset TEMP.NFSD.DATA with an empty file_ext
    (the 'nofileext' case): members have no extension, so the whole leaf name is
    the member and a name containing '.' is not a valid member. */
 static void *setup_no_ext(const MunitParameter params[], void *user_data)
 {
     (void)params; (void)user_data;
     stub_clear_exports();
-    stub_add_export("/dinonfs/data", "TEMP.DINONFS.DATA", "");
+    stub_add_export("/mvsnfsd/data", "TEMP.NFSD.DATA", "");
     return NULL;
 }
 
@@ -81,10 +83,10 @@ static MunitResult test_dsname_from_dataset(const MunitParameter params[], void 
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/nfsd.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/nfsd.c", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
-    munit_assert_string_equal(dsname, "TEMP.DINONFS.C");
+    munit_assert_string_equal(dsname, "TEMP.NFSD.C");
     return MUNIT_OK;
 }
 
@@ -137,10 +139,10 @@ static MunitResult test_dataset_path_empty_member(const MunitParameter params[],
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
-    munit_assert_string_equal(dsname, "TEMP.DINONFS.C");
+    munit_assert_string_equal(dsname, "TEMP.NFSD.C");
     munit_assert_string_equal(member, "");
     return MUNIT_OK;
 }
@@ -158,7 +160,7 @@ static MunitResult test_member_uppercased(const MunitParameter params[], void *d
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/nfsd.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/nfsd.c", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
     munit_assert_string_equal(member, "NFSD");
@@ -178,7 +180,7 @@ static MunitResult test_member_too_long_rejected(const MunitParameter params[], 
     errno = 0;
     /* "verylongname" is 12 chars -> too long for a member */
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/verylongname.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/verylongname.c", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
     munit_assert_int(errno,  ==, ENAMETOOLONG);
@@ -195,7 +197,7 @@ static MunitResult test_member_exactly_8_ok(const MunitParameter params[], void 
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/rep01234.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/rep01234.c", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
     munit_assert_string_equal(member, "REP01234");
@@ -214,7 +216,7 @@ static MunitResult test_member_leading_digit_rejected(const MunitParameter param
     dsname[0] = '\0'; member[0] = '\0';
     errno = 0;
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/1test.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/1test.c", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
     munit_assert_int(errno,  ==, ENAMETOOLONG);   /* coarsened for the client */
@@ -232,7 +234,7 @@ static MunitResult test_member_invalid_char_rejected(const MunitParameter params
     dsname[0] = '\0'; member[0] = '\0';
     errno = 0;
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/my-file.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/my-file.c", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
     /* The validator flags this as EINVAL internally, but the path helper
@@ -253,7 +255,7 @@ static MunitResult test_member_no_extension(const MunitParameter params[], void 
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/data/temp.dinonfs.data/mvsio", dsname, member, 0);
+                 "/mvsnfsd/data/temp.nfsd.data/mvsio", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
     munit_assert_string_equal(member, "MVSIO");
@@ -273,7 +275,7 @@ static MunitResult test_matching_extension_ok(const MunitParameter params[], voi
 
     dsname[0] = '\0'; member[0] = '\0';
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/nfsd.c", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/nfsd.c", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
     return MUNIT_OK;
@@ -293,7 +295,7 @@ static MunitResult test_wrong_extension_error(const MunitParameter params[], voi
     errno = 0;
     /* dataset expects ".c" but the file is ".h" */
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/types.h", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/types.h", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
     munit_assert_int(errno,  ==, ENOENT);
@@ -310,7 +312,7 @@ static MunitResult test_extension_case_insensitive(const MunitParameter params[]
     dsname[0] = '\0'; member[0] = '\0';
     /* ".C" must match dataset file_ext "c" */
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/src/temp.dinonfs.c/nfsd.C", dsname, member, 0);
+                 "/mvsnfsd/src/temp.nfsd.c/nfsd.C", dsname, member, 0);
 
     munit_assert_int(result, ==, 0);
     return MUNIT_OK;
@@ -330,7 +332,7 @@ static MunitResult test_no_ext_dotted_name_rejected(const MunitParameter params[
     dsname[0] = '\0'; member[0] = '\0';
     errno = 0;
     result = mvs_get_pds_dsn_and_member(
-                 "/dinonfs/data/temp.dinonfs.data/report.txt", dsname, member, 0);
+                 "/mvsnfsd/data/temp.nfsd.data/report.txt", dsname, member, 0);
 
     munit_assert_int(result, ==, -1);
     munit_assert_int(errno,  ==, ENAMETOOLONG);   /* coarsened for the client */

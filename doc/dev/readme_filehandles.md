@@ -1,6 +1,6 @@
 # NFS File Handles
 
-How dino_nfs builds, encodes, and resolves NFS file handles — and why the
+How mvs_nfsd builds, encodes, and resolves NFS file handles — and why the
 design is what it is.
 
 Code: `src/fhandle.c`, `our_fhandle_t` + `OUR_FHSIZE` in `src/nfsd.h`.

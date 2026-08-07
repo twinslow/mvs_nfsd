@@ -5,8 +5,8 @@
 
   "nfs": {
     "mount_point": "Z:\\",
-    "windows_export": "\\\\192.0.2.20\\srv\\nfs\\dinotest",
-    "export": "192.0.2.20:/srv/nfs/dinotest",
+    "windows_export": "\\\\192.0.2.20\\srv\\nfs\\nfsdtest",
+    "export": "192.0.2.20:/srv/nfs/nfsdtest",
     "auto_mount": false,
     "mount_options_windows": "anon,nolock,mtype=soft",
     "mount_options_linux": "vers=3,proto=tcp,nolock,soft"

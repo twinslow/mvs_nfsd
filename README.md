@@ -799,4 +799,4 @@ Origin (DCO): sign off every commit with `git commit -s`.
 
 Released under the [MIT License](LICENSE).
 
-Copyright (c) 2026 Tony Winslow and the dino_nfs contributors.
+Copyright (c) 2026 Tony Winslow and the mvs_nfsd contributors.

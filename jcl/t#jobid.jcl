@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Get JES2 jobid',
 //             CLASS=A,
 //             MSGCLASS=X,

@@ -158,7 +158,7 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 /* one fragment, and the record mark agreed with the message's own       */
 /* fields, so the framing was right and the BYTES were duplicated.       */
 /* recv_all() writes to buf+done, so the destination was correct -- the  */
-/* source restarted.  Not a dino-nfs bug; the stack lied to us.          */
+/* source restarted.  Not a MVS NFSD bug; the stack lied to us.          */
 /*                                                                      */
 /* This check therefore does more than report: it REJECTS the message    */
 /* (rpc_recv returns -1 -> the connection closes -> the client resends), */

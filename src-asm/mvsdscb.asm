@@ -715,7 +715,7 @@ SUMEXTX  DS    0H
 * The CAMLST macro assembles the addresses of its operands, so the    *
 * fields it points at have to be static rather than stack frame       *
 * items.  Keeping the work areas alongside them means the CAMLSTs     *
-* never need patching at run time.  dino-nfs is single threaded, so   *
+* never need patching at run time.  MVS NFSD is single threaded, so   *
 * static work areas are safe here.                                    *
 ***********************************************************************
 *

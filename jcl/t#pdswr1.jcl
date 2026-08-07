@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test membr write fb1',
 //             CLASS=A,
 //             MSGCLASS=X,
@@ -31,8 +31,8 @@ int main(int argc, char **argv) {
         perror("Open failed");
         return 8;
     }
-    
-    for ( i = 1; i <= 30; i++) {   
+
+    for ( i = 1; i <= 30; i++) {
         sprintf(wbuff, "This is line %04d\n", i);
         bwritten = fwrite(wbuff, strlen(wbuff), 1, ofh);
     }

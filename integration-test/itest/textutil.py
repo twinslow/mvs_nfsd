@@ -1,5 +1,5 @@
 """
-Text generation and comparison helpers for the dino-nfs integration tests.
+Text generation and comparison helpers for the MVS NFSD integration tests.
 
 Members are text.  A fixed-length (RECFM=FB) member is stored space-padded to
 the record length, and both the NFS read path and an FTP text retrieval strip

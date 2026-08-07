@@ -5,7 +5,7 @@ Status: **Implemented.** All decisions in §10 are settled (§10.4 landed as
 This document is retained as the design record; the user-facing reference is
 [readme_config.md](readme_config.md) §3.
 
-Author: design discussion, dino_nfs.
+Author: design discussion, mvs_nfsd.
 
 Implementation touchpoints:
 - Config: `src/cfgopts.c` (pure keyword-option parsing — `cfg_parse_octal`,

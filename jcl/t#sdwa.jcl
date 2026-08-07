@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'SDWA',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,
@@ -11,7 +11,7 @@
 //*
 //********************************************************************
 //SDWA EXEC ASMFC,PARM.ASM=(OBJ,NODECK),MAC1='SYS2.MACLIB'
-//ASM.SYSIN DD *                                                  
+//ASM.SYSIN DD *
        IHASDWA DSECT=YES
        END
 //

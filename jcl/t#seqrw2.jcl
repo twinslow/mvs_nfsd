@@ -1,4 +1,4 @@
-//TONYWZ1  JOB (DINO),
+//TONYWZ1  JOB (MVSNFSD),
 //             'Test w+b open',
 //             CLASS=A,COND=(0,LT),
 //             MSGCLASS=X,
