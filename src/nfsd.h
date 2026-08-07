@@ -572,6 +572,12 @@ typedef struct {
 #define PROTO_MOUNT    1
 #define PROTO_NFS      2
 
+#define CONN_PROTO_TO_STR(n)  \
+    (( n == 0 ) ? "portmap" :       \
+     ( n == 1 ) ? "mount"   :       \
+     ( n == 2 ) ? "nfs"     :       \
+                  "unknown" )
+
 /*
  * VFS stat: an OS-independent view of file metadata.
  *

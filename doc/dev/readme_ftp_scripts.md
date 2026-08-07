@@ -153,12 +153,12 @@ The upload jobs list controls what is uploaded and where:
 
 ```tcl
 set upload_jobs [list \
-    [list $src_dir      "*.c"  "/TONYW.DINONFS.C"]          \
-    [list $src_dir      "*.h"  "/TONYW.DINONFS.H"]          \
-    [list $jcl_dir      "*.jcl" "/TONYW.DINONFS.CNTL"]      \
-    [list $tests_dir    "*.c"  "/TONYW.DINONFS.TESTS.C"]    \
-    [list $tests_dir    "*.h"  "/TONYW.DINONFS.TESTS.H"]    \
-    [list $tests_jcl_dir "*.jcl" "/TONYW.DINONFS.TESTS.CNTL"] \
+    [list $src_dir      "*.c"  "/TONYW.NFSD.C"]          \
+    [list $src_dir      "*.h"  "/TONYW.NFSD.H"]          \
+    [list $jcl_dir      "*.jcl" "/TONYW.NFSD.CNTL"]      \
+    [list $tests_dir    "*.c"  "/TONYW.NFSD.TESTS.C"]    \
+    [list $tests_dir    "*.h"  "/TONYW.NFSD.TESTS.H"]    \
+    [list $tests_jcl_dir "*.jcl" "/TONYW.NFSD.TESTS.CNTL"] \
 ]
 ```
 
@@ -168,7 +168,7 @@ Each entry is a three-element list: `{local-directory  glob-pattern  target-PDS}
 are needed:
 
 ```tcl
-[list [file join $script_dir newdir] "*.ext" "/TONYW.DINONFS.NEWPDS"]
+[list [file join $script_dir newdir] "*.ext" "/TONYW.NFSD.NEWPDS"]
 ```
 
 ### Example output
@@ -181,8 +181,8 @@ FTP log    : /home/tony/dino_nfs/.mvs_upload_ftp.log
 Mode       : incremental
 Last run   : 2026-05-20 14:32:07
 Jobs       :
-  *.c      /home/tony/dino_nfs/src         -> /TONYW.DINONFS.C (3 of 12 file(s) changed)
-  *.h      /home/tony/dino_nfs/src         -> /TONYW.DINONFS.H (0 of 6 file(s) changed)
+  *.c      /home/tony/dino_nfs/src         -> /TONYW.NFSD.C (3 of 12 file(s) changed)
+  *.h      /home/tony/dino_nfs/src         -> /TONYW.NFSD.H (0 of 6 file(s) changed)
   ...
 Total      : 3 of 21 file(s) changed
 
@@ -192,7 +192,7 @@ Password   : (from $MVS_PASSWORD)
 Connecting to localhost port 2121 ...
 Logged in as TONYW.
 
---- *.c -> /TONYW.DINONFS.C (3 of 12 file(s)) ---
+--- *.c -> /TONYW.NFSD.C (3 of 12 file(s)) ---
   mvsio.c                        -> MVSIO
   mvsvfs.c                       -> MVSVFS
   nfsd.c                         -> NFSD
@@ -248,18 +248,18 @@ extension is appended.
 
 | PDS | Member | Local file |
 |---|---|---|
-| `TONYW.DINONFS.C` | `NFSD` | `nfsd.c` |
-| `TONYW.DINONFS.H` | `TYPES` | `types.h` |
-| `TONYW.DINONFS.CNTL` | `COMPILE` | `compile.jcl` |
+| `TONYW.NFSD.C` | `NFSD` | `nfsd.c` |
+| `TONYW.NFSD.H` | `TYPES` | `types.h` |
+| `TONYW.NFSD.CNTL` | `COMPILE` | `compile.jcl` |
 
 ### Configuration
 
 ```tcl
 set ftp_host  "localhost"
 set ftp_port  "2121"
-set pds_c     "/TONYW.DINONFS.C"
-set pds_h     "/TONYW.DINONFS.H"
-set pds_cntl  "/TONYW.DINONFS.CNTL"
+set pds_c     "/TONYW.NFSD.C"
+set pds_h     "/TONYW.NFSD.H"
+set pds_cntl  "/TONYW.NFSD.CNTL"
 ```
 
 Adjust the PDS names to match your MVS user prefix and dataset allocation.
@@ -278,9 +278,9 @@ MVS source download
 ===================
 FTP target       : localhost:2121
 FTP log          : /home/tony/dino_nfs/.mvs_download_ftp.log
-C   PDS          : /TONYW.DINONFS.C
-H   PDS          : /TONYW.DINONFS.H
-JCL PDS          : /TONYW.DINONFS.CNTL
+C   PDS          : /TONYW.NFSD.C
+H   PDS          : /TONYW.NFSD.H
+JCL PDS          : /TONYW.NFSD.CNTL
 Destination      : /home/tony/dino_nfs/src
 
 TSO userid : TONYW
@@ -289,7 +289,7 @@ Password   :
 Connecting to localhost port 2121 ...
 Logged in as TONYW.
 
---- Getting member list from /TONYW.DINONFS.C ---
+--- Getting member list from /TONYW.NFSD.C ---
   Found 12 member(s): EBCDIC, EXPORTS, FHANDLE, ...
 
 --- Downloading .c files ---

@@ -73,14 +73,14 @@ set ftp_log        [file join $script_dir .mvs_upload_ftp.log]
 # Add, remove or reorder entries here -- no other changes are needed.
 #
 set upload_jobs [list \
-    [list $asm_dir "*.asm" "/TONYW.DINONFS.ASM"] \
-    [list $src_dir "*.c" "/TONYW.DINONFS.C"] \
-    [list $src_dir "*.h" "/TONYW.DINONFS.H"] \
-    [list $src_dir "*.asm" "/TONYW.DINONFS.ASM"] \
-    [list $jcl_dir "*.jcl" "/TONYW.DINONFS.CNTL"] \
-    [list $tests_dir "*.c" "/TONYW.DINONFS.TESTS.C"] \
-    [list $tests_dir "*.h" "/TONYW.DINONFS.TESTS.H"] \
-    [list $tests_jcl_dir "*.jcl" "/TONYW.DINONFS.TESTS.CNTL"] \
+    [list $asm_dir "*.asm" "/TONYW.NFSD.ASM"] \
+    [list $src_dir "*.c" "/TONYW.NFSD.C"] \
+    [list $src_dir "*.h" "/TONYW.NFSD.H"] \
+    [list $src_dir "*.asm" "/TONYW.NFSD.ASM"] \
+    [list $jcl_dir "*.jcl" "/TONYW.NFSD.CNTL"] \
+    [list $tests_dir "*.c" "/TONYW.NFSD.TESTS.C"] \
+    [list $tests_dir "*.h" "/TONYW.NFSD.TESTS.H"] \
+    [list $tests_jcl_dir "*.jcl" "/TONYW.NFSD.TESTS.CNTL"] \
 ]
 
 # Seconds to wait for each FTP response before declaring a timeout

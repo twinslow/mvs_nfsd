@@ -233,6 +233,19 @@ time_t convert_ispf_datetime(
     return retval;
 }
 
+void pds_member_dump_userdata(
+    pds_member_entry_t   *entry,
+    unsigned char        *userdata,
+    int                   user_data_len)
+{
+    int i;
+    fprintf(stderr, "     User data ");
+    for (i=0; i<user_data_len; i += 2) {
+        fprintf(stderr, "%04X ", *((unsigned short *) &userdata[i]) );
+    }
+    fprintf(stderr, "\n");
+}
+
 void pds_member_get_ispf_stats(
     pds_member_entry_t   *entry,
     unsigned char        *userdata,
@@ -314,6 +327,8 @@ int pds_member_entry_set(
     blockptr++;
 
     // Now we get to the user data ... 0 to 62 bytes.
+    pds_member_dump_userdata(
+        entry, blockptr, user_data_count_hw * 2);
     pds_member_get_ispf_stats(
         entry, blockptr, user_data_count_hw * 2);
 
@@ -417,7 +432,8 @@ int main(int argc, char **argv)
     }
     fprintf(stderr, "sizeof(time_t) = %d\n", sizeof(time_t));
 
-    rc = mvs_pds_dir_read("TEMP.TESTPROJ.CNTL");
+    //rc = mvs_pds_dir_read("TEMP.TESTPROJ.CNTL");
+    rc = mvs_pds_dir_read("TEMP.ITEST.FB");
     return rc;
 }
 @@

@@ -16,7 +16,7 @@
 /* Open a PDS dataset so that we can read the directory contents        */
 /* -------------------------------------------------------------------- */
 int mvs_open_pds_dir(
-    const char *dsname, 
+    const char *dsname,
     int export_idx,
     FILE **pds_dir_fh)
 {
@@ -37,11 +37,11 @@ int mvs_open_pds_dir(
     strcat(open_path_name, dsname);
 
     // Open the dataset ... recfm=U and return a handle for reading directory blocks
-    logmsg_debug("NFSID030D", "mvs_open_pds_dir: Calling fopen on Opening PDS %s for directory read, mode \"%s\"", 
+    logmsg_debug("NFSID030D", "mvs_open_pds_dir: Calling fopen on Opening PDS %s for directory read, mode \"%s\"",
         open_path_name, open_mode);
     pds_dir_fh_local = fopen(open_path_name, open_mode);
     if (pds_dir_fh_local == NULL) {
-        logmsg_error("NFSID040E", "mvs_open_pds_dir: fopen for %s failed, error %s", 
+        logmsg_error("NFSID040E", "mvs_open_pds_dir: fopen for %s failed, error %s",
             dsname, strerror(errno));
         return -1;
     }
@@ -352,7 +352,7 @@ void mvs_extract_ispf_stats(
         entry->modCount = *(int *)userdata;
         userdata += 4;
     } else {
-        // Non extended stats ... so size fields are two bytes. 
+        // Non extended stats ... so size fields are two bytes.
         entry->size = *(unsigned short *)userdata;
         userdata += 2;
         entry->initSize = *(unsigned short *)userdata;
@@ -382,7 +382,7 @@ void mvs_set_no_ispf_stats(pds_member_entry_t *entry) {
 
     // Now the accessed/modified/created date/times.
     // For simplicity, we'll set these all to the same value based on the current time.
-    
+
     gettimeofday(&tv, NULL);
     entry->crdate = (int32_t)tv.tv_sec;
     entry->chgdate = (int32_t)tv.tv_sec;
@@ -489,7 +489,10 @@ int mvs_encode_ispf_stats(const pds_member_entry_t *entry, uint8_t *userdata)
     for (i = 0; i < 8; i++)
         userdata[20 + i] = (uint8_t)((i < ulen) ? entry->user[i] : ' ');
 
-    /* [28..29] reserved -- already zero from the memset. */
+    /* [28..29] reserved -- Set to EBCDIC blank */
+    userdata[28] = 0x40;
+    userdata[29] = 0x40;
+
     return MVS_ISPF_STATS_LEN;
 }
 
@@ -539,7 +542,7 @@ void mvs_pds_member_entry_init(
 
 
 int mvs_pds_member_entry_set(
-    pds_member_entry_t      *entry, 
+    pds_member_entry_t      *entry,
     const uint8_t           *start_blockptr)
 {
     short       user_data_count_hw;
@@ -567,7 +570,7 @@ int mvs_pds_member_entry_set(
     blockptr++;
 
     // If we have user data, and the length is the expected
-    // length for ISPF stats, then extract them. Otherwise, 
+    // length for ISPF stats, then extract them. Otherwise,
     // we'll need to populate the entry with default values.
     if (user_data_count_hw * 2 >= 30) {
         mvs_extract_ispf_stats(entry, blockptr, user_data_count_hw * 2);

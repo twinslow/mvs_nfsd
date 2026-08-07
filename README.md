@@ -172,7 +172,7 @@ tests/runall
 
 ### MVS (JCC compiler)
 
-Upload the source to `TONYW.DINONFS.C` (or your equivalent PDS) and submit
+Upload the source to `TONYW.NFSD.C` (or your equivalent PDS) and submit
 `jcl/makejcc.jcl`.  The JCL compiles each module with JCC and links them
 into a load module.
 

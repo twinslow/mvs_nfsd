@@ -33,9 +33,9 @@
 //* Proc to compile a C module using JCC into object code
 //*-------------------------------------------------------------------
 //JCCCMOD PROC SOUT='*',JCC='JCC',
-//          INFILE='TONYW.DINONFS.C',
-//          OBJFILE='TONYW.DINONFS.OBJLIB',
-//          HDRFILE='TONYW.DINONFS.H',
+//          INFILE='TONYW.NFSD.C',
+//          OBJFILE='TONYW.NFSD.OBJLIB',
+//          HDRFILE='TONYW.NFSD.H',
 //          JOPTS='-o -LIST=//DDN:SYSPRINT -D__MVS__',
 //          MODNAME='NOT-SPECIFIED'
 //*
@@ -60,10 +60,10 @@
 //          ASMOPTS='OBJ,NODECK',
 //          MAC='SYS1.MACLIB',
 //          MAC1='SYS1.AMODGEN',
-//          MAC2='TONYW.DINONFS.ASM',
+//          MAC2='TONYW.NFSD.ASM',
 //          MAC3='SYS2.MACLIB',
-//          SRCLIB='TONYW.DINONFS.ASM',
-//          LOADLIB='TONYW.DINONFS.LOAD',
+//          SRCLIB='TONYW.NFSD.ASM',
+//          LOADLIB='TONYW.NFSD.LOAD',
 //          MODULE='XXXXX'
 //*
 //ASM      EXEC PGM=IFOX00,PARM=(&ASMOPTS),REGION=128K
@@ -104,17 +104,17 @@
 //*-------------------------------------------------------------------
 //* Now build the driver and link in what we need
 //*-------------------------------------------------------------------
-//TESTDSCB EXEC JCCCL,INFILE='TONYW.DINONFS.TESTS.C(TESTDSCB)',
+//TESTDSCB EXEC JCCCL,INFILE='TONYW.NFSD.TESTS.C(TESTDSCB)',
 //        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
-//        OUTFILE='TONYW.DINONFS.LOAD',
+//        OUTFILE='TONYW.NFSD.LOAD',
 //        JOPTS='-s -o -LIST=//DDN:SYSPRINT -D__MVS__'
-//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
-//PRELINK.I DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(MVSUTL)
-//*         DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(LOGGER)
+//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.NFSD.H
+//PRELINK.I DD DISP=SHR,DSN=TONYW.NFSD.OBJLIB(MVSUTL)
+//*         DD DISP=SHR,DSN=TONYW.NFSD.OBJLIB(LOGGER)
 //          DD DSN=&&OBJ,DISP=(OLD,DELETE)
 //LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)
 //          DD  DDNAME=SYSIN
-//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.DINONFS.LOAD
+//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.NFSD.LOAD
 //LKED.SYSIN DD *
     INCLUDE SYSLMOD(MVSDSCB)
     NAME TESTDSCB(R)
@@ -127,7 +127,7 @@
 //         PARM=('SYS1.MACLIB','TEMP.ITEST.FB',
 //             'TEMP.ITEST.FBSMALL','INT.SYMLIB',
 //             'CBTCOV.FILE186')
-//STEPLIB   DD  DISP=SHR,DSN=TONYW.DINONFS.LOAD
+//STEPLIB   DD  DISP=SHR,DSN=TONYW.NFSD.LOAD
 //STDERR    DD  SYSOUT=*
 //STDOUT    DD  SYSOUT=*
 //STDIN     DD  DUMMY

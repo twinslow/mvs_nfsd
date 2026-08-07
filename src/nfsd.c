@@ -205,8 +205,11 @@ static int make_listen_sock(int port)
     if (fd < 0) { perror("socket"); exit(1); }
 
 #ifdef __MVS__
-    if (setsockopt(fd, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-        perror("nfsd: setsockopt SO_REUSEADDR");
+    /* Note that is known to fail under JCC library. */
+    if (setsockopt(fd, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        logmsg_debug("NFSDM027D", "Failed to setsockopt SOREUSEADDR - %s",
+            strerror(errno));
+    }
 #else
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
         perror("nfsd: setsockopt SO_REUSEADDR");
@@ -218,10 +221,15 @@ static int make_listen_sock(int port)
     addr.sin_port        = htons((uint16_t)port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        logmsg_error("NFSDM030E", "nfsd: bind port %d: %s", port, strerror(errno));
+        logmsg_error("NFSDM030E", "NFSD bind port %d failed - %s",
+            port, strerror(errno));
         exit(1);
     }
-    if (listen(fd, 8) < 0) { perror("listen"); exit(1); }
+    if (listen(fd, 8) < 0) {
+        logmsg_error("NFSDM031E", "NFSD listen on port %d failed - %s",
+            port, strerror(errno));
+        exit(1);
+    }
     return fd;
 }
 
@@ -256,7 +264,7 @@ static void accept_conn(int lsock, int proto)
 #endif
 
     if (g_nconns >= MAX_CONNECTIONS) {
-        logmsg_error("NFSDM040E", "nfsd: connection table full (%d), dropping",
+        logmsg_error("NFSDM040E", "NFSD connection table full (%d), dropping connection",
                 MAX_CONNECTIONS);
         sock_close(cfd);
         return;
@@ -264,6 +272,10 @@ static void accept_conn(int lsock, int proto)
 
     g_conns[g_nconns].fd    = cfd;
     g_conns[g_nconns].proto = proto;
+    logmsg_trace("NFSDM045T", "NFSD accepted connection fd=%d (proto=%d/%s)",
+                g_conns[g_nconns].fd,
+                g_conns[g_nconns].proto,
+                CONN_PROTO_TO_STR(g_conns[g_nconns].proto) );
     g_nconns++;
 }
 
@@ -556,8 +568,9 @@ static void service_ready(const listeners_t *lsn, fd_set *rfds)
                 /* Peer closed (or the RPC failed): close OUR half so a FIN
                    goes back and the descriptor is released.  Must be
                    sock_close() -- see its comment. */
-                logmsg_warn("NFSDM180W", "NFSD Closing connection fd=%d (proto=%d)",
-                         g_conns[i].fd, g_conns[i].proto);
+                logmsg_trace("NFSDM180T", "NFSD closing connection fd=%d (proto=%d/%s)",
+                         g_conns[i].fd, g_conns[i].proto,
+                         CONN_PROTO_TO_STR(g_conns[i].proto) );
                 sock_close(g_conns[i].fd);
                 g_conns[i] = g_conns[--g_nconns];
                 continue;   /* the slot now holds a DIFFERENT connection */

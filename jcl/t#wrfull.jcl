@@ -13,9 +13,9 @@
 //********************************************************************
 //TESTENQ EXEC JCCCL,
 //        PARM.PRELINK='-s //DDN:L //DDN:O //DDN:I',
-//        OUTFILE='TONYW.DINONFS.LOAD',
+//        OUTFILE='TONYW.NFSD.LOAD',
 //        JOPTS='-s -o -LIST=//DDN:SYSPRINT -D__MVS__'
-//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.DINONFS.H
+//COMPILE.JCCINCS DD DISP=SHR,DSN=TONYW.NFSD.H
 //COMPILE.SYSIN DD DATA,DLM=@@
 #include <stdio.h>
 #include <stdlib.h>
@@ -215,14 +215,14 @@ int main(int argc, char **argv) {
 @@
 //LKED.SYSLIN DD DSN=&&OBJMOD,DISP=(OLD,DELETE)
 //          DD  DDNAME=SYSIN
-//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.DINONFS.LOAD
+//LKED.SYSLIB DD DISP=SHR,DSN=TONYW.NFSD.LOAD
 //LKED.SYSIN DD *
     INCLUDE SYSLMOD(MVSDALC)
     NAME T#WRFULL(R)
 //*
 //*--------------------------------------------------------
 //RUN      EXEC PGM=T#WRFULL
-//STEPLIB   DD  DISP=SHR,DSN=TONYW.DINONFS.LOAD
+//STEPLIB   DD  DISP=SHR,DSN=TONYW.NFSD.LOAD
 //STDOUT    DD  SYSOUT=*,DCB=(RECFM=F,BLKSIZE=133)
 //STDERR    DD  SYSOUT=*,DCB=(RECFM=F,BLKSIZE=133)
 //STDIN     DD  DUMMY

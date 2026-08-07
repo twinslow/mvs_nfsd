@@ -70,11 +70,11 @@ Submit the JCL from ISPF (or via the FTP scripts after uploading):
 
 The job:
 
-1. Compiles production modules (e.g. `MVSIO`) from `TONYW.DINONFS.C` using
+1. Compiles production modules (e.g. `MVSIO`) from `TONYW.NFSD.C` using
    the `JCCCMOD` proc.
 2. Compiles test modules (`TSTUBS`, `TMVSIO`, `TMVSIO2`) from
-   `TONYW.DINONFS.TESTS.C` using the `JCCCTST` proc.
-3. Compiles and links `RUNALL` from `TONYW.DINONFS.TESTS.C`, linking in
+   `TONYW.NFSD.TESTS.C` using the `JCCCTST` proc.
+3. Compiles and links `RUNALL` from `TONYW.NFSD.TESTS.C`, linking in
    munit, production objects, and test objects, then runs the result.
 
 Output is written to `SYSOUT=*` and visible in SDSF (class X).
@@ -437,7 +437,7 @@ Add a compile step for the new test module:
 Add the compiled object to the `PRELINK.I` list:
 
 ```jcl
-//          DD DISP=SHR,DSN=TONYW.DINONFS.OBJLIB(T<MOD>)
+//          DD DISP=SHR,DSN=TONYW.NFSD.OBJLIB(T<MOD>)
 ```
 
 If the new test module depends on a production module that is not already in
