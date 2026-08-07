@@ -69,7 +69,7 @@ static int spill_open(pending_member_t *pm, int slot_id)
             errno = EIO;
             return -1;
         }
-        logmsg_info("NFSIS020I", "spill_open: %s(%s) spilled to %s",
+        logmsg_debug("NFSIS020D", "spill_open: %s(%s) spilled to %s",
             pm->dsname_ebcdic, pm->member_name, name);
     }
 
@@ -96,7 +96,7 @@ static int spill_sync(pending_member_t *pm)
 
         fflush(pm->spill.fp);
         if (fclose(pm->spill.fp) != 0) {
-            logmsg_error("NFSIS030E", "spill_sync: fclose failed: %s", strerror(errno));
+            logmsg_error("NFSIS030E", "Spill file fclose failed: %s", strerror(errno));
             pm->spill.fp = NULL;
             errno = EIO;
             return -1;
@@ -133,7 +133,7 @@ static int spill_load_block(pending_member_t *pm, uint32_t b)
        during a sequential append is buffer-resident and reads fine. */
     fflush(pm->spill.fp);
     if (fseek(pm->spill.fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
-        logmsg_error("NFSIS050E", "spill: fseek(load) block %u failed: %s", b, strerror(errno));
+        logmsg_error("NFSIS050E", "Spill file fseek(load) block %u failed: %s", b, strerror(errno));
         errno = EIO;
         return -1;
     }
@@ -150,13 +150,13 @@ static int spill_store_block(pending_member_t *pm, uint32_t b)
     size_t w;
 
     if (fseek(pm->spill.fp, (long)b * SPILL_BLK, SEEK_SET) != 0) {
-        logmsg_error("NFSIS060E", "spill: fseek(store) block %u failed: %s", b, strerror(errno));
+        logmsg_error("NFSIS060E", "Spill file fseek(store) block %u failed: %s", b, strerror(errno));
         errno = EIO;
         return -1;
     }
     w = fwrite(g_spill_block, 1, SPILL_BLK, pm->spill.fp);
     if (w != SPILL_BLK) {
-        logmsg_error("NFSIS070E", "spill: store block %u short write (%u of %d)",
+        logmsg_error("NFSIS070E", "Spill file store block %u short write (%u of %d)",
                   b, (unsigned)w, SPILL_BLK);
         errno = EIO;
         return -1;
@@ -264,14 +264,14 @@ int spill_read(pending_member_t *pm, uint32_t off,
     if (spill_sync(pm) != 0)
         return -1;
     if (fseek(pm->spill.fp, (long)off, SEEK_SET) != 0) {
-        logmsg_error("NFSIS080E", "spill_read: fseek to %u failed: %s",
+        logmsg_error("NFSIS080E", "Spill file read: fseek to %u failed: %s",
                   off, strerror(errno));
         errno = EIO;
         return -1;
     }
     r = fread(dst, 1, (size_t)len, pm->spill.fp);
     if (r != (size_t)len) {
-        logmsg_error("NFSIS090E", "spill_read: short read at %u (%u of %u)",
+        logmsg_error("NFSIS090E", "Spill file read: short read at %u (%u of %u)",
                   off, (unsigned)r, len);
         errno = EIO;
         return -1;
@@ -282,7 +282,7 @@ int spill_read(pending_member_t *pm, uint32_t off,
 void spill_close(pending_member_t *pm)
 {
     if (pm->spill.fp != NULL) {
-        logmsg_debug("NFSIS100D", "spill_close: closing spill for %s(%s) ...",
+        logmsg_debug("NFSIS100D", "Closing spill file for %s(%s) ...",
                   pm->dsname_ebcdic, pm->member_name);
         fclose(pm->spill.fp);
         pm->spill.fp = NULL;

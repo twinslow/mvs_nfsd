@@ -487,7 +487,7 @@ static int blkc_vtoc_read(pds_dataset_t *ds)
     memset(&raw, 0, sizeof(raw));
     rc = mvs_dscb(MVS_DSCB_REQ_INFO, 0, dsnlist, &raw);
     if (rc > 4 || raw.status != MVS_DSCB_ST_OK) {
-        logmsg_error("NFSIB010E", "blkcalc: VTOC re-read failed for %s (rc=%d status=%d)",
+        logmsg_error("NFSIB010E", "VTOC re-read failed for %s (rc=%d status=%d)",
                   ds->dsname_ebcdic, rc, (int)raw.status);
         return -1;
     }
@@ -645,7 +645,7 @@ int blkcalc_admit_write(void *pmv, const uint8_t *data,
     trial.last_avail = avail;
 
     if (blkcalc_will_member_fit(&trial, &ds->dscb, ttr, &ttr) != 0) {
-        logmsg_warn("NFSIB030W", "blkcalc: %s(%s) NOT fit -- need %lu avail %lu (%s)",
+        logmsg_trace("NFSIB030T", "%s(%s) will NOT fit -- need %lu avail %lu (%s)",
                  pm->dsname_ebcdic, pm->member_name,
                  (unsigned long)need, (unsigned long)avail, state);
         errno = ENOSPC;
@@ -675,7 +675,7 @@ int blkcalc_admit_write(void *pmv, const uint8_t *data,
 
         if (blkcalc_will_member_fit(&other->blkcalc, &ds->dscb,
                                     ttr, &ttr) != 0) {
-            logmsg_warn("NFSIB050W", "blkcalc: %s(%s) refused -- pending %s needs %lu,"
+            logmsg_trace("NFSIB050T", "%s(%s) refused -- pending %s needs %lu,"
                      " avail %lu from ttr %lu.%lu",
                      pm->dsname_ebcdic, pm->member_name, other->member_name,
                      (unsigned long)oneed, (unsigned long)oavail,

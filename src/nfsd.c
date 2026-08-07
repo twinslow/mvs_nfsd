@@ -422,8 +422,23 @@ static void server_init_subsystems(void)
        convert ISPF member stats (stored in local time) to/from UTC epoch.
        time()/gettimeofday() already return UTC, so they need no correction. */
     mvs_tz_init();
-    logmsg_info("NFSDM100I", "NFSD MVS local-time offset = %d seconds (0 = no offset)",
-             mvs_tz_offset());
+    /* Reported as +/-HH:MM rather than raw seconds: several real zones sit
+       on a quarter or half hour (+05:45 Nepal, -03:30 Newfoundland), and a
+       seconds figure makes those hard to check at a glance.
+
+       The sign is taken off BEFORE the arithmetic.  mvs_tz_offset() is
+       negative west of GMT, and C89 leaves the rounding direction of
+       division and remainder with a negative operand implementation
+       defined -- so -21600 could yield either -6:0 or -5:-3600. */
+    {
+        int  tz   = mvs_tz_offset();
+        int  mag  = (tz < 0) ? -tz : tz;
+        char sign = (tz < 0) ? '-' : '+';
+
+        logmsg_info("NFSDM100I",
+                    "NFSD MVS local-time offset = %c%02d:%02d (HH:MM)",
+                    sign, mag / 3600, (mag % 3600) / 60);
+    }
 }
 
 /* Parse argv into *opts, which arrives holding the defaults.
@@ -603,7 +618,22 @@ int main(int argc, char *argv[])
         logmsg_error("NFSDM210E", "Cannot open config: %s", opts.config_path);
         return 106;
     }
-    logmsg_info("NFSDM220I", "Loaded %d export(s) from %s", n, opts.config_path);
+    /* Report the DATASET total too, not just the export count: several
+       datasets normally share one export path, so the export count alone
+       does not tell an operator whether everything they configured was
+       actually accepted.  A dataset dropped by cfg_load_dscb_info() (a bad
+       DSCB, wrong DSORG/RECFM) takes its whole export with it, and that is
+       far easier to spot against an expected dataset count. */
+    {
+        int exp_idx;
+        int ds_total = 0;
+
+        for (exp_idx = 0; exp_idx < n; exp_idx++)
+            ds_total += export_dataset_count(exp_idx);
+
+        logmsg_info("NFSDM220I", "Loaded %d export(s), %d dataset(s) from %s",
+                    n, ds_total, opts.config_path);
+    }
 
     /* File handles are self-describing -- no handle cache to initialise. */
 

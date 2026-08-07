@@ -14,15 +14,15 @@
 /* -------------------------------------------------------------------- */
 static mvs_rcache_entry_t g_mvs_rcache_entries[MVS_RCACHE_ENTRIES];
 
-void mvs_rcache_init(void) 
+void mvs_rcache_init(void)
 {
     memset(g_mvs_rcache_entries, 0, sizeof(g_mvs_rcache_entries));
 }
 
 mvs_rcache_entry_t *mvs_rcache_find_entry(
-    const char *dsname, 
-    const char *member_name, 
-    int export_idx) 
+    const char *dsname,
+    const char *member_name,
+    int export_idx)
 {
     time_t now = time(NULL);
 
@@ -103,7 +103,7 @@ int mvs_pds_member_close(
 
 int mvs_pds_member_pread(
     mvs_rcache_entry_t      *cache_entry,
-    FILE                    *fh, 
+    FILE                    *fh,
     uint8_t                 *buff,
     uint32_t                count,
     uint64_t                offset,
@@ -115,33 +115,33 @@ int mvs_pds_member_pread(
     size_t read_bytes;
     char     discard[1024];
 
-    logmsg_info("NFSIR010I", "mvsprw.mvs_pds_member_pread: Starting with offset = %llu", offset);
+    logmsg_debug("NFSIR010D", "Read starting with offset = %llu and count %u", offset, count);
 
     if (offset > 0) {
         if (cache_entry->has_last_getpos &&
             offset == (cache_entry->last_offset + cache_entry->last_nread) ) {
-            logmsg_info("NFSIR020I", "mvsprw.mvs_pds_member_pread: Continuing to read from prior pos");
+            logmsg_debug("NFSIR020D", "Read continuing from prior pos");
             /* We have a saved fgetpos value that we can use ...*/
             rc = fsetpos(fh, &cache_entry->last_getpos);
         } else {
             /* We did not have a usable fgetpos value ... so seek */
-            logmsg_info("NFSIR030I", "mvsprw.mvs_pds_member_pread: Seeking to new pos");
+            logmsg_debug("NFSIR030D", "Seeking to new pos");
             rc = fseek(fh, (long)offset, SEEK_SET);
         }
         if ( rc < 0 ) {
-            logmsg_info("NFSIR040I", "mvsprw.mvs_pds_member_pread: Got error from fsetpos or fseek");
+            logmsg_error("NFSIR040E", "Read error from fsetpos or fseek, errno - %d", errno);
             mvs_rcache_entry_reset(cache_entry);
             return -1;
         }
     }
 
     /* Now read the data from the file of the required size */
-    logmsg_info("NFSIR050I", "mvsprw.mvs_pds_member_pread: Reading data from file");
+    logmsg_debug("NFSIR050D", "Reading data from file");
     read_bytes = fread(buff, 1, (size_t)count, fh);
 
     /* Did we hit an error */
     if ( ferror(fh) ) {
-        logmsg_info("NFSIR060I", "mvsprw.mvs_pds_member_pread: fread - file in error, errno - %d", errno);
+        logmsg_error("NFSIR060E", "fread - file in error, errno - %d", errno);
         mvs_rcache_entry_reset(cache_entry);
         return -1;
     }
@@ -158,20 +158,18 @@ int mvs_pds_member_pread(
     }
 
     /* Update the cache entry */
-    logmsg_info("NFSIR070I", "mvsprw.mvs_pds_member_pread: Updating file position cache entry at 0x%08X", cache_entry);
+    logmsg_debug("NFSIR070D", "Read - updating file position cache entry at 0x%08X", cache_entry);
     cache_entry->last_used_time = time(NULL);
     cache_entry->last_offset = (uint32_t)offset;
     cache_entry->last_nread = (uint32_t)read_bytes;
 
-    logmsg_info("NFSIR080I", "mvsprw.mvs_pds_member_pread: Calling fgetpos");
     rc = fgetpos(fh, &(cache_entry->last_getpos));
-    logmsg_info("NFSIR090I", "mvsprw.mvs_pds_member_pread: fgetpos ended rc = %d", rc);
     if ( rc ) {
-        fprintf(stderr, "fgetpos returned error, errno - %d", errno);
+        log_error("NFSIR080E", "fgetpos returned error, errno - %d", errno);
         /* Because fgetpos returned an error, we'll reset the cache entry so it's not usable */
         mvs_rcache_entry_reset(cache_entry);
     } else {
-        logmsg_info("NFSIR100I", "mvsprw.mvs_pds_member_pread: Set indicator in cache that we have fgetpos info");
+        logmsg_debug("NFSIR100D", "Member read - set indicator in cache that we have fgetpos info");
         cache_entry->has_last_getpos = 1;
     }
 
@@ -231,6 +229,6 @@ int mvs_pds_member_read(
     if ( rc < 0 ) {
         return -1;
     }
-    logmsg_info("NFSIR110I", "mvs_pds_member_read: Read completed (member closed)");
+    logmsg_debug("NFSIR110D", "Read completed (member closed)");
     return 0;
 }

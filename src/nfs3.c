@@ -254,13 +254,13 @@ static void proc_getattr(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_read_fhandle3(in, &fh, &ok);
     rpc_write_accept_hdr(out, xid, RPC_SUCCESS);
 
-    if (!ok) { 
-        xdr_write_uint32(out, NFS3ERR_BADHANDLE); 
+    if (!ok) {
+        xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         logmsg_debug("NFSOP010D", "nfs3.proc_getattr: Returning error NFS3ERR_BADHANDLE");
-        return; 
+        return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
-        xdr_write_uint32(out, NFS3ERR_STALE); 
+        xdr_write_uint32(out, NFS3ERR_STALE);
         logmsg_debug("NFSOP020D", "nfs3.proc_getattr: Returning error NFS3ERR_STALE");
         return;
     }
@@ -370,7 +370,7 @@ static void proc_lookup(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+    snprintf(obj_path, MAX_PATH, "%s%c%s",
         dir_path, ebcdic_to_ascii_c('/'), name);
 
     logmsg_debug("NFSOP080D", "nfs3.proc_lookup: Starting for obj_path %s",
@@ -423,18 +423,18 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
         xdr_write_uint32(out, NFS3ERR_BADHANDLE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
-        logmsg_debug("NFSOP100D", "nfs3.proc_access: Returning error NFS3ERR_BADHANDLE");
+        logmsg_debug("NFSOP100D", "Proc ACCESS returning error NFS3ERR_BADHANDLE");
         return;
     }
     if (fh_resolve(&fh, path, MAX_PATH) < 0) {
         xdr_write_uint32(out, NFS3ERR_STALE);
         xdr_write_post_op_attr(out, NULL, 0);
         xdr_write_uint32(out, 0);
-        logmsg_debug("NFSOP110D", "nfs3.proc_access: Returning error NFS3ERR_STATE");
+        logmsg_debug("NFSOP110D", "Proc ACCESS returning error NFS3ERR_STALE");
         return;
     }
 
-    logmsg_debug("NFSOP120D", "nfs3.proc_access: Starting for path %s, requested 0x%08X, auth_uid=%d, auth_gid=%d",
+    logmsg_trace("NFSOP120T", "Proc ACCESS starting for path %s, requested 0x%08X, auth_uid=%d, auth_gid=%d",
         log_ascii(path), requested, auth_uid, auth_gid);
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -447,7 +447,7 @@ static void proc_access(xdr_t *in, xdr_t *out, uint32_t xid,
     xdr_write_post_op_attr(out, &st, has_st);
     xdr_write_uint32(out, granted);
 
-    logmsg_debug("NFSOP130D", "nfs3.proc_access: Returned granted 0x%08X", granted);
+    logmsg_trace("NFSOP130D", "Proc ACCESS returned granted 0x%08X", granted);
 }
 
 /* ------------------------------------------------------------------ */
@@ -485,7 +485,7 @@ static void proc_read(xdr_t *in, xdr_t *out, uint32_t xid)
 
     if (count > MAX_READ_SIZE) count = MAX_READ_SIZE;
 
-    logmsg_info("NFSOP160I", "nfs3.proc_read: Starting %s, offset=%llu, count=%u",
+    logmsg_trace("NFSOP160T", "Proc READ starting %s, offset=%llu, count=%u",
         log_ascii(path), offset, count);
 
     has_st = (vfs_stat(path, &st) == 0);
@@ -627,7 +627,7 @@ static void proc_create(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+    snprintf(obj_path, MAX_PATH, "%s%c%s",
         dir_path, ebcdic_to_ascii_c('/'), name);
 
         logmsg_debug("NFSOP180D", "nfs3.proc_create: Starting for path %s",
@@ -733,7 +733,7 @@ static void proc_remove(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(obj_path, MAX_PATH, "%s%c%s", 
+    snprintf(obj_path, MAX_PATH, "%s%c%s",
         dir_path, ebcdic_to_ascii_c('/'), name);
 
     logmsg_debug("NFSOP190D", "nfs3.proc_remove: Starting for path %s",
@@ -908,7 +908,7 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     ecookie = cookie; lrcookie = 0;
 
     while (vfs_readdir_next(dp, ename, MAX_NAME, &efileid, &ecookie) == 0) {
-        snprintf(entry_path, MAX_PATH, "%s%c%s", 
+        snprintf(entry_path, MAX_PATH, "%s%c%s",
             dir_path, ebcdic_to_ascii_c('/'), ename);
         has_est = (vfs_stat(entry_path, &est) == 0);
         if (!has_est) continue;   /* skip unstat-able entries */
@@ -950,11 +950,11 @@ static void proc_readdirplus(xdr_t *in, xdr_t *out, uint32_t xid)
     xdr_write_uint32(out, (uint32_t)eof);
     vfs_closedir(dp);
 
-    logmsg_info("NFSOP240I", "nfs3.proc_readdirplus: The last response entry cookie was = '%-8.8s' (0x%016llX)",
+    logmsg_trace("NFSOP240T", "Proc READDIRPLUS the last response entry cookie was = '%-8.8s' (0x%016llX)",
         (char *)&lrcookie, lrcookie);
-    logmsg_info("NFSOP250I", "nfs3.proc_readdirplus: Ending for path %s, wrote_one=%d eof=%d xdr_bytes=%u",
+    logmsg_trace("NFSOP250I", "Proc READDIRPLUS ending for path %s, wrote_one=%d eof=%d xdr_bytes=%u",
        log_ascii(dir_path), wrote_one, eof, xdr_get_pos(out));
-       
+
 }
 
 /* ------------------------------------------------------------------ */
@@ -1160,9 +1160,9 @@ static void proc_rename(xdr_t *in, xdr_t *out, uint32_t xid)
         return;
     }
 
-    snprintf(from_path, MAX_PATH, "%s%c%s", 
+    snprintf(from_path, MAX_PATH, "%s%c%s",
         fdir_path, ebcdic_to_ascii_c('/'), fname);
-    snprintf(to_path,   MAX_PATH, "%s%c%s", 
+    snprintf(to_path,   MAX_PATH, "%s%c%s",
         tdir_path, ebcdic_to_ascii_c('/'), tname);
 
     logmsg_debug("NFSOP300D", "nfs3.proc_rename: Starting for from_path %s to_path %s",

@@ -845,7 +845,7 @@ int pww_create(int export_idx, int dataset_idx,
        still writes an EOF marker, which blkcalc charges as one block. */
     if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
         int saved_errno = errno;
-        logmsg_warn("NFSIW240W", "pww_create: %s(%s) refused -- predicted not to fit",
+        logmsg_warn("NFSIW240W", "Create member %s(%s) refused -- predicted not to fit",
                  dsname_ebcdic, member_name);
         if (created)
             pww_slot_release(pm);   /* nothing buffered yet; give it all back */
@@ -856,7 +856,7 @@ int pww_create(int export_idx, int dataset_idx,
     /* An empty create still needs to stow an empty member on COMMIT. */
     pww_set_dirty(pm);
 
-    logmsg_debug("NFSIW250D", "pww_create: %s(%s)", dsname_ebcdic, member_name);
+    logmsg_debug("NFSIW250D", "Create %s(%s) complete", dsname_ebcdic, member_name);
     return 0;
 }
 
@@ -913,7 +913,7 @@ int pww_write(int export_idx, int dataset_idx,
 
     pww_set_dirty(pm);
 
-    logmsg_debug("NFSIW260D", "pww_write: %s(%s) off=%llu cnt=%u hw=%u",
+    logmsg_debug("NFSIW260D", "Write for %s(%s) off=%llu cnt=%u hw=%u completed in slot",
         dsname_ebcdic, member_name, (unsigned long long)offset, count,
         pm->high_water);
     return 0;
@@ -955,14 +955,14 @@ int pww_truncate(int export_idx, int dataset_idx,
            EOF block). */
         if (blkcalc_admit_write(pm, NULL, 0, 0) < 0) {
             int saved_errno = errno;
-            logmsg_warn("NFSIW270W", "pww_truncate: %s(%s) refused -- predicted not to fit",
+            logmsg_warn("NFSIW270W", "Truncate %s(%s) refused -- predicted not to fit",
                      dsname_ebcdic, member_name);
             pww_slot_release(pm);         /* nothing buffered yet */
             errno = saved_errno;
             return -1;
         }
         pww_set_dirty(pm);
-        logmsg_debug("NFSIW280D", "pww_truncate: %s(%s) -> 0 (new empty)",
+        logmsg_debug("NFSIW280D", "Truncate of %s(%s) -> 0 (new empty) in slot",
             dsname_ebcdic, member_name);
         return 0;
     }
@@ -985,7 +985,7 @@ int pww_truncate(int export_idx, int dataset_idx,
        'size' zero bytes.  Shrinking only frees space, so it needs no check. */
     if (size > pm->high_water) {
         if (blkcalc_admit_write(pm, NULL, 0, (uint64_t)size) < 0) {
-            logmsg_warn("NFSIW290W", "pww_truncate: %s(%s) grow to %u refused -- predicted"
+            logmsg_warn("NFSIW290W", "Truncate %s(%s) grow to %u refused -- predicted"
                      " not to fit", dsname_ebcdic, member_name, size);
             return -1;                   /* errno set (ENOSPC) */
         }
@@ -1019,7 +1019,7 @@ int pww_truncate(int export_idx, int dataset_idx,
 
     pm->high_water      = size;
     pww_set_dirty(pm);
-    logmsg_debug("NFSIW300D", "pww_truncate: %s(%s) -> %u", dsname_ebcdic, member_name, size);
+    logmsg_debug("NFSIW300D", "Truncate: %s(%s) -> %u completed in slot", dsname_ebcdic, member_name, size);
     return 0;
 }
 
@@ -1066,7 +1066,7 @@ void pww_flush_idle(time_t now)
 
         if (pm->dirty) {
             if (pdsflush_slot(pm) < 0) {
-                logmsg_error("NFSIW310E", "pww_flush_idle: flush failed for %s(%s)",
+                logmsg_error("NFSIW310E", "Slot flush failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
             }
         }
@@ -1088,7 +1088,7 @@ void pww_flush_all(void)
             continue;
         if (pm->dirty) {
             if (pdsflush_slot(pm) < 0)
-                logmsg_error("NFSIW320E", "pww_flush_all: flush failed for %s(%s)",
+                logmsg_error("NFSIW320E", "Slot flush (all) failed for %s(%s)",
                     pm->dsname_ebcdic, pm->member_name);
         }
         pww_slot_release(pm);
@@ -1158,7 +1158,7 @@ int pww_touch_stats(int export_idx, int dataset_idx,
         rc = mvs_stow(ddname, member_name, stats_ud, (int)MVS_ISPF_STATS_LEN);
     }
     if (rc != 0) {
-        logmsg_warn("NFSIW340W", "pww_touch_stats: stats update failed for %s(%s) rc=%d",
+        logmsg_error("NFSIW340E", "ISPF stats update failed for %s(%s) rc=%d",
             dsname_ebcdic, member_name, rc);
     } else {
         /* The directory entry just changed, so invalidate exactly as every

@@ -335,7 +335,7 @@ static void cfg_add_dataset(int exp_idx, const char *dsname,
         exp->file_ext[MAX_FILE_EXT_LEN - 1] = '\0';
     }
 
-    logmsg_info("NFSCF060I", "Export '%s' / '%s' -> dir '%s' (ext '%s',"
+    logmsg_debug("NFSCF060D", "Export '%s' / '%s' -> dir '%s' (ext '%s',"
         " %s dirperm=%03o memperm=%03o)",
         exp->export_path_ebcdic, ds->dsname_ebcdic, ds->dirname_ebcdic,
         ds->file_ext, ds->readonly ? "ro" : "rw",
@@ -589,6 +589,9 @@ static void cfg_load_dscb_info(void)
         /* The overall return code only says "at least one entry is
            imperfect"; each entry carries its own status, so judge them
            individually rather than failing the export wholesale here. */
+
+        logmsg_info("NFSCF175I", "Exported datasets for %s follow",
+                    exp->export_path_ebcdic);
 
         for (j = 0; j < exp->ndatasets; j++) {
             pds_dataset_t *ds   = &exp->datasets[j];
