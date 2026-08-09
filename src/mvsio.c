@@ -12,24 +12,24 @@
 #include "ebcdic.h"
 #include "logger.h"
 
-/* -------------------------------------------------------------------- */
-/* mvs_member_name_valid: validate a PDS member name (the upper-cased    */
-/* form, as it would be stored in the directory).  IBM rules:            */
-/*   - 1 to 8 characters;                                                */
-/*   - first character a letter (A-Z) or a national character (@ # $)    */
-/*     -- NOT a digit;                                                   */
-/*   - remaining characters letters, digits (0-9), or national chars;    */
-/*   - no lowercase, no other special characters (e.g. '-', '.', ' ').   */
-/*                                                                       */
-/* Returns 0 if valid, otherwise an errno describing the fault:          */
-/*   ENAMETOOLONG -- more than 8 characters                              */
-/*   EINVAL       -- empty, starts with a digit, or has an invalid char  */
-/*                                                                       */
-/* Callers upper-case the client filename before validating, so a name   */
+/* ---------------------------------------------------------------------- */
+/* mvs_member_name_valid: validate a PDS member name (the upper-cased     */
+/* form, as it would be stored in the directory).  IBM rules:             */
+/*   - 1 to 8 characters;                                                 */
+/*   - first character a letter (A-Z) or a national character (@ # $)     */
+/*     -- NOT a digit;                                                    */
+/*   - remaining characters letters, digits (0-9), or national chars;     */
+/*   - no lowercase, no other special characters (e.g. '-', '.', ' ').    */
+/*                                                                        */
+/* Returns 0 if valid, otherwise an errno describing the fault:           */
+/*   ENAMETOOLONG -- more than 8 characters                               */
+/*   EINVAL       -- empty, starts with a digit, or has an invalid char   */
+/*                                                                        */
+/* Callers upper-case the client filename before validating, so a name    */
 /* containing lowercase reaches here as non-upper and is rejected by the  */
-/* isupper() check.  isupper()/isdigit() are EBCDIC-correct under JCC and  */
+/* isupper() check.  isupper()/isdigit() are EBCDIC-correct under JCC and */
 /* the national-char literals are EBCDIC on MVS.                          */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 int mvs_member_name_valid(const char *member)
 {
     size_t        len;
@@ -59,17 +59,17 @@ int mvs_member_name_valid(const char *member)
 }
 
 
-/* -------------------------------------------------------------------- */
-/* Classify a path as ROOT / DATASET (PDS dir) / PDS_MEMBER.            */
-/*                                                                      */
-/* The path is export-relative in the sense that it begins with an      */
-/* export's NFS path; the components that follow name a PDS directory   */
-/* (lower-case dsname) and, optionally, a member file:                  */
-/*                                                                      */
-/*   <export_path>                       -> ROOT                        */
+/* --------------------------------------------------------------------- */
+/* Classify a path as ROOT / DATASET (PDS dir) / PDS_MEMBER.             */
+/*                                                                       */
+/* The path is export-relative in the sense that it begins with an       */
+/* export's NFS path; the components that follow name a PDS directory    */
+/* (lower-case dsname) and, optionally, a member file:                   */
+/*                                                                       */
+/*   <export_path>                       -> ROOT                         */
 /*   <export_path>/<dirname>             -> DATASET (dataset_idx set)    */
 /*   <export_path>/<dirname>/<member>    -> PDS_MEMBER (dataset_idx set) */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 int mvs_path_type(const char *path, int *export_idx, int *dataset_idx)
 {
     int         i;
@@ -303,15 +303,15 @@ int mvs_get_dcb_info_dsn(const char *dsname, mvs_dcb_info_t *dcb) {
     if ( fh < 0 )
         return -1;
 
-    rc = __getdcb(fh, 
+    rc = __getdcb(fh,
         &dcb->dsorg, &dcb->recfm, &dcb->keylen,
         &dcb->lrecl, &dcb->blksize );
-    
+
     _close(fh);
     return rc;
 }
 
 char *mvs_dcb_dsorg_to_str(uint8_t dsorg) {
-    
+
 }
 

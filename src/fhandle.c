@@ -165,12 +165,12 @@ int fh_from_path(const char *abspath, our_fhandle_t *fh)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* fh_resolve: rebuild the ASCII NFS path this handle names.            */
 /*                                                                      */
 /* Returns 0 on success, -1 only when the handle is TRULY stale: its    */
 /* export is gone, or the dataset it names is no longer exported.       */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
 {
     export_t      *exp;
@@ -271,9 +271,9 @@ int fh_resolve(const our_fhandle_t *fh, char *abspath, uint32_t maxlen)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* fh_encode: serialise the handle into OUR_FHSIZE wire bytes.          */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void fh_encode(const our_fhandle_t *fh, uint8_t *bytes)
 {
     bytes[0] = (uint8_t)(fh->magic     >> 24);
@@ -289,10 +289,10 @@ void fh_encode(const our_fhandle_t *fh, uint8_t *bytes)
     fh_put_field(&bytes[8 + FH_DSNAME_LEN], fh->member, FH_MEMBER_LEN);
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* fh_decode: parse 'len' wire bytes into a handle.                     */
 /* Returns 0 on success, -1 on a wrong length or bad magic.             */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int fh_decode(const uint8_t *bytes, uint32_t len, our_fhandle_t *fh)
 {
     if (len != (uint32_t)OUR_FHSIZE) return -1;

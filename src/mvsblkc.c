@@ -58,9 +58,9 @@ static uint8_t g_blkc_scan[4096];
 #define BLKC_MAX_EXTENTS  16
 
 
-/* ==================================================================== */
+/* ===================================================================== */
 /* Record counting                                                       */
-/* ==================================================================== */
+/* ===================================================================== */
 
 /* Records a text line of n characters becomes.  An empty line is still one
    record; anything longer than the record length wraps into whole records. */
@@ -207,9 +207,9 @@ int blkcalc_total_blocks(const blkcalc_info_t *bi)
 }
 
 
-/* ==================================================================== */
+/* ===================================================================== */
 /* Fitting                                                               */
-/* ==================================================================== */
+/* ===================================================================== */
 
 /*
  * Blocks that will still fit on track 'tt', given 'r' records already on it.
@@ -384,9 +384,9 @@ int blkcalc_will_member_fit(const blkcalc_info_t *bi,
 }
 
 
-/* ==================================================================== */
+/* ===================================================================== */
 /* Config time                                                           */
-/* ==================================================================== */
+/* ===================================================================== */
 
 /* Turn a DSCB 3 byte date (2 digit year + binary day) into yyyyddd. */
 static uint32_t blkc_date(const uint8_t *d)
@@ -459,9 +459,9 @@ int blkcalc_dataset_init(dataset_dscb_info_t *out, const mvs_dscb_info_t *raw)
 }
 
 
-/* ==================================================================== */
+/* ===================================================================== */
 /* The write path entry point                                            */
-/* ==================================================================== */
+/* ===================================================================== */
 
 /* Map the DCB record format byte onto what the block arithmetic needs. */
 static blkcalc_recfm_t blkc_recfm_of(uint8_t recfm)

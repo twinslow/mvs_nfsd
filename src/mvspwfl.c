@@ -42,7 +42,7 @@
    never modify the (ASCII) member buffer -- it must survive across a COMMIT
    in case the client writes more before the slot is released. */
 static uint8_t g_pww_xlate[4096];
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* "Dataset is out of space" memory (design_nfs_write.md Sec 7.3)        */
 /*                                                                       */
 /* A full PDS abends on EVERY flush, and each abend is expensive: D37 +  */
@@ -61,9 +61,9 @@ static uint8_t g_pww_xlate[4096];
 /*                                                                       */
 /* "Full" here always means THE DATASET is out of space -- never the     */
 /* slot pool, which is a separate concern owned by mvspww.c.             */
-/* -------------------------------------------------------------------- */
-#define PWW_FULL_REMEMBER    4     /* datasets remembered as full       */
-#define PWW_FULL_EXPIRY_SEC  60    /* forget after this many seconds    */
+/* --------------------------------------------------------------------- */
+#define PWW_FULL_REMEMBER    4     /* datasets remembered as full        */
+#define PWW_FULL_EXPIRY_SEC  60    /* forget after this many seconds     */
 
 static struct {
     char   dsname[MAX_DSNAME_LEN];
@@ -119,7 +119,7 @@ int pdsflush_dataset_is_full(const char *dsname, time_t now)
     }
     return 0;
 }
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Abend protection for the flush (design_nfs_write.md Sec 7.3)          */
 /*                                                                       */
 /* Writing a PDS member abends when the dataset fills, and without a     */
@@ -133,9 +133,9 @@ int pdsflush_dataset_is_full(const char *dsname, time_t now)
 /*                                                                       */
 /* What we actually catch is B14, not D37: the data write hits D37, the  */
 /* runtime absorbs it (it reaches the console, not us), and then the     */
-/* runtime's own internal fclose() cannot complete its STOW and abends    */
-/* B14 -- that is the code that lands in the SDWA.                        */
-/* -------------------------------------------------------------------- */
+/* runtime's own internal fclose() cannot complete its STOW and abends   */
+/* B14 -- that is the code that lands in the SDWA.                       */
+/* --------------------------------------------------------------------- */
 
 /* The member stream, reachable from the recovery path: the abend unwinds out
    of pdsflush_write_member, so its local FILE * is gone by the time we regain

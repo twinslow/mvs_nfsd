@@ -16,39 +16,39 @@
 #include "nfsd.h"
 #include "mvspww.h"
 #include "mvsspl.h"      /* spill store -- the whole mvsspl.c boundary        */
-#include "mvspwfl.h"     /* flush machinery -- pdsflush_slot()               */
-#include "mvsblkc.h"     /* PDS space prediction -- blkcalc_admit_write()    */
+#include "mvspwfl.h"     /* flush machinery -- pdsflush_slot()                */
+#include "mvsblkc.h"     /* PDS space prediction -- blkcalc_admit_write()     */
 #include "mvsutl.h"      /* SDWA_ABEND_CODE()                                 */
 #include "mvspdir.h"
 #include "mvsdol.h"
 #include "logger.h"
-#include "mvsprf.h"      /* PERF_PWW_WRITE_GAP / mvsprf_record_ms()          */
+#include "mvsprf.h"      /* PERF_PWW_WRITE_GAP / mvsprf_record_ms()           */
 #include "asmutils.h"    /* MVS assembler helpers: mvs_dynalloc(), mvs_stow() */
 
-#include <setjmp.h>      /* jmp_buf                                          */
-#include <mvsutils.h>    /* _setjmp_stae / _setjmp_canc -- STAE abend trap   */
+#include <setjmp.h>      /* jmp_buf                                           */
+#include <mvsutils.h>    /* _setjmp_stae / _setjmp_canc -- STAE abend trap    */
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Static pool of pending members                                        */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 static pending_member_t g_pww_pool[PWW_MAX_PENDING];
 
 
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 /* Wall-clock millisecond timer for PERF_PWW_WRITE_GAP                    */
-/*                                                                       */
+/*                                                                        */
 /* Measurement only -- no flush or release decision depends on this.      */
 /* The statistic is the delay BETWEEN client WRITE requests, which is     */
 /* time the server spends idle in select() consuming no CPU, so clock()   */
 /* would report ~0 and is useless for it.                                 */
-/*                                                                       */
+/*                                                                        */
 /* Milliseconds since the epoch overflow 32 bits, so the first call fixes */
 /* a base second and everything is relative to it.  Only DIFFERENCES are  */
 /* ever used, so the ~49-day wrap can at worst spoil a single sample.     */
 /* The return value of gettimeofday() is not tested, matching every other */
 /* caller in this codebase (mvsvfs.c, mvspdir.c) -- JCC's convention for  */
 /* it is undocumented.                                                    */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 static unsigned long g_pww_ms_base = 0;   /* tv_sec at first call, 0 = unset */
 
 static unsigned long pww_now_ms(void)
@@ -65,29 +65,29 @@ static unsigned long pww_now_ms(void)
          + (unsigned long)(tv.tv_usec / 1000L);
 }
 
-/* -------------------------------------------------------------------- */
-/* "Cut short by the idle sweep" detector (PERF_PWW_LATE_GAP)            */
-/*                                                                       */
-/* When the sweep flushes a member the slot is released and every trace  */
-/* of the write sequence is gone.  So if the client was merely pausing   */
-/* and then carries on, nothing notices that the member has been STOWed  */
-/* twice and the first copy's blocks abandoned -- the dataset quietly    */
-/* accumulates dead space and nobody is any the wiser.                   */
-/*                                                                       */
-/* This remembers what the sweep flushed, and if a later WRITE resumes   */
-/* EXACTLY where that member ended, records the gap that caused it.      */
-/*                                                                       */
-/* Keying on "offset == the high_water we flushed at" is what keeps this */
-/* honest: a genuine rewrite of the same member starts again at offset   */
-/* 0 and is not counted, so the statistic only ever reports true         */
-/* continuations -- sequences the timeout really did cut in half.        */
-/*                                                                       */
-/* This is the one measurement PERF_PWW_WRITE_GAP cannot make: gaps      */
-/* longer than the timeout are censored by construction, because the     */
-/* slot is gone before the next write arrives.                           */
-/* -------------------------------------------------------------------- */
-#define PWW_RECENT_FLUSH      8      /* members remembered              */
-#define PWW_RECENT_EXPIRY_SEC 300    /* forget after five minutes       */
+/* ---------------------------------------------------------------------- */
+/* "Cut short by the idle sweep" detector (PERF_PWW_LATE_GAP)             */
+/*                                                                        */
+/* When the sweep flushes a member the slot is released and every trace   */
+/* of the write sequence is gone.  So if the client was merely pausing    */
+/* and then carries on, nothing notices that the member has been STOWed   */
+/* twice and the first copy's blocks abandoned -- the dataset quietly     */
+/* accumulates dead space and nobody is any the wiser.                    */
+/*                                                                        */
+/* This remembers what the sweep flushed, and if a later WRITE resumes    */
+/* EXACTLY where that member ended, records the gap that caused it.       */
+/*                                                                        */
+/* Keying on "offset == the high_water we flushed at" is what keeps this  */
+/* honest: a genuine rewrite of the same member starts again at offset    */
+/* 0 and is not counted, so the statistic only ever reports true          */
+/* continuations -- sequences the timeout really did cut in half.         */
+/*                                                                        */
+/* This is the one measurement PERF_PWW_WRITE_GAP cannot make: gaps       */
+/* longer than the timeout are censored by construction, because the      */
+/* slot is gone before the next write arrives.                            */
+/* ---------------------------------------------------------------------- */
+#define PWW_RECENT_FLUSH      8      /* members remembered                */
+#define PWW_RECENT_EXPIRY_SEC 300    /* forget after five minutes         */
 
 static struct {
     char          dsname[MAX_DSNAME_LEN];
@@ -186,21 +186,21 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
        write to a member we have not buffered -- unsupported, because the
        existing content is never read back.  Reported so the difference
        between the NZSTART and LATE_GAP counts can be accounted for. */
-    logmsg_warn("NFSIW020W", "pww_write: %s(%s) REFUSED at offset %lu -- append and random"
-             " write are not supported (member must be written from 0)",
+    logmsg_warn("NFSIW020W", "Proc WRITE for %s(%s) REFUSED at offset %lu -- append/random"
+             " write not supported (must be written from 0)",
              dsname_ebcdic, member_name, (unsigned long)offset);
 }
 
-/* -------------------------------------------------------------------- */
-/* Corruption tripwire (TEMPORARY -- see spill_corruption_open)          */
-/*                                                                       */
-/* Members intermittently end up with an inbound RPC WRITE message       */
-/* embedded in their data, every capture so far starting exactly 60      */
-/* bytes into a flush chunk (offsets 60, 4156, 60 == 60 mod 4096).  An   */
-/* RPC CALL header is unmistakable and cannot occur in file data, so     */
-/* look for the constant triple mtype=0, rpcvers=2, prog=100003 on a     */
-/* 4-byte boundary.  WHERE it is found splits the search in half:        */
-/*                                                                       */
+/* ---------------------------------------------------------------------- */
+/* Corruption tripwire (TEMPORARY -- see spill_corruption_open)           */
+/*                                                                        */
+/* Members intermittently end up with an inbound RPC WRITE message        */
+/* embedded in their data, every capture so far starting exactly 60       */
+/* bytes into a flush chunk (offsets 60, 4156, 60 == 60 mod 4096).  An    */
+/* RPC CALL header is unmistakable and cannot occur in file data, so      */
+/* look for the constant triple mtype=0, rpcvers=2, prog=100003 on a      */
+/* 4-byte boundary.  WHERE it is found splits the search in half:         */
+/*                                                                        */
 /*   fires in pww_write  -> the payload was ALREADY corrupt on arrival,   */
 /*                          so the fault is upstream (rpc_recv / xdr /    */
 /*                          g_write_buf) and rpc.c's own self-check       */
@@ -209,9 +209,9 @@ static void pww_nonzero_start(const char *dsname_ebcdic,
 /*                          inside the pool (pm->buf, the spill dataset,  */
 /*                          or the chunk read-back), which eliminates the */
 /*                          entire receive path in one observation.       */
-/*                                                                       */
+/*                                                                        */
 /* Cheap: a single 4-byte-strided pass.  Returns the offset, or -1.       */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 int pww_find_rpc_header(const uint8_t *p, uint32_t len)
 {
     uint32_t i;
@@ -239,13 +239,13 @@ int pww_find_rpc_header(const uint8_t *p, uint32_t len)
 static int g_fatal_abend = 0;
 
 
-/* ==================================================================== */
-/* Slot pool internals                                                   */
-/*                                                                       */
-/* Lifecycle of the pending_member_t slots -- find / acquire / release,  */
-/* per-slot init, and buffer growth.  All static; the flush machinery    */
-/* and the public API below operate through these.                       */
-/* ==================================================================== */
+/* ====================================================================== */
+/* Slot pool internals                                                    */
+/*                                                                        */
+/* Lifecycle of the pending_member_t slots -- find / acquire / release,   */
+/* per-slot init, and buffer growth.  All static; the flush machinery     */
+/* and the public API below operate through these.                        */
+/* ====================================================================== */
 
 /* Build the SPFEDIT enqueue RNAME: dsname(44) + member(8), blank-padded --
    the resource ISPF/EDIT (and REVIEW) hold while a member is being edited. */
@@ -606,12 +606,12 @@ static int pww_spill_transition(pending_member_t *pm)
     return 0;
 }
 
-/* ==================================================================== */
-/* Write-path helpers                                                    */
-/*                                                                       */
-/* The steps of pww_write(), each with the reasoning that justifies it,  */
-/* so the public function reads as the sequence it performs.             */
-/* ==================================================================== */
+/* ====================================================================== */
+/* Write-path helpers                                                     */
+/*                                                                        */
+/* The steps of pww_write(), each with the reasoning that justifies it,   */
+/* so the public function reads as the sequence it performs.              */
+/* ====================================================================== */
 
 /* Mark a member as holding content that is not yet stowed.
    The two assignments are ONE operation and must never be separated:
@@ -706,16 +706,16 @@ static void pww_record_write_gap(pending_member_t *pm)
     pm->nwrites++;
 }
 
-/* ==================================================================== */
-/* Flush machinery -- write the buffered member to the PDS and STOW it   */
-/* ==================================================================== */
+/* ====================================================================== */
+/* Flush machinery -- write the buffered member to the PDS and STOW it    */
+/* ====================================================================== */
 
-/* -------------------------------------------------------------------- */
-/* Store the specified data into the slot's memory buffer, or the       */
-/* spill file if one is in use.                                         */
-/*                                                                      */
-/* Returns 0, or -1 with errno set.                                     */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
+/* Store the specified data into the slot's memory buffer, or the         */
+/* spill file if one is in use.                                           */
+/*                                                                        */
+/* Returns 0, or -1 with errno set.                                       */
+/* ---------------------------------------------------------------------- */
 static int pww_store_range(pending_member_t *pm, uint64_t offset,
                            const uint8_t *data, uint32_t count)
 {
@@ -749,12 +749,12 @@ static int pww_store_range(pending_member_t *pm, uint64_t offset,
     return 0;
 }
 
-/* -------------------------------------------------------------------- */
-/* Read the specified range from the slot's memory buffer, or the       */
-/* spill file if one is in use.                                         */
-/*                                                                      */
-/* Returns 0, or -1 with errno set.                                     */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
+/* Read the specified range from the slot's memory buffer, or the         */
+/* spill file if one is in use.                                           */
+/*                                                                        */
+/* Returns 0, or -1 with errno set.                                       */
+/* ---------------------------------------------------------------------- */
 int pww_read_range(pending_member_t *pm, uint32_t off,
                    uint8_t *dst, uint32_t len)
 {
@@ -768,9 +768,9 @@ int pww_read_range(pending_member_t *pm, uint32_t off,
 }
 
 
-/* ==================================================================== */
-/* Public API (declared in mvspww.h; called from the vfs_* layer)        */
-/* ==================================================================== */
+/* ====================================================================== */
+/* Public API (declared in mvspww.h; called from the vfs_* layer)         */
+/* ====================================================================== */
 
 /* Non-zero once an abend we do NOT recover from has been trapped, or cleanup
    failed to release an allocation / SPFEDIT enqueue.  The main select loop

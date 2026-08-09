@@ -68,7 +68,7 @@ int mvs_close_pds_dir(FILE *pds_dir_fh) {
 /*                                                                      */
 /* A pds_member_list_t is a growable array of pds_member_entry_t:       */
 /*   list_size      = allocated capacity (number of entries)            */
-/*   number_in_list = number of entries currently in use               */
+/*   number_in_list = number of entries currently in use                */
 /*   list           = the allocated array (NULL when empty)             */
 /* -------------------------------------------------------------------- */
 
@@ -99,8 +99,7 @@ int mvspdir_mlist_init(pds_member_list_t *mlist)
 }
 
 /* -------------------------------------------------------------------- */
-/* Double the list capacity (see the note in the body on why not a fixed  */
-/* increment).                                                            */
+/* Expand the list capacity by MVSPDIR_MLIST_INCREMENT_SIZE entries.    */
 /* On failure the original list is left intact.                         */
 /* -------------------------------------------------------------------- */
 int mvspdir_mlist_expand(pds_member_list_t *mlist)
@@ -108,23 +107,15 @@ int mvspdir_mlist_expand(pds_member_list_t *mlist)
     int32_t             new_size;
     pds_member_entry_t *new_list;
 
-    /* DOUBLE rather than add a fixed increment.  Linear growth is what
-       fragments the C heap: every step frees a block of N bytes and asks for
-       N + increment, so the block just released is ALWAYS smaller than the
-       next request and can never satisfy it.  Reading a 900-member directory
-       took 22 reallocs that way -- 1920, 3840, 5760 ... 44160 bytes -- each
-       one orphaning a block no later request in the ladder could reuse.
-       When nothing on the free list fits, JCC GETMAINs another heap extent,
-       and it never gives one back, so the region ratchets upwards.
-
-       Doubling turns those 22 steps into 5 and makes the sizes repeat across
-       calls, so a freed block is usually exactly what the next directory
-       read wants.  It over-allocates by up to 2x at the peak, which is the
-       deliberate trade: a bigger high-water in exchange for far less
-       fragmentation.  pww_slot_ensure_cap() already grows this way. */
-    new_size = (mlist->list_size > 0)
-             ? mlist->list_size * 2
-             : MVSPDIR_MLIST_INITIAL_SIZE;
+    /* MEASURED 2026-08-07: do NOT change this to doubling.
+       Doubling was tried on the theory that the linear ladder of realloc
+       sizes fragments JCC's heap.  It did stabilise the region -- but at a
+       flat ~2100K, against 1180K rising to 1316K with the increment below.
+       It removed 136K of growth by adding 920K of permanent footprint,
+       because every list is then over-allocated by up to 2x and the eight
+       cached directory slots hold that peak for the life of the server.
+       The trade is not worth making. */
+    new_size = mlist->list_size + MVSPDIR_MLIST_INCREMENT_SIZE;
     new_list = (pds_member_entry_t *)realloc(mlist->list,
         (size_t)new_size * sizeof(pds_member_entry_t));
     if (new_list == NULL) {
@@ -785,7 +776,23 @@ pds_member_entry_t *mvs_pds_get_member_entry(
     }
 
     /* Read from 'member' to the end of the directory into the list.  The
-       first entry (if any) is the smallest member name >= 'member'. */
+       first entry (if any) is the smallest member name >= 'member'.
+
+       COSTLY, and the first thing to change if the region footprint ever
+       needs to come down.  Only list[0] is used -- everything after it is
+       read from disk, stored, and thrown away.  For a member near the start
+       of a large PDS that is tens of KB allocated (and grown by repeated
+       realloc) on the hottest path in the server: this runs on every flush
+       and every stat.
+
+       Measured 2026-08-07 with the integration-test datasets the region
+       plateaus at ~1316K, so there is no leak and no urgency -- but the
+       ceiling scales with the largest directory served, so a site with big
+       PDSs will sit much higher.  The fix is to stop the directory read
+       once the caller has what it needs, which means teaching
+       mvs_read_pds_dir() a limit; it currently always runs to end-of-
+       directory.  That reduces peak AND churn, unlike tuning the growth
+       policy, which only moves the cost around (see mvspdir_mlist_expand). */
     rc = mvs_pds_member_list(dsname, export_idx, member, &mlist, &end_of_dir);
     logmsg_debug("NFSID170D", "mvs_pds_get_member_entry: mvs_pds_member_list rc = %d, members = %d",
         rc, mlist.number_in_list);
@@ -817,17 +824,17 @@ pds_member_entry_t *mvs_pds_get_member_entry(
 }
 
 
-/* -------------------------------------------------------------------- */
-/* Fold a member list into a 32-bit signature (pure; no I/O).           */
-/*                                                                      */
-/* FNV-1a over each entry's 8-char name and its TTR (first_block_tt +   */
-/* first_block_rec), then the member count.  Deterministic and stable   */
-/* for an unchanged, same-order list (a PDS directory is name-sorted);  */
-/* changes on any add / remove / replace (new TTR).  Blind to an        */
-/* in-place update that preserves name, length, and TTR (a "zap").      */
+/* --------------------------------------------------------------------- */
+/* Fold a member list into a 32-bit signature (pure; no I/O).            */
+/*                                                                       */
+/* FNV-1a over each entry's 8-char name and its TTR (first_block_tt +    */
+/* first_block_rec), then the member count.  Deterministic and stable    */
+/* for an unchanged, same-order list (a PDS directory is name-sorted);   */
+/* changes on any add / remove / replace (new TTR).  Blind to an         */
+/* in-place update that preserves name, length, and TTR (a "zap").       */
 /* Split out from mvs_pds_dir_signature so it can be unit-tested with an */
 /* in-memory list.                                                       */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 uint32_t mvs_pds_dir_sig_calc(const pds_member_entry_t *list, int count)
 {
     uint32_t hash;

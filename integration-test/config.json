@@ -33,7 +33,7 @@
   "options": {
     "large_lines": 1500,
     "line_width": 72,
-    "readdir_big_dir" : "temp.haspsrc.asm",
+    "readdir_big_dir" : "sys1.maclib",
     "mtime_tolerance_sec": 120
   }
 }

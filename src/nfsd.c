@@ -58,25 +58,25 @@
 #include "mvsfid.h"
 #include "mvsutl.h"
 
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------- */
 /* Minimal getopt for JCC/MVS (JCC C89 library has no getopt).         */
-/*                                                                      */
-/* Supports:                                                            */
-/*   -x          option without argument                                */
+/*                                                                     */
+/* Supports:                                                           */
+/*   -x          option without argument                               */
 /*   -x val      option with argument (next argv element)              */
 /*   -xval       option with argument (attached, no space)             */
-/*   --           end-of-options marker                                 */
-/*                                                                      */
-/* Clustered flags (-xyz) are not supported; each flag must be its own  */
+/*   --           end-of-options marker                                */
+/*                                                                     */
+/* Clustered flags (-xyz) are not supported; each flag must be its own */
 /* -<char> token.  That is sufficient for nfsd's -p -m -n -v flags.    */
-/*                                                                      */
-/* optarg, optind, and optopt are declared static because they are      */
-/* consumed only within this translation unit.  On Linux the real       */
+/*                                                                     */
+/* optarg, optind, and optopt are declared static because they are     */
+/* consumed only within this translation unit.  On Linux the real      */
 /* POSIX symbols (from <unistd.h>) are used instead.                   */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------- */
 #ifdef __MVS__
 
-static char *optarg = NULL; /* points to option argument, or NULL      */
+static char *optarg = NULL; /* points to option argument, or NULL       */
 static int   optind = 1;    /* index of next argv[] element to examine  */
 static int   optopt = 0;    /* option char that triggered an error      */
 
@@ -132,10 +132,10 @@ static int getopt(int argc, char *argv[], const char *optstring)
 
 #endif /* __MVS__ */
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* parse_port: parse a decimal port string into [1, 65535].             */
 /* Returns 0 on success, -1 if the string is not a valid port number.   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 static int parse_port(const char *s, int *out)
 {
     char *end;
@@ -149,9 +149,9 @@ static int parse_port(const char *s, int *out)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Global write verifier: set once at startup from time() + pseudo-PID   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
+/* Global write verifier: set once at startup from time() + pseudo-PID  */
+/* -------------------------------------------------------------------- */
 uint8_t g_write_verifier[8];
 int     g_port_pmap  = PORT_PORTMAP;
 int     g_port_mount = PORT_MOUNT;
@@ -159,22 +159,22 @@ int     g_port_nfs   = PORT_NFS;
 int     g_verbose    = 0;
 
 /* ------------------------------------------------------------------ */
-/* Global I/O buffers shared across all connections (single-threaded)   */
+/* Global I/O buffers shared across all connections (single-threaded) */
 /* ------------------------------------------------------------------ */
 static uint8_t g_recv_buf[BUF_SIZE];
 static uint8_t g_send_buf[BUF_SIZE];
 
 /* ------------------------------------------------------------------ */
-/* Connection table                                                     */
+/* Connection table                                                   */
 /* ------------------------------------------------------------------ */
 static conn_t g_conns[MAX_CONNECTIONS];
 static int    g_nconns = 0;
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* sock_close: close a SOCKET descriptor.                               */
 /*                                                                      */
-/* On the MVS TCP/IP interface a socket MUST be closed with            */
-/* closesocket().  The C library's close() operates on MVS files and   */
+/* On the MVS TCP/IP interface a socket MUST be closed with             */
+/* closesocket().  The C library's close() operates on MVS files and    */
 /* does NOT close a socket: the connection stays open, no FIN is ever   */
 /* sent to the peer, and the descriptor leaks.  The visible symptom is  */
 /* a peer (e.g. the Linux NFS client) stuck in FIN_WAIT2 waiting for a  */
@@ -183,18 +183,18 @@ static int    g_nconns = 0;
 /* rejecting new connections and the mount wedges.                      */
 /*                                                                      */
 /* On POSIX, close() is the correct call (there is no closesocket()).   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 #ifdef __MVS__
 #define sock_close(fd)   closesocket(fd)
 #else
 #define sock_close(fd)   close(fd)
 #endif
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* make_listen_sock: create a TCP listening socket on port.             */
 /* SO_REUSEADDR lets the server restart without waiting for TIME_WAIT.  */
 /* Calls exit() on failure.                                             */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 static int make_listen_sock(int port)
 {
     int                fd;
@@ -233,9 +233,9 @@ static int make_listen_sock(int port)
     return fd;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* accept_conn: accept one connection and add it to the table.          */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 static void accept_conn(int lsock, int proto)
 {
     struct sockaddr_in peer;
@@ -279,10 +279,10 @@ static void accept_conn(int lsock, int proto)
     g_nconns++;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* handle_connection: receive one RPC, dispatch, send reply.            */
-/* Returns 0 on success, -1 to close the connection.                   */
-/* ------------------------------------------------------------------ */
+/* Returns 0 on success, -1 to close the connection.                    */
+/* -------------------------------------------------------------------- */
 static int handle_connection(conn_t *conn)
 {
     uint32_t   msglen = 0;
@@ -351,7 +351,7 @@ static void set_write_verifier() {
 static int process_operator_command() {
 
 #ifdef __MVS__
-    char           modify_buf[128]; /* MODIFY command text (EBCDIC)       */
+    char           modify_buf[128]; /* MODIFY command text (EBCDIC)        */
     int            modify_len;      /* bytes of command text returned      */
     int            cib_rc;          /* getcib return code                  */
     int            handle_rc;
@@ -394,7 +394,7 @@ static int process_operator_command() {
 }
 
 /* ==================================================================== */
-/* Server startup / event loop / shutdown                              */
+/* Server startup / event loop / shutdown                               */
 /*                                                                      */
 /* The phases of main(), each with the reasoning that justifies it, so  */
 /* main() reads as the sequence it performs.                            */

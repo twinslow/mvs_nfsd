@@ -119,7 +119,7 @@ static const char *s_file_content[MOCK_NUM_FILES] = {
 /* -------------------------------------------------------------------- */
 /* Directory entry table                                                */
 /*                                                                      */
-/* Cookie values are 1-based.  The array index equals cookie - 1.      */
+/* Cookie values are 1-based.  The array index equals cookie - 1.       */
 /* -------------------------------------------------------------------- */
 
 static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
@@ -135,7 +135,7 @@ static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
 /* -------------------------------------------------------------------- */
 /* EBCDIC filename comparison helper                                    */
 /*                                                                      */
-/* On MVS, string literals such as "file1.txt" and "." are EBCDIC.     */
+/* On MVS, string literals such as "file1.txt" and "." are EBCDIC.      */
 /* The filename component of a path passed to mock_resolve() is ASCII   */
 /* (it was stored in the fhandle cache from an ASCII vfs_readdir_next   */
 /* result).  mock_name_eq() translates the ASCII filename to EBCDIC in  */
@@ -147,8 +147,8 @@ static const char *s_dir_entries[MOCK_NUM_ENTRIES] = {
 
 /* These define the forward slash characters in ASCII and EBCDIC */
 
-#define PATH_SEPARATOR_ASCII  (char)0x2f  
-#define PATH_SEPARATOR_EBCDIC (char)0x61 
+#define PATH_SEPARATOR_ASCII  (char)0x2f
+#define PATH_SEPARATOR_EBCDIC (char)0x61
 
 #ifdef __MVS__
 
@@ -238,7 +238,7 @@ static const char *mock_path_for_log(const char *path)
 /*                                                                      */
 /* File ID scheme (matches vfs_stat):                                   */
 /*   directory:  (exp_idx + 1) * 10                                     */
-/*   fileN.txt:  (exp_idx + 1) * 10 + N   (N = 1 .. MOCK_NUM_FILES)    */
+/*   fileN.txt:  (exp_idx + 1) * 10 + N   (N = 1 .. MOCK_NUM_FILES)     */
 /* -------------------------------------------------------------------- */
 
 struct vfs_dir {
@@ -258,15 +258,15 @@ void dir_openlist_init() {
 /* mock_resolve: classify a path as directory, file, or not found.      */
 /*                                                                      */
 /* Paths are built by fh_resolve() as:                                  */
-/*   <export.host_path>            -- export root (directory)            */
-/*   <export.host_path>/<filename> -- member file                        */
+/*   <export.host_path>            -- export root (directory)           */
+/*   <export.host_path>/<filename> -- member file                       */
 /*                                                                      */
 /* A filename of "." is also accepted and resolves to the parent        */
 /* directory so that NFS LOOKUP(".") works correctly.                   */
 /*                                                                      */
-/* Returns MOCK_IS_DIR, MOCK_IS_FILE, or MOCK_NOT_FOUND.               */
+/* Returns MOCK_IS_DIR, MOCK_IS_FILE, or MOCK_NOT_FOUND.                */
 /* On success, *exp_idx and *file_idx are set.                          */
-/* *file_idx is -1 for directories and 0-4 for files.                  */
+/* *file_idx is -1 for directories and 0-4 for files.                   */
 /* -------------------------------------------------------------------- */
 
 static int mock_resolve(const char *path, int *exp_idx, int *file_idx)
@@ -413,7 +413,7 @@ int vfs_stat(const char *path, vfs_stat_t *vs)
 /* -------------------------------------------------------------------- */
 
 int vfs_pread(const char *path, void *buf, uint32_t count,
-              uint64_t offset, uint32_t *nread, int *eof) 
+              uint64_t offset, uint32_t *nread, int *eof)
 {
     int         exp_idx;
     int         file_idx;
@@ -608,11 +608,11 @@ vfs_dir_t *vfs_opendir(const char *path, uint64_t cookie)
 /* -------------------------------------------------------------------- */
 /* vfs_readdir_next: return the next directory entry.                   */
 /*                                                                      */
-/* Fills name, *fileid, and *cookie.  Returns 0 on success, -1 at end. */
+/* Fills name, *fileid, and *cookie.  Returns 0 on success, -1 at end.  */
 /*                                                                      */
 /* File IDs match those returned by vfs_stat:                           */
 /*   "."       -> (exp_idx+1)*10        (same as the directory itself)  */
-/*   ".."      -> 1                     (generic parent sentinel)        */
+/*   ".."      -> 1                     (generic parent sentinel)       */
 /*   fileN.txt -> (exp_idx+1)*10 + N    (N is 1-based)                  */
 /* -------------------------------------------------------------------- */
 

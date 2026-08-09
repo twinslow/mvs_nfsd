@@ -875,23 +875,23 @@ int vfs_truncate(const char *path, uint64_t size)
                         (uint32_t)size);
 }
 
-/* -------------------------------------------------------------------- */
-/* vfs_set_times: set atime and/or mtime on path.                       */
-/* set_atime / set_mtime use the SET_* constants from nfsd.h:           */
-/*   SET_DONT_CHANGE      - leave this timestamp unchanged              */
-/*   SET_TO_SERVER_TIME   - set to the server's current time            */
-/*   SET_TO_CLIENT_TIME   - set to the supplied sec/nsec values         */
-/*                                                                      */
-/* A PDS member has one settable timestamp -- the ISPF "changed" date.  */
-/* We map the requested modification time onto it (preferring mtime,     */
-/* falling back to atime) and update the member's ISPF stats in place    */
-/* via pww_touch_stats (which no-ops unless the member already has stats */
-/* and the time actually changed).  The content is NOT rewritten and the */
+/* ---------------------------------------------------------------------- */
+/* vfs_set_times: set atime and/or mtime on path.                         */
+/* set_atime / set_mtime use the SET_* constants from nfsd.h:             */
+/*   SET_DONT_CHANGE      - leave this timestamp unchanged                */
+/*   SET_TO_SERVER_TIME   - set to the server's current time              */
+/*   SET_TO_CLIENT_TIME   - set to the supplied sec/nsec values           */
+/*                                                                        */
+/* A PDS member has one settable timestamp -- the ISPF "changed" date.    */
+/* We map the requested modification time onto it (preferring mtime,      */
+/* falling back to atime) and update the member's ISPF stats in place     */
+/* via pww_touch_stats (which no-ops unless the member already has stats  */
+/* and the time actually changed).  The content is NOT rewritten and the  */
 /* modification level is NOT bumped -- a time change is not a content     */
-/* change.  Returns 0 for the normal case (SETATTR must not fail, as       */
-/* clients issue it during the write sequence), except on a read-only      */
-/* export, where it fails with EROFS.                                      */
-/* -------------------------------------------------------------------- */
+/* change.  Returns 0 for the normal case (SETATTR must not fail, as      */
+/* clients issue it during the write sequence), except on a read-only     */
+/* export, where it fails with EROFS.                                     */
+/* ---------------------------------------------------------------------- */
 int vfs_set_times(const char *path,
                   int set_atime, uint32_t atime_sec, uint32_t atime_nsec,
                   int set_mtime, uint32_t mtime_sec, uint32_t mtime_nsec)
@@ -1108,7 +1108,7 @@ void generate_file_name(
 /* Returns a handle from the static pool, or NULL on error.             */
 /*                                                                      */
 /* Fast path: if a non-expired pool slot already holds a complete       */
-/* member cache (end_of_dir_read=1) for this PDS, return it directly   */
+/* member cache (end_of_dir_read=1) for this PDS, return it directly    */
 /* without re-reading the disk.  This prevents pool exhaustion when the */
 /* NFS client issues multiple READDIRPLUS calls for the same directory. */
 /* -------------------------------------------------------------------- */
@@ -1427,7 +1427,7 @@ void vfs_closedir(vfs_dir_t *dir_entry)
 /*   member_entry -- set to the address of the matching cache entry     */
 /*                   on success; unchanged on failure                   */
 /*                                                                      */
-/* Returns 0 on success, -1 if the pool entry was not found (or has    */
+/* Returns 0 on success, -1 if the pool entry was not found (or has     */
 /* timed out) or if no matching member exists in the cached directory.  */
 /* -------------------------------------------------------------------- */
 int mvsvfs_find_cached_member(

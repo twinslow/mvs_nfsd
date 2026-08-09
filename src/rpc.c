@@ -19,7 +19,7 @@
 #endif
 #include "nfsd.h"
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* Internal helpers: receive / send all bytes with retries              */
 /*                                                                      */
 /* recv() and send() here are BLOCKING and the server is                */
@@ -46,7 +46,7 @@
 /* TCP does not rescue us: SO_KEEPALIVE is never set on these sockets,  */
 /* and even where keepalive is enabled by default it is measured in     */
 /* hours.  So each transfer is gated on a select() with a timeout.      */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 
 /* Seconds without progress on a PARTIALLY transferred message before the
    connection is abandoned.
@@ -132,45 +132,45 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Receive-corruption self-check (temporary; see spill_corruption_open) */
-/*                                                                      */
-/* An intermittent bug corrupts a written PDS member: a whole inbound   */
-/* RPC request image (its own file handle + AUTH_UNIX cred) ends up      */
-/* embedded in the middle of the WRITE payload, with the file data       */
-/* restarting from offset 0 after it.  The receive -> store chain is     */
-/* provably a faithful copy, so the corruption is already present in the */
-/* reassembled buffer when rpc_recv returns.  This check catches it at   */
-/* that exact point.                                                    */
-/*                                                                      */
-/* Every our_fhandle_t carries the ASCII magic "NFS3" (0x4E465333).      */
-/*                                                                      */
-/* The check is applied ONLY to NFS WRITE calls, which carry exactly one */
+/* ---------------------------------------------------------------------- */
+/* Receive-corruption self-check (temporary; see spill_corruption_open)   */
+/*                                                                        */
+/* An intermittent bug corrupts a written PDS member: a whole inbound     */
+/* RPC request image (its own file handle + AUTH_UNIX cred) ends up       */
+/* embedded in the middle of the WRITE payload, with the file data        */
+/* restarting from offset 0 after it.  The receive -> store chain is      */
+/* provably a faithful copy, so the corruption is already present in the  */
+/* reassembled buffer when rpc_recv returns.  This check catches it at    */
+/* that exact point.                                                      */
+/*                                                                        */
+/* Every our_fhandle_t carries the ASCII magic "NFS3" (0x4E465333).       */
+/*                                                                        */
+/* The check is applied ONLY to NFS WRITE calls, which carry exactly one  */
 /* file handle, so a second occurrence means a foreign request image bled */
-/* into the buffer.  It must not be applied to every request: RENAME and */
-/* LINK legitimately carry TWO handles (from-dir and to-dir), and scanning */
+/* into the buffer.  It must not be applied to every request: RENAME and  */
+/* LINK legitimately carry TWO handles (from-dir and to-dir), and scanning*/
 /* those produced a false positive -- two hits 80 bytes apart, which is   */
-/* just handle(60) + a padded filename, exactly the RENAME wire layout.  */
-/*                                                                      */
-/* ROOT CAUSE (found 2026-07-25): a partial recv() on this MVS socket    */
-/* layer can REPLAY the message from byte 0 instead of continuing.  A    */
-/* 636-byte WRITE arrived as M[0..255] followed by M[0..379]: same xid,  */
-/* one fragment, and the record mark agreed with the message's own       */
-/* fields, so the framing was right and the BYTES were duplicated.       */
-/* recv_all() writes to buf+done, so the destination was correct -- the  */
-/* source restarted.  Not a MVS NFSD bug; the stack lied to us.          */
-/*                                                                      */
-/* This check therefore does more than report: it REJECTS the message    */
-/* (rpc_recv returns -1 -> the connection closes -> the client resends), */
-/* so corrupt data can never reach a PDS member.  Rejection is on PROOF  */
-/* only -- a failed length invariant, or a structurally complete RPC     */
-/* CALL header embedded in the payload.  Two "NFS3" magics alone is NOT  */
-/* sufficient, because file data may legitimately contain those bytes    */
-/* and dropping a good connection would be its own corruption.          */
-/*                                                                      */
-/* Silent unless corruption is seen, so it is safe to leave enabled.     */
-/* ------------------------------------------------------------------ */
-#define RPC_MAX_FRAGS     32     /* fragment offsets/lengths recorded   */
+/* just handle(60) + a padded filename, exactly the RENAME wire layout.   */
+/*                                                                        */
+/* ROOT CAUSE (found 2026-07-25): a partial recv() on this MVS socket     */
+/* layer can REPLAY the message from byte 0 instead of continuing.  A     */
+/* 636-byte WRITE arrived as M[0..255] followed by M[0..379]: same xid,   */
+/* one fragment, and the record mark agreed with the message's own        */
+/* fields, so the framing was right and the BYTES were duplicated.        */
+/* recv_all() writes to buf+done, so the destination was correct -- the   */
+/* source restarted.  Not a MVS NFSD bug; the stack lied to us.           */
+/*                                                                        */
+/* This check therefore does more than report: it REJECTS the message     */
+/* (rpc_recv returns -1 -> the connection closes -> the client resends),  */
+/* so corrupt data can never reach a PDS member.  Rejection is on PROOF   */
+/* only -- a failed length invariant, or a structurally complete RPC      */
+/* CALL header embedded in the payload.  Two "NFS3" magics alone is NOT   */
+/* sufficient, because file data may legitimately contain those bytes     */
+/* and dropping a good connection would be its own corruption.            */
+/*                                                                        */
+/* Silent unless corruption is seen, so it is safe to leave enabled.      */
+/* ---------------------------------------------------------------------- */
+#define RPC_MAX_FRAGS     32     /* fragment offsets/lengths recorded     */
 
 /* Deliberately STATIC, not automatic.  These were locals in rpc_recv, which
    added 256 bytes to the stack frame of the hottest function in the server --
@@ -183,7 +183,7 @@ static int send_all(int fd, const uint8_t *buf, uint32_t len)
 static uint32_t g_rpc_frag_off[RPC_MAX_FRAGS];
 static uint32_t g_rpc_frag_len[RPC_MAX_FRAGS];
 
-/* Fixed offsets in an RPC CALL header: xid(0) mtype(4) rpcvers(8)       */
+/* Fixed offsets in an RPC CALL header: xid(0) mtype(4) rpcvers(8)      */
 /* prog(12) vers(16) proc(20).                                          */
 #define RPC_CALL_PROG_OFF   12u
 #define RPC_CALL_PROC_OFF   20u
@@ -201,24 +201,24 @@ static uint32_t rpc_peek_uint32(const uint8_t *buf, uint32_t off)
 /* XDR pads every opaque/string up to a 4-byte boundary. */
 #define RPC_ROUND4(n)  (((n) + 3u) & ~3u)
 
-/* ------------------------------------------------------------------ */
+/* --------------------------------------------------------------------- */
 /* rpc_write_expected_len: a WRITE call's length is fully determined by  */
-/* its own fields, so it can be recomputed and compared against the     */
-/* length the record mark claimed.  Walks the CALL header, the AUTH     */
-/* credential and verifier, then the WRITE arguments                    */
-/* (fh, offset, count, stable, data), and returns the byte position     */
-/* just past the padded data.                                           */
-/*                                                                      */
+/* its own fields, so it can be recomputed and compared against the      */
+/* length the record mark claimed.  Walks the CALL header, the AUTH      */
+/* credential and verifier, then the WRITE arguments                     */
+/* (fh, offset, count, stable, data), and returns the byte position      */
+/* just past the padded data.                                            */
+/*                                                                       */
 /* This is the discriminator between the two candidate root causes:      */
 /*   expected < total  -> the record mark over-declared the length, so   */
 /*                        recv_all ran on into the NEXT message and      */
 /*                        appended it to this payload (framing desync).  */
 /*   expected == total -> the framing was right and the BYTES were bad   */
 /*                        (a short/stale copy inside recv()).            */
-/*                                                                      */
+/*                                                                       */
 /* Returns 0 and sets *expected, or -1 if the message is too short to    */
 /* walk (in which case no conclusion is drawn).                          */
-/* ------------------------------------------------------------------ */
+/* --------------------------------------------------------------------- */
 static int rpc_write_expected_len(const uint8_t *buf, uint32_t total,
                                   uint32_t *expected)
 {
@@ -419,13 +419,13 @@ static int rpc_recv_selfcheck(const uint8_t *buf, uint32_t total, int nfrag,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* rpc_recv: read one complete RPC message from fd into buf.            */
 /*                                                                      */
 /* Handles multi-fragment messages by reassembling into a single        */
 /* buffer.  Sets *msglen to the total reassembled byte count.           */
 /* Returns 0 on success, -1 if the connection should be closed.         */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
 {
     uint8_t  mark[4];
@@ -462,19 +462,19 @@ int rpc_recv(int fd, uint8_t *buf, uint32_t maxlen, uint32_t *msglen)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* rpc_send: send buf as a single-fragment RPC record over fd.          */
 /*                                                                      */
 /* frame must point to a buffer whose first 4 bytes are reserved        */
 /* headroom for the record mark, with the XDR response body at          */
-/* frame[4..4+len-1].  rpc_send fills in the mark and then sends the   */
-/* entire (4 + len) byte frame in a single send_all() call, so the     */
+/* frame[4..4+len-1].  rpc_send fills in the mark and then sends the    */
+/* entire (4 + len) byte frame in a single send_all() call, so the      */
 /* mark and body always travel together in one TCP write.               */
 /*                                                                      */
-/* The caller must initialise its XDR writer at frame+4 (not frame),   */
+/* The caller must initialise its XDR writer at frame+4 (not frame),    */
 /* and pass frame (not frame+4) here.  See handle_connection() in       */
 /* nfsd.c.                                                              */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 int rpc_send(int fd, uint8_t *frame, uint32_t len)
 {
     uint32_t rm = 0x80000000u | len;
@@ -487,14 +487,14 @@ int rpc_send(int fd, uint8_t *frame, uint32_t len)
     return send_all(fd, frame, 4u + len);
 }
 
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------- */
 /* rpc_parse_call: decode the RPC CALL header from an xdr_t buffer.    */
-/*                                                                      */
+/*                                                                     */
 /* Reads: xid, msg_type(CALL), rpcvers(2), prog, vers, proc,           */
-/* credentials (AUTH_NULL or AUTH_UNIX), verifier.                      */
+/* credentials (AUTH_NULL or AUTH_UNIX), verifier.                     */
 /* Fills call->auth_uid / auth_gid from AUTH_UNIX if present.          */
-/* Returns 0 on success, -1 if the message is not a valid CALL.         */
-/* ------------------------------------------------------------------ */
+/* Returns 0 on success, -1 if the message is not a valid CALL.        */
+/* ------------------------------------------------------------------- */
 int rpc_parse_call(xdr_t *x, rpc_call_t *call)
 {
     uint32_t mtype;
@@ -553,15 +553,15 @@ int rpc_parse_call(xdr_t *x, rpc_call_t *call)
     return x->error ? -1 : 0;
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* rpc_write_accept_hdr: write the RPC reply header for an accepted     */
 /* message up to and including accept_stat.                             */
 /* The caller then writes the procedure-specific result fields.         */
 /*                                                                      */
 /* Common accept_stat values:                                           */
-/*   RPC_SUCCESS(0), PROG_UNAVAIL(1), PROG_MISMATCH(2),                */
+/*   RPC_SUCCESS(0), PROG_UNAVAIL(1), PROG_MISMATCH(2),                 */
 /*   PROC_UNAVAIL(3), GARBAGE_ARGS(4)                                   */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void rpc_write_accept_hdr(xdr_t *x, uint32_t xid, uint32_t accept_stat)
 {
     xdr_write_uint32(x, xid);
@@ -572,9 +572,9 @@ void rpc_write_accept_hdr(xdr_t *x, uint32_t xid, uint32_t accept_stat)
     xdr_write_uint32(x, accept_stat);
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* rpc_write_prog_mismatch: send a PROG_MISMATCH rejection.             */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void rpc_write_prog_mismatch(xdr_t *x, uint32_t xid,
                               uint32_t lo, uint32_t hi)
 {
@@ -583,9 +583,9 @@ void rpc_write_prog_mismatch(xdr_t *x, uint32_t xid,
     xdr_write_uint32(x, hi);
 }
 
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 /* rpc_write_proc_unavail: send a PROC_UNAVAIL rejection.               */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------- */
 void rpc_write_proc_unavail(xdr_t *x, uint32_t xid)
 {
     rpc_write_accept_hdr(x, xid, PROC_UNAVAIL);

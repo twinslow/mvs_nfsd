@@ -234,7 +234,7 @@ void logmsg_error(const char *msgid, const char *fmt, ...);
 void logmsg_fatal(const char *msgid, const char *fmt, ...);
 
 /* -------------------------------------------------------------------- */
-/* ASCII -> EBCDIC helper for log arguments (MVS only)                 */
+/* ASCII -> EBCDIC helper for log arguments (MVS only)                  */
 /* -------------------------------------------------------------------- */
 
 /*

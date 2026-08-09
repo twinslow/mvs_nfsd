@@ -661,15 +661,16 @@ static void cfg_load_dscb_info(void)
                 continue;
             }
 
-            logmsg_info("NFSCF230I", "Export load %s DSCB DSORG=%s RECFM=%s LRECL=%d BLKSIZE=%d",
+            logmsg_info("NFSCF230I", "Export load %s DSCB DSORG=%s RECFM=%s LRECL=%d BLKSIZE=%d VOL=%s",
                      ds->dsname_ebcdic,
                      mvs_dscb_dsorg_str(ds->dscb.dsorg, str_dsorg),
                      mvs_dscb_recfm_str(ds->dscb.recfm, str_recfm),
                      ds->dscb.lrecl,
-                     ds->dscb.blksize );
-            logmsg_info("NFSCF240I", "Export load %s VOL=%s %s alloc-tracks=%lu ext=%d"
+                     ds->dscb.blksize,
+                     ds->dscb.volser );
+            logmsg_info("NFSCF240I", "Export load %s %s alloc-tracks=%lu ext=%d"
                      " blk/trk=%d lstar=%lu.%d trbal=%d sec=%lu trk",
-                     ds->dsname_ebcdic, ds->dscb.volser,
+                     ds->dsname_ebcdic,
                      MVS_DSCB_MODEL_T(raw[j].devtype),
                      (unsigned long)ds->dscb.tracks, (int)ds->dscb.nextents,
                      ds->dscb.blocks_per_track,

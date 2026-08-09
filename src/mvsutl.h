@@ -8,9 +8,9 @@ char *get_jes2_jobid(void);
 int get_int_cvt_val(int cvt_offset);
 int get_tz_offset(void);
 
-/* -------------------------------------------------------------------- */
-/* Timezone handling                                                     */
-/*                                                                       */
+/* ---------------------------------------------------------------------- */
+/* Timezone handling                                                      */
+/*                                                                        */
 /* This MVS host runs its TOD clock on LOCAL time (not GMT), but JCC's    */
 /* time()/gettimeofday() already return correct UTC epoch seconds (the C  */
 /* runtime applies the CVTLDTO offset), so wall-clock "now" needs NO      */
@@ -19,10 +19,10 @@ int get_tz_offset(void);
 /* the local-minus-GMT offset.  That offset lives in the CVT (CVTLDTO)    */
 /* and only changes across an IPL, so mvs_tz_init() reads it ONCE at      */
 /* startup and caches it in a global for cheap access thereafter.         */
-/*                                                                       */
-/* On a non-MVS build (and before mvs_tz_init() runs) the cached offset  */
+/*                                                                        */
+/* On a non-MVS build (and before mvs_tz_init() runs) the cached offset   */
 /* is 0, so both conversions below are the identity.                      */
-/* -------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 
 /* Read CVTLDTO once and cache it.  Call once at startup.  No-op (leaves
    the offset 0) on a non-MVS build. */
@@ -47,13 +47,13 @@ time_t mvs_local_epoch_to_utc(time_t local_epoch);
 time_t mvs_utc_to_local_epoch(time_t utc_epoch);
 
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* DASD track capacity                                                   */
 /*                                                                       */
 /* Device codes are the low byte of the UCB device type, which is what   */
 /* mvs_dscb() returns in mvs_dscb_info_t.devtype[3].  Confirmed against  */
 /* live 3390, 3380 and 3350 volumes.                                     */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 #define MVS_DEV_3350   0x0B
 #define MVS_DEV_3375   0x0C
 #define MVS_DEV_3380   0x0E
@@ -85,9 +85,9 @@ char *mvs_dscb_dsorg_str(uint8_t dsorg, char *str);
 /* Returns the *str value. The input buffer must be at least 4 bytes.   */
 char *mvs_dscb_recfm_str(uint8_t recfm, char *str);
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Abend diagnostics                                                     */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 
 /*
  * System completion code out of an SDWA copy -- e.g. 0xB14 for an SB14.

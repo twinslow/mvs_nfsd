@@ -30,17 +30,17 @@
 #include "types.h"
 #include "mvspdir.h"  /* pds_member_entry_t, pds_member_list_t */
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Pool slot status and entry timeout                                    */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 #define MVSVFS_DIR_OPENLIST_FREE          0
 #define MVSVFS_DIR_OPENLIST_USED          1
 #define MVSVFS_DIR_OPENLIST_TIMEOUT_SECS  30   /* seconds before an idle USED entry expires */
 
-/* -------------------------------------------------------------------- */
-/* Concrete definition of the vfs_dir_t handle (forward-declared in     */
+/* --------------------------------------------------------------------- */
+/* Concrete definition of the vfs_dir_t handle (forward-declared in      */
 /* nfsd.h as an incomplete struct for callers that only hold pointers).  */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 struct vfs_dir {
     uint8_t             status;                     /* OPENLIST_FREE / OPENLIST_USED */
     int                 dir_level;                  /* MVS_PATH_TYPE_ROOT or _DATASET */
@@ -54,18 +54,18 @@ struct vfs_dir {
     time_t              last_used_time;             /* wall-clock time of last access */
 };
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Search operator constants for dir_openlist_search_members2()          */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 #define SEARCH_OP_LT   1           /* <  strictly less than    */
 #define SEARCH_OP_EQ   2           /* =  equal                 */
 #define SEARCH_OP_GT   4           /* >  strictly greater than */
 #define SEARCH_OP_LE   (SEARCH_OP_LT | SEARCH_OP_EQ)    /* 3: <= */
 #define SEARCH_OP_GE   (SEARCH_OP_GT | SEARCH_OP_EQ)    /* 6: >= */
 
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 /* Prototypes                                                            */
-/* -------------------------------------------------------------------- */
+/* --------------------------------------------------------------------- */
 
 /* Initialise the pool (call once at startup). */
 void dir_openlist_init(void);
@@ -90,7 +90,7 @@ void dir_openlist_invalidate(const char *pds_dsname_ebcdic);
 
 /*
  * Binary search of the cached member list with a full operator set
- * (SEARCH_OP_LT, SEARCH_OP_EQ, SEARCH_OP_GT, SEARCH_OP_LE, SEARCH_OP_GE).  
+ * (SEARCH_OP_LT, SEARCH_OP_EQ, SEARCH_OP_GT, SEARCH_OP_LE, SEARCH_OP_GE).
  * Sets *member_info on success.
  * Returns 0 if found, -1 if not.
  */

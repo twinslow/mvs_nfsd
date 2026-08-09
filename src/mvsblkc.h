@@ -5,11 +5,11 @@
 #include "nfsd.h"        /* dataset_dscb_info_t, mvs_dscb_info_t via asmutils */
 #include "asmutils.h"
 
-/*--------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
 /* JCC truncates external symbols to 8 characters, and "blkcalc_" is         */
 /* already 8, so EVERY public name here needs an alias -- without them all   */
 /* of them would collide with each other.                                    */
-/*--------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
 #define blkcalc_info_init            blkcInit
 #define blkcalc_add_blocks_for_data  blkcAddB
 #define blkcalc_will_member_fit      blkcFit
@@ -146,14 +146,14 @@ int blkcalc_admit_write(
     uint32_t         count,
     uint64_t         offset);
 
-/*--------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
 /* (Re)initialise a pending slot's estimate from its dataset's record        */
 /* format.  Call when a slot is created, and again when a CREATE truncates   */
 /* one that already existed -- otherwise the re-created member inherits the  */
-/* previous one's block count.                                              */
-/*                                                                          */
+/* previous one's block count.                                               */
+/*                                                                           */
 /* 'pm' is a pending_member_t *; void * for the same reason as above.        */
-/*--------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
 void blkcalc_slot_reset(void *pm);
 
 
