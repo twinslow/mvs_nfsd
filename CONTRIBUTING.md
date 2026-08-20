@@ -1,119 +1,70 @@
 # Contributing to mvs_nfsd
 
-Thanks for your interest in contributing! mvs_nfsd is a minimal NFSv3 server
-for MVS 3.8J on the Hercules emulator. Contributions of all kinds are
-welcome — bug fixes, new NFS procedures, VFS features, tests, and docs.
+Thanks for your interest in the project. mvs_nfsd is a minimal NFSv3 server
+for MVS 3.8J on the Hercules emulator.
+
+## Where things stand
+
+**I am not looking to take on additional developers at the moment.** The
+codebase is being developed by one person, and keeping it that way for now
+suits both the pace and the fairly unusual environment it targets — the
+build, test and debug cycle all happen on a running MVS 3.8J system, which
+makes onboarding a slow business.
+
+That is a decision about *code contributions*, not about people. Everything
+below is genuinely welcome, and none of it is a formality.
+
+## What I would very much like to hear
+
+**Bug reports.** Easily the most valuable thing you can send. If something
+does not work, I want to know about it.
+
+**Enhancement ideas.** What is missing, what is awkward, what you expected to
+work and did not. Ideas about how the server *should* behave are useful even
+when they come with no code attached.
+
+**Your experience of using it.** Which client you mount from, what you use it
+for, what surprised you. This project has been exercised against a small
+number of setups, so almost any new one tells me something.
+
+Open a [GitHub issue](https://github.com/twinslow/mvs_nfsd/issues) for any of
+the above — that is the best place for all of it.
+
+## Reporting a bug
+
+The single most useful thing in a bug report is **how to reproduce it**. A
+problem I can recreate is usually most of the way to being fixed; one I
+cannot may go nowhere, however clearly it is described.
+
+Please include as much of this as you reasonably can:
+
+1. **Steps to reproduce**, as short and specific as you can make them. The
+   exact commands are ideal. If it only happens sometimes, say so and say
+   roughly how often — an intermittent fault is a different hunt from a
+   reliable one, and knowing which saves a lot of time.
+2. **What you expected, and what actually happened.**
+3. **Server log output** from around the failure. Raise the detail first with
+   `set loglvl debug` in the `[Init]` section of the config, or at run time
+   with `F NFSD,SET LOGLVL DEBUG`. Messages carry an ID such as `NFSIW500I` —
+   including those verbatim helps me find the exact spot in the code.
+4. **The console log** as well as STDERR if the server hung or ended
+   abnormally. When a task dies, buffered log output can be lost, so the
+   console (WTO) messages are sometimes all that survives.
+5. **Your setup**: client OS and mount options, MVS level, and the RECFM and
+   LRECL of the dataset involved.
+
+Do not worry about having all of it. A partial report is far better than no
+report, and I will ask if something important is missing.
+
+## This may change
+
+If the project turns out to be useful to people and there is interest in
+working on it, I would be glad to revisit this and set up properly for
+contributions — sign-off requirements, review process and the rest. Until
+then, issues and ideas are the way in, and they are appreciated.
 
 ## License
 
-The project is licensed under the [MIT License](LICENSE). By contributing,
-you agree that your contributions will be licensed under the same terms.
-
-## Developer Certificate of Origin (DCO)
-
-We use the **Developer Certificate of Origin** to keep a clear record that
-every contributor has the right to submit their work under the project
-license. It is lightweight — there is no separate agreement to sign and you
-keep the copyright to your contributions.
-
-To accept a contribution we require that **every commit is signed off**. The
-sign-off is a single line at the end of the commit message:
-
-```
-Signed-off-by: Your Real Name <your.email@example.com>
-```
-
-Git adds this line automatically when you pass `-s` (or `--signoff`):
-
-```
-git commit -s -m "Fix READDIRPLUS cookie handling"
-```
-
-The name and email must be your real identity and match your Git
-configuration:
-
-```
-git config --global user.name  "Your Real Name"
-git config --global user.email "your.email@example.com"
-```
-
-Adding the `Signed-off-by` line certifies that you agree to the DCO below.
-
-### DCO 1.1
-
-```
-Developer Certificate of Origin
-Version 1.1
-
-Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
-
-Everyone is permitted to copy and distribute verbatim copies of this
-license document, but changing it is not allowed.
-
-
-Developer's Certificate of Origin 1.1
-
-By making a contribution to this project, I certify that:
-
-(a) The contribution was created in whole or in part by me and I
-    have the right to submit it under the open source license
-    indicated in the file; or
-
-(b) The contribution is based upon previous work that, to the best
-    of my knowledge, is covered under an appropriate open source
-    license and I have the right under that license to submit that
-    work with modifications, whether created in whole or in part
-    by me, under the same open source license (unless I am
-    permitted to submit under a different license), as indicated
-    in the file; or
-
-(c) The contribution was provided directly to me by some other
-    person who certified (a), (b) or (c) and I have not modified
-    it.
-
-(d) I understand and agree that this project and the contribution
-    are public and that a record of the contribution (including all
-    personal information I submit with it, including my sign-off) is
-    maintained indefinitely and may be redistributed consistent with
-    this project or the open source license(s) involved.
-```
-
-### Fixing a missing sign-off
-
-If a commit is missing its `Signed-off-by` line, amend it:
-
-```
-git commit --amend -s --no-edit
-git push --force-with-lease
-```
-
-For several commits, rebase and sign them off:
-
-```
-git rebase --signoff main
-```
-
-## Submitting changes
-
-1. Fork the repository and create a topic branch off `master`.
-2. Make your change; keep commits focused and sign each one off (`-s`).
-3. Follow the existing code style (see below).
-4. Open a pull request describing what changed and why.
-
-## Code style
-
-mvs_nfsd targets the JCC C compiler on MVS 3.8J, so contributions to the
-C sources must stay **C89-compatible**:
-
-- All variable declarations precede executable statements within a block.
-- Prefer block comments `/* ... */` (the codebase convention).
-- Avoid C99/C11-only features; keep to what the JCC compiler accepts.
-- The code is built and run on MVS (Hercules) — see the README for the JCL
-  build. There is no local build for the MVS target, so review changes for
-  correctness by reading the source.
-
-## Reporting bugs
-
-Open an issue with: what you did, what you expected, what happened, and any
-relevant server log output (run with `-v` for debug logging) and client-side
-details (OS, mount options).
+The project is licensed under the [MIT License](LICENSE). Anything you send
+in an issue — a suggestion, a snippet, a description of behaviour — is taken
+as offered for use in the project under those same terms.
