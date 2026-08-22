@@ -838,7 +838,7 @@ int vfs_truncate(const char *path, uint64_t size)
     }
 
     /*
-     * Resizing a member that is ALREADY STOWED, with nothing buffered for
+     * SHRINKING a member that is ALREADY STOWED, with nothing buffered for
      * it, would mean rewriting it on disk -- which this server does not do.
      * pww_truncate() used to accept that silently and change nothing, which
      * lies to the client: it is told the file is now N bytes while the next
@@ -846,29 +846,51 @@ int vfs_truncate(const char *path, uint64_t size)
      * the same EIO -> NFS3ERR_IO a random write at a non-zero offset already
      * gets (mvspww.c), so the two unsupported shapes answer alike.
      *
-     * THE SIZE TEST IS NOT OPTIONAL.  Clients confirm the size after writing
-     * -- Windows sends WRITE -> COMMIT -> SETATTR -> COMMIT -- and once the
-     * idle sweep has released the slot that trailing SETATTR arrives HERE.
-     * Failing it would break ordinary writes at random, depending on whether
-     * the sweep happened to get there first.  A SETATTR to the size the
-     * member already has asks for no change, so it is answered as the no-op
-     * it is (the pending-slot path does the same, see pww_truncate).
+     * ONLY A SHRINK IS REFUSED.  The two other cases are normal traffic and
+     * must be accepted, or ordinary editing breaks:
+     *
+     *   same size -- clients confirm the size after writing (Windows sends
+     *     WRITE -> COMMIT -> SETATTR -> COMMIT), and once the idle sweep has
+     *     released the slot that trailing SETATTR arrives here.  It asks for
+     *     no change, so it is the no-op it looks like.
+     *
+     *   GROW -- this is PREALLOCATION: CREATE, SETATTR(size), then WRITE
+     *     the content.  Note that SOME clients do this and some do not --
+     *     Windows Notepad preallocates, vim does not -- so getting it
+     *     wrong breaks a SUBSET of editors, which is harder to diagnose
+     *     than breaking all of them: it reads as a client-specific fault.
+     *
+     *     If the client pauses between the CREATE and the save for longer
+     *     than the idle sweep, the empty member is stowed and the slot
+     *     dropped, so the SETATTR lands here with nothing buffered.  Six
+     *     seconds of typing in Notepad was enough (2026-08-20), and every
+     *     save then reported a failure to the user -- asking them to pick
+     *     another location -- while the WRITE and COMMIT that followed
+     *     succeeded and the content was correct.
+     *
+     *     The writes that follow define the content, so accepting the grow
+     *     costs nothing.  Residual: a grow never followed by writes leaves
+     *     the member at its old length rather than zero-extended.  Nothing
+     *     is lost -- the client only asked for zeros it never wrote -- and
+     *     fixing it properly needs the on-disk content read back into a
+     *     slot, which this server does not do.
      */
     if (size != 0 && pww_find(pds_dsname, pds_member_name) == NULL) {
         vfs_stat_t st;
 
         if (vfs_stat(path, &st) < 0)
             return -1;               /* errno from vfs_stat, e.g. ENOENT */
-        if (st.size == size)
-            return 0;                /* already that size: nothing to do */
 
-        logmsg_warn("NFSVF410W", "vfs_truncate: %s(%s) resize %lu -> %lu"
-                    " refused -- the member is already stowed and rewriting"
-                    " it is not supported",
-                    pds_dsname, pds_member_name,
-                    (unsigned long)st.size, (unsigned long)size);
-        errno = EIO;                 /* -> NFS3ERR_IO */
-        return -1;
+        if (size < st.size) {
+            logmsg_warn("NFSVF410W", "vfs_truncate: %s(%s) shrink %lu -> %lu"
+                        " refused -- the member is already stowed and"
+                        " rewriting it is not supported",
+                        pds_dsname, pds_member_name,
+                        (unsigned long)st.size, (unsigned long)size);
+            errno = EIO;             /* -> NFS3ERR_IO */
+            return -1;
+        }
+        return 0;                    /* same size, or a grow: nothing to do */
     }
 
     return pww_truncate(export_idx, dataset_idx, pds_dsname, pds_member_name,

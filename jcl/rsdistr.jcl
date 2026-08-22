@@ -3,7 +3,8 @@
 //             NOTIFY=&SYSUID
 //*
 //********************************************************************
-//*
+//* Restore the distribution dataset from XMIT data
+//********************************************************************
 //RECV370 PROC XMI=FORGITTEN, XMI - INput xmit data set
 //             PDS=FORGOTTEN, PDS - OUTput pds data set
 //             SPA='600,150', Primary and secondary SPACE (in trk)

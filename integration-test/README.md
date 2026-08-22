@@ -180,6 +180,7 @@ Numbers match `--section`. "MVS-only" tests skip automatically in `plain` mode.
 | 13.3 | preallocate_then_write | CREATE → `SETATTR(size)` → WRITE, the sequence a Linux client actually uses; assert the member holds the data, not the zero-fill. |
 | 13.4 | truncate_pending | Shrink a member still buffered in the write pool — the path that *is* supported. Accepts shortened (slot live) or unchanged (slot already flushed), but never half-applied. |
 | 13.5 | truncate_same_size_ok | `SETATTR(size)` to the size the member already has must SUCCEED — clients send it after every write. Guards the exemption that makes 13.1's refusal safe. |
+| 13.6 | preallocate_after_flush | CREATE, wait for the idle sweep to stow and release the slot, THEN `SETATTR(size)` and write — the Notepad save. Growing a stowed member must be accepted; only a shrink is unsupported. |
 | 14.1 | listing_reflects_changes | A create, a rename and a delete each reach the directory listing. |
 | 14.2 | listing_matches_backend | The NFS listing equals the real PDS member list (cross-checked out-of-band). |
 | 14.3 | listing_large_directory | A directory needing several READDIR pages: no duplicates, nothing missing, and it terminates. |

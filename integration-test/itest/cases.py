@@ -823,6 +823,52 @@ def preallocate_then_write(ctx):
         ctx.verify_member(key, name, text, updated=True)
 
 
+@testcase("13.6", "preallocate_after_flush")
+def preallocate_after_flush(ctx):
+    """CREATE, WAIT for the idle sweep, then SETATTR(size) and write.
+
+    Notepad's save, and the case 13.3 cannot reach.  13.3 runs the whole
+    sequence back to back, so the slot from the CREATE is still in the pool
+    when the SETATTR arrives and the pending-member path handles it.  Leave
+    a pause -- a user typing for a few seconds -- and the sweep stows the
+    empty member and drops the slot first, so the SETATTR lands with nothing
+    buffered.  That is a different branch of vfs_truncate() entirely.
+
+    It reached production as every Notepad save reporting an error while the
+    file was written correctly anyway (2026-08-20): the grow was refused with
+    NFS3ERR_IO because the check compared sizes for INEQUALITY rather than
+    testing for a shrink.  A grow is preallocation, not a rewrite."""
+    keys = _text_keys(ctx)
+    key  = keys[0] if keys else "fb"
+    _have(ctx, key)
+    name = "PREFLSH"
+    text = _alt_text(ctx, key, 3, "TPREFL")
+
+    ctx.reset(key, name)
+    ctx.track(key, name)
+    ctx.touch_member(key, name, track=False)      # CREATE, empty
+    ctx.settle()
+    ctx.check(ctx.wait_exists(key, name, True),
+              "%s(%s): empty member never reached the PDS, so the slot was"
+              " probably still pending and this test proved nothing"
+              % (ctx.ds(key)["nfs_dir"], name))
+
+    p = str(ctx.member_path(key, name))
+    try:
+        os.truncate(p, _byte_len(text))           # SETATTR(size), NO slot
+    except OSError as e:
+        raise AssertionError(
+            "%s(%s): preallocating to %d bytes was refused (%s).  Growing a"
+            " stowed member is how Notepad and other preallocating clients"
+            " save -- only a SHRINK is"
+            " unsupported" % (ctx.ds(key)["nfs_dir"], name,
+                              _byte_len(text), e))
+
+    with open(p, "w", newline="\n") as f:
+        f.write(text)
+    ctx.verify_member(key, name, text, updated=True)
+
+
 # =====================================================================
 # 14. Directory listing (READDIR / READDIRPLUS)
 #
