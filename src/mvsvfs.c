@@ -962,27 +962,122 @@ int vfs_set_times(const char *path,
 }
 
 /* -------------------------------------------------------------------- */
-/* vfs_fsstat: fill vfs_fsstat_t from statvfs().                        */
+/* vfs_fsstat: space report for an export or a PDS directory.           */
 /* -------------------------------------------------------------------- */
+/*
+ * FSSTAT -- space report for the export, or for one PDS directory.
+ *
+ * THIS MUST NOT FAIL.  It used to be a stub returning EACCES, which Linux
+ * and Windows shrugged off (they only need it for `df`) but macOS treats as
+ * fatal: it issues FSSTAT during the mount handshake, straight after
+ * PATHCONF, and drops the connection on any error.  The mount simply did not
+ * work from a Mac (2026-08-23).  So every path below ends in a plausible
+ * answer -- a made-up number is far better than an error here.
+ *
+ * "Filesystem" has no exact meaning for a synthetic tree over several PDSs:
+ *
+ *   - a PDS directory reports ITS OWN allocation: tracks x blocks-per-track
+ *     x blocksize, less what DS1LSTAR says is already used;
+ *   - the export root reports the SUM over its datasets, which is the only
+ *     figure that makes sense for a directory that is not a dataset at all;
+ *   - anything without usable DSCB geometry falls back to a nominal figure.
+ *
+ * Deliberately EXCLUDES space the dataset could still obtain by extending
+ * into its secondary allocation: that space is not held, and may not exist
+ * on the volume at all.  `df` reporting room that a write then cannot get is
+ * the more confusing failure.
+ *
+ * The file counts are nominal.  A PDS directory has a fixed block capacity
+ * we do not track, and reporting zero free files would invite clients to
+ * refuse to create anything.
+ */
+#define VFS_FSSTAT_NOMINAL_BYTES  ((uint64_t)64 * 1024 * 1024)
+#define VFS_FSSTAT_NOMINAL_FILES  ((uint64_t)65535)
+
+/* Allocated and unused bytes of one dataset, from its cached DSCB. */
+static void vfs_fsstat_dataset(const pds_dataset_t *ds,
+                               uint64_t *total, uint64_t *freeb)
+{
+    uint64_t bpt;
+    uint64_t blk;
+    uint64_t used;
+
+    *total = 0;
+    *freeb = 0;
+    if (ds == NULL || !ds->dscb.valid || ds->dscb.blocks_per_track <= 0)
+        return;
+
+    bpt = (uint64_t)ds->dscb.blocks_per_track;
+    blk = (uint64_t)ds->dscb.blksize;
+
+    *total = (uint64_t)ds->dscb.tracks * bpt * blk;
+
+    /* DS1LSTAR is the last block written: track * blocks-per-track + record.
+       Only as fresh as the last VTOC read, which is good enough for df. */
+    used = ((uint64_t)ds->dscb.lstar_tt * bpt + (uint64_t)ds->dscb.lstar_r)
+         * blk;
+    *freeb = (*total > used) ? (*total - used) : 0;
+}
+
 int vfs_fsstat(const char *path, vfs_fsstat_t *fs)
 {
-    errno = EACCES;
-    return -1;
+    char     ebcdic_path[MAX_PATH_LEN];
+    int      export_idx  = -1;
+    int      dataset_idx = -1;
+    int      path_type;
+    uint64_t total = 0;
+    uint64_t freeb = 0;
+    int      n;
+    int      i;
 
-#if 0
-    struct statvfs sv;
+    memset(fs, 0, sizeof(*fs));
 
-    if (statvfs(path, &sv) < 0) return -1;
+    ascii_to_ebcdic((uint8_t *)ebcdic_path, (const uint8_t *)path,
+                    MAX_PATH_LEN - 1);
+    ebcdic_path[MAX_PATH_LEN - 1] = '\0';
 
-    fs->total_bytes = (uint64_t)sv.f_blocks * (uint64_t)sv.f_frsize;
-    fs->free_bytes  = (uint64_t)sv.f_bfree  * (uint64_t)sv.f_frsize;
-    fs->avail_bytes = (uint64_t)sv.f_bavail * (uint64_t)sv.f_frsize;
-    fs->total_files = (uint64_t)sv.f_files;
-    fs->free_files  = (uint64_t)sv.f_ffree;
-    fs->avail_files = (uint64_t)sv.f_favail;
-    fs->invarsec    = 0;
+    path_type = mvs_path_type(ebcdic_path, &export_idx, &dataset_idx);
+
+    /* ONE EXPORT IS ONE FILESYSTEM, and the answer must not depend on which
+       object inside it was asked about.  vfs_stat() reports fsid =
+       export_idx + 1 for every object under an export, so FSSTAT has to sum
+       the whole export -- reporting one PDS's allocation for a member and a
+       different figure for the export root describes two filesystems that
+       claim the same fsid.  The first cut of this function did exactly that
+       (2026-08-23); the Windows redirector was at the same time refusing
+       every rename with ERROR_NOT_SAME_DEVICE, locally, without sending a
+       RENAME at all.  The inconsistency is a defect on its own terms, so it
+       is fixed here whether or not it was what Windows objected to. */
+    if (export_idx >= 0) {
+        n = export_dataset_count(export_idx);
+        for (i = 0; i < n; i++) {
+            uint64_t t;
+            uint64_t f;
+
+            vfs_fsstat_dataset(export_dataset_get(export_idx, i), &t, &f);
+            total += t;
+            freeb += f;
+        }
+    }
+
+    if (total == 0) {                 /* no usable geometry -- say something */
+        total = VFS_FSSTAT_NOMINAL_BYTES;
+        freeb = VFS_FSSTAT_NOMINAL_BYTES;
+    }
+
+    fs->total_bytes = total;
+    fs->free_bytes  = freeb;
+    fs->avail_bytes = freeb;
+    fs->total_files = VFS_FSSTAT_NOMINAL_FILES;
+    fs->free_files  = VFS_FSSTAT_NOMINAL_FILES;
+    fs->avail_files = VFS_FSSTAT_NOMINAL_FILES;
+    fs->invarsec    = 0;              /* may change at any moment */
+
+    logmsg_debug("NFSVF430D", "vfs_fsstat: %s type=%d export=%d total=%lu"
+                 " free=%lu",
+                 log_ascii(path), path_type, export_idx,
+                 (unsigned long)(total / 1024), (unsigned long)(freeb / 1024));
     return 0;
-#endif
 }
 
 /*

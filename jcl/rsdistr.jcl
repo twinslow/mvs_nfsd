@@ -38,8 +38,8 @@
 //********************************************************************
 //*
 //RECEIVE  EXEC RECV370,
-//             XMI='SYSS.NFSD.XMI',
-//             PDS='SYSS.NFSD.DISTRIB',
+//             XMI='SYSS.NFSD.V0R1M0.XMI',
+//             PDS='SYSS.NFSD.V0R1M0.DISTRIB',
 //             SPA='50,20',   Primary and secondary SPACE (in trk)
 //             BLK='3120',    Blocksize
 //             DIR=3,         Number of directory blocks for PDS

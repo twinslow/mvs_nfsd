@@ -55,7 +55,7 @@
 //         PEND
 //*
 //********************************************************************
-//* call the procedure
+//* call the procedure for load and src materials
 //********************************************************************
 //*
 //RECLOAD EXEC RECV370,OUTTYPE='LOAD',INMEM='XMILOAD',

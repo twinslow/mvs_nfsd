@@ -1533,3 +1533,42 @@ def delete_pending_rewrite(ctx):
     ctx.write_member(key, name, second, track=False)   # now pending again
     ctx.remove_member(key, name)
     _assert_gone(ctx, key, name, "rewritten member")
+
+
+# =====================================================================
+# 23. FSSTAT -- the space report
+# =====================================================================
+
+@testcase("23", "fsstat_reports_space")
+def fsstat_reports_space(ctx):
+    """FSSTAT must answer, for the export root and for a PDS directory.
+
+    Nothing in the suite called FSSTAT before, which is how vfs_fsstat()
+    stayed a stub returning EACCES long after the README listed it as
+    implemented.  Linux and Windows tolerated that -- they only need FSSTAT
+    for df -- but macOS issues it during the MOUNT handshake and drops the
+    connection on any error, so the export could not be mounted from a Mac
+    at all (2026-08-23).
+
+    The assertion is deliberately weak on the NUMBERS and strict on the
+    ANSWER.  A synthetic tree over several PDSs has no exact free-space
+    figure, so what matters is that a client gets a usable reply rather than
+    an error -- and that free space is not reported as zero, which would
+    invite a client to refuse to write."""
+    keys = _text_keys(ctx)
+    key  = keys[0] if keys else 'fb'
+    _have(ctx, key)
+
+    for label, target in (("export root", ctx.mount_root),
+                          ("PDS directory", ctx.pds_dir(key))):
+        try:
+            usage = shutil.disk_usage(str(target))
+        except OSError as e:
+            raise AssertionError(
+                "FSSTAT on the %s (%s) failed: %s.  macOS treats this as"
+                " fatal during mount" % (label, target, e))
+        ctx.check(usage.total > 0,
+                  "FSSTAT on the %s reports total=0" % label)
+        ctx.check(usage.free > 0,
+                  "FSSTAT on the %s reports free=0; a client may refuse to"
+                  " write" % label)

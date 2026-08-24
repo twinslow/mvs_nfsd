@@ -79,5 +79,45 @@ The sample JES2 stored procedure assume exactly this setup.
 Enter a start command on the MVS console to run NFSD, `S NFSD`.
 
 
+# Actual Install
+
+1. New MVS TK5
+2. Login HERC01
+3. Create alias for SYSS in MCAT
+4. Create dataset 'SYSS.NFSD.V0R1M0.XMI' FB/80 etc.
+5. Start FTPD and upload XMI file
+    a. Connect client to 127.0.0.1
+    b. Binary mode
+    c. Passive
+    d. put local-file to /SYSS.NFSD.V0R1M0.XMI
+7. Receive XMI file
+
+
+```
+--------------------   Receive XMIT File   ------------------------------------
+OPTION  ===>
+
+ 1  Receive XMIT file on MVS to PDS/SEQ file                           HERC01
+ 2  Receive XMIT file on PC  to PDS/SEQ file                           PRECV372
+                                                                       PXMI
+ XMIT Input File
+1 MVSFILE: SYSS.NFSD.V0R1M0.XMI
+-or-
+2 PCFILE:
+  Reader Control for PCFILE
+   HercRDR Jes2RDR DEVINIT Reset Command
+
+
+ MVS Output File
+  DSN: SYSS.NFSD.V0R1M0.DISTRIB                     VOL: TSO003  UNIT: SYSDA
+  SPACE: (CYL,(5,2,3))               DISP: (NEW,CATLG)
+
+ JOB STATEMENT INFORMATION
+  ===> //HERC01N JOB CLASS=A,
+  ===> //     MSGLEVEL=1,MSGCLASS=X,NOTIFY=HERC01
+  ===>
+  ===>
+
+```
 
 

@@ -198,6 +198,7 @@ Numbers match `--section`. "MVS-only" tests skip automatically in `plain` mode.
 | 21 | pool_eviction | Write twice `PWW_MAX_PENDING` members back-to-back so the pool must evict and reuse slots; every member's content must survive. |
 | 22.1 | delete_pending_new | Delete a member that was never stowed; it must not be resurrected by the queued flush. |
 | 22.2 | delete_pending_rewrite | Delete a member that exists on disk and is mid-rewrite; likewise. |
+| 23 | fsstat_reports_space | FSSTAT must answer for the export root and for a PDS directory, with non-zero total and free. macOS issues FSSTAT during the mount handshake and treats an error as fatal. |
 
 ---
 
