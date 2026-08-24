@@ -1,0 +1,40 @@
+{
+  "_comment": "MVS mode: verify NFS results over MVS FTP. Copy to config.json and edit. Field notes are in README.md.",
+
+  "mode": "mvs",
+
+  "nfs": 
+    "_comment": "Setup for Windows",
+    "mount_point": "X:\\",
+    "export": "192.168.1.168:/iexports",
+    "windows_export": "\\\\192.168.1.168\\iexports",
+    "auto_mount": false,
+    "use_sudo": false,
+    "mount_options_linux": "vers=3,proto=tcp,nolock,soft,timeo=30,retrans=2",
+    "mount_options_windows": "anon,nolock,mtype=soft"
+  },
+
+  "ftp": {
+    "host": "192.168.1.168",
+    "port": 2121,
+    "use_cwd": true,  "quote_dsn": false, "dsn_prefix": "/",
+    "user": null,
+    "password": null
+  },
+
+  "datasets": {
+    "fb":    { "nfs_dir": "temp.itest.fb",      "dsname": "TEMP.ITEST.FB",      "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb":    { "nfs_dir": "temp.itest.vb",      "dsname": "TEMP.ITEST.VB",      "ext": "txt", "recfm": "VB", "lrecl": 255 },
+    "fb2":   { "nfs_dir": "temp.itest.fb2",     "dsname": "TEMP.ITEST.FB2",     "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "vb2":   { "nfs_dir": "temp.itest.vb2",     "dsname": "TEMP.ITEST.VB2",     "ext": "txt", "recfm": "VB", "lrecl": 255 },
+    "small": { "nfs_dir": "temp.itest.fbsmall", "dsname": "TEMP.ITEST.FBSMALL", "ext": "txt", "recfm": "FB", "lrecl": 80 },
+    "ro":    { "nfs_dir": "temp.haspsrc.asm",   "dsname": "TEMP.HASPSRC.ASM",   "ext": "asm", "recfm": "FB", "lrecl": 80 }
+  },
+
+  "options": {
+    "large_lines": 1500,
+    "line_width": 72,
+    "readdir_big_dir" : "sys1.maclib",
+    "mtime_tolerance_sec": 120
+  }
+}
