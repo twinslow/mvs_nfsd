@@ -1,11 +1,26 @@
 # User Guide
 
-How to run the MVS NFS server day to day: starting and stopping it, driving it
-from the operator console, and telling it which datasets to export.
+This is a basic guide on how to run and use the MVS NFS server day to day.
 
 For getting the software onto MVS in the first place, see
 [installation.md](installation.md). For the internals of the config parser and
 its error handling, see [readme_config.md](../dev/readme_config.md).
+
+This NFSD server implements the NFS V3 protocol as documented in RFC 1813. This
+protocol uses RPC as its underlying presentation format. The server has a built
+in *Port Mapper* service, to serve the port numbers
+used for mount and and NFS protocols.
+
+The NFSD server allows a number of MVS Partitioned Datasets and their members
+to be exported and mounted by the client. These source MVS PDS can be
+record format FB or VB, but must be text files. The service assumes the member
+content is EBCDIC text and performs ASCII translations for the NFS client.
+Therefore it is not possible to export a PDS containing object code (or not for
+any useful purpose).
+
+Member names are presented as files to the NFS client, with an extension that is
+defaulted to the final qualified of the PDS dataset name, or may be specified
+in the configuration file.
 
 ---
 
@@ -35,7 +50,7 @@ configuration file.
 The `NFSD` step passes:
 
 ```
-PARM='-p 111 -m 2048 -n 2049 NFSDCONF'
+PARM='-p 111 -m 20048 -n 2049 NFSDCONF'
 ```
 
 | Parameter | Meaning | Default if omitted |
@@ -54,6 +69,11 @@ PARM edit:
 ```
 //NFSDCONF  DD DISP=SHR,DSN=&CONFIG
 ```
+
+The *Configuration file* name follows JCC library convention and may be
+prefixed with *"//DDN:"* for a DDNAME, or *"//DSN:"* for a fully qualified
+dataset name (with member name for a PDS). A name with no prefix is considered
+a DDNAME.
 
 The configuration dataset may be sequential or a PDS member, `RECFM=FB` or
 `VB`.
@@ -104,7 +124,7 @@ Two things worth knowing if you do have to cancel:
   (WTO) messages are real-time and survive; the SYSOUT log may not. If you need
   to see what the server was doing at the moment of a problem, raise the
   console level with `SET WTOLVL` rather than the log level.
-- **A task that ignores `P` may be deadlocked.** There is a known condition in
+- **A task that ignores `P` may be deadlocked.** There is a known rare condition in
   which an abend leaves an internal lock held and the next file operation waits
   forever — the task then responds to nothing but `CANCEL`. It is documented in
   [analysis_io_lock_hang.md](../dev/analysis_io_lock_hang.md). Cancelling with a
@@ -191,8 +211,12 @@ F NFSD,STATS LIST
 ```
 
 `STATS LIST` reports, per NFS procedure, the call count and the total, average,
-minimum and maximum elapsed time in milliseconds. The same report is produced
-automatically at shutdown.
+minimum and maximum elapsed time in milliseconds as recorded in the server. These
+time recordings do not include the network time for the request to get into the
+MVS address space and the response to sent from host TPC/IP stack to the requesting
+client.
+
+The same report is produced automatically at shutdown.
 
 This is the tool for answering "why is this slow?". Compare the *average
 in-server time* against the round-trip time seen on the wire: if a procedure
@@ -210,6 +234,13 @@ then restore your previous setting.
 One file configures the server. It is named as the last start parameter
 ([section 1.2](#12-start-parameters)) and is read once at startup — changing it
 requires a restart.
+
+This parameter follows the JCC file open naming convention and may be specified
+with as --
+
+* *NFSDCONF* - Read configuration from the DDNAME NFSDCONF.
+* *//DDN:NFSDCONF* - As above, read from DDNAME NFSDCONF.
+* *//DSN:SYS1.PARMLIB(NFSDCFG0)* - Read configuration from the named dataset member.
 
 ---
 
@@ -381,7 +412,16 @@ That is why the `NFSDM220I` export and dataset counts at startup
 
 ---
 
-## 5. Mounting from a client
+## 5. Security
+
+** THIS PAGE INTENTIONALLY LEFT BLANK **
+
+The NFS V3 protocol is inherently insecure. It relies on the security of the network
+and the security of the both the client and server host systems.
+
+---
+
+## 6. Mounting from a client
 
 Mount the **export path** exactly as written in `[Exports]`.
 
@@ -420,7 +460,7 @@ Two macOS-specific notes, both measured rather than assumed:
 
 ---
 
-## 6. Further reading
+## 7. Further reading
 
 The full development tree is available on *github* at --
 https://github.com/twinslow/mvs_nfsd

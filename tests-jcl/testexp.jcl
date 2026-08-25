@@ -1,4 +1,4 @@
-//TONYWUX1 JOB (NFSD),
+//TONYWUT1 JOB (NFSD),
 //            'Test exports parser',
 //            CLASS=A,NOTIFY=TONYW,REGION=8M,
 //            MSGCLASS=X,MSGLEVEL=(1,1),

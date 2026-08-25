@@ -18,10 +18,14 @@ visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 
 ## Project status
 
-**WARNING:** This is early release code. You shouldn't assume that this code won't trash
-a mounted dataset. I'm sure there are plenty of bugs at this time, even though we are fixing
-them as we find them. I wouldn't go exporting/mounting `SYS1.PROCLIB` or `SYS1.PARMLIB`, or
-other important datasets that could prevent an IPL from completing.
+**WARNING:**
+
+As they say in this business, **NO WARRANTY IS IMPLIED OR EXPRESSED**.
+
+This is early release code. You shouldn't assume that this code won't trash
+a mounted dataset. I'm sure there are plenty of bugs at this time, even though they are
+being fixed as they are found. I wouldn't go exporting/mounting `SYS1.PROCLIB`
+or `SYS1.PARMLIB`, or other important datasets that could prevent an IPL from completing.
 
 ### **Please have a recovery mechanism in place if things go badly wrong.**
 
@@ -793,9 +797,11 @@ on every LOOKUP and READDIRPLUS call.
 
 ## Contributing
 
-Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for
-the workflow and the code-style notes. We use the Developer Certificate of
-Origin (DCO): sign off every commit with `git commit -s`.
+**I am not looking to take on additional developers at the moment.** The
+codebase is being developed by one person, and keeping it that way for now
+suits both the pace and the environment it targets — the build, test and debug
+cycle all happen on a running MVS 3.8J system, which makes onboarding a slow
+business.
 
 ## License
 

@@ -7,9 +7,9 @@ for MVS 3.8J on the Hercules emulator.
 
 **I am not looking to take on additional developers at the moment.** The
 codebase is being developed by one person, and keeping it that way for now
-suits both the pace and the fairly unusual environment it targets — the
-build, test and debug cycle all happen on a running MVS 3.8J system, which
-makes onboarding a slow business.
+suits both the pace and the environment it targets — the build, test and debug
+cycle all happen on a running MVS 3.8J system, which makes onboarding a slow
+business.
 
 That is a decision about *code contributions*, not about people. Everything
 below is genuinely welcome, and none of it is a formality.
