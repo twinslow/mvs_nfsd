@@ -29,7 +29,7 @@ cached value instantly without reopening the member.
 ### Storage
 
 The cache is a set of three parallel static arrays, each with
-`MVSFSZ_CACHE_CAPACITY` (2000) elements:
+`MVSFSZ_CACHE_CAPACITY` (250) elements:
 
 | Array | Type | Description |
 |---|---|---|
@@ -38,7 +38,7 @@ The cache is a set of three parallel static arrays, each with
 | `g_last_used[]` | `time_t` | Wall-clock timestamp of the last access or update |
 
 The key for each entry is the pair `(dsname, member_name)`.  Lookups are
-linear scans over `g_in_use[]`; with 2000 entries this is fast enough for
+linear scans over `g_in_use[]`; with 250 entries this is fast enough for
 normal NFS workloads.
 
 ### Validity Fields
@@ -201,7 +201,7 @@ if found and removed, -1 if not found.
 int mvsfsz_count(void);
 ```
 
-Returns the number of entries currently in the cache (0–2000).
+Returns the number of entries currently in the cache (0–250).
 
 ---
 
@@ -228,7 +228,7 @@ sizes when a more exact recomputation is acceptable on first access.
 Returns the number of entries successfully stored, or -1 if the file could
 not be opened.
 
-See [`jcl/tstfsiz.jcl`](../jcl/tstfsiz.jcl) for a sample input file.
+See [`jcl/tstfsiz.jcl`](../../jcl/tstfsiz.jcl) for a sample input file.
 
 ---
 
@@ -261,7 +261,7 @@ int nfsd_getattr_member(
 
 ## Unit Tests
 
-Tests are in [`tests/tmvsfsz.c`](../tests/tmvsfsz.c) and are registered
+Tests are in [`tests/tmvsfsz.c`](../../tests/tmvsfsz.c) and are registered
 under the `/mvsfsz` suite prefix with seven sub-suites:
 
 | Sub-suite | What it covers |
@@ -270,7 +270,7 @@ under the `/mvsfsz` suite prefix with seven sub-suites:
 | `/put` | Insert, upsert, count management |
 | `/get` | Field retrieval, key mismatches |
 | `/invalidate` | Entry removal, count decrement, slot reuse |
-| `/lru` | Cache fills to 2000; next put evicts rather than failing |
+| `/lru` | Cache fills to 250; next put evicts rather than failing |
 | `/get_member_size` | Cache hits (valid), stale detection for all four fields, fopen failure on cache miss |
 | `/load` | Comment skipping, malformed lines, field zeroing, sample file |
 

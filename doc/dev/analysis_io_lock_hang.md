@@ -1,9 +1,9 @@
 # Intermittent server hang after a recovered abend
 
 Status: mechanism identified, root cause in JCC not fully explained, mitigation
-selected but not yet implemented.
+implemented (the pre-flight space check, `src/mvsblkc.c`).
 Investigation dates: 2026-07-30 .. 2026-08-02.
-Related: `doc/design_nfs_write.md` §7.3, §7.3.1.
+Related: `design_nfs_write.md` §7.3, §7.3.1.
 
 ---
 
@@ -751,10 +751,10 @@ The direction is therefore to **avoid the abend**.
 | measure | status | effect |
 |---|---|---|
 | `pdsflush_slot` refuses a flush into a dataset already known to be out of space (`pdsflush_dataset_is_full`, expiry `PWW_FULL_EXPIRY_SEC`, currently 60s) | implemented | bounds the abend rate. In STC02317 it converted 4 of the 5 sweep flushes in the fatal batch into refusals, so only the first could abend |
-| pre-flight space check via `mvsdscb.asm` before attempting a flush | **not implemented — the real fix** | removes the `E37`/`B14` abend entirely, which is the only abend observed here |
+| pre-flight space check via `mvsdscb.asm` before attempting a flush | **implemented** in `src/mvsblkc.c` — see [design_pds_full_prediction.md](design_pds_full_prediction.md) | removes the `E37`/`B14` abend entirely, which is the only abend observed here |
 | replacing `fwrite` with an assembler writer under a private ESTAE | considered, rejected | disproportionate to the problem |
 
-See `doc/design_nfs_write.md` §7.3.1.
+See `design_nfs_write.md` §7.3.1.
 
 ---
 

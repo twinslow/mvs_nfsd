@@ -496,8 +496,24 @@ int vfs_fsstat(const char *path, vfs_fsstat_t *fs);
   On systems without a reserved-space concept, set them equal to `free_bytes` and
   `free_files` respectively.
 - On systems where capacity accounting is unavailable or unreliable, return plausible
-  fixed values.  NFS clients use these only for informational display and pre-flight
-  space checks; they do not affect protocol correctness.
+  fixed values.
+- **This call must not fail, and its answer must be consistent across the whole
+  filesystem.**  Both matter to protocol correctness, contrary to what the
+  figures being "informational" suggests, and both were learned the hard way
+  (2026-08-23):
+  - macOS issues `FSSTAT` during the MOUNT handshake and drops the connection on
+    any error, so a stub returning `EACCES` made the export unmountable from a
+    Mac while Linux and Windows — which use `FSSTAT` only for `df` — were
+    unaffected.
+  - `vfs_stat` reports one `fsid` per export, so every object under that export
+    must get the same totals.  Reporting each PDS directory's own allocation made
+    the Windows redirector treat one filesystem as two volumes and refuse *every*
+    rename with `ERROR_NOT_SAME_DEVICE`, locally, without sending a `RENAME` RPC
+    at all.
+
+  The MVS implementation therefore always returns `0`, falling back to nominal
+  figures when DSCB geometry is unusable, and sums the whole export regardless of
+  which object inside it was asked about.
 - For a PDS on MVS: derive `total_bytes` from the dataset allocation (primary +
   secondary extents × tracks × bytes-per-track); `free_bytes` from the unused
   directory blocks and free tracks; `total_files` from the maximum number of

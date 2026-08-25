@@ -12,7 +12,7 @@ serialised against ISPF/EDIT with the **`SPFEDIT` enqueue**, both taken at
 CREATE / first WRITE and held for the slot's lifetime (§7.2) — so a member open
 in an editor fails the write cleanly rather than corrupting or blocking. Phase 1
 keeps write buffers **in memory** with a per-member cap; disk-backed spill to a
-temporary dataset (§8, Phase 2) is **designed but not yet built**. The sections
+temporary dataset (§8, Phase 2) is **implemented** in `mvsspl.c`. The sections
 below record the design and rationale; §3 is the original pre-implementation
 baseline and is retained for context only.
 
@@ -334,14 +334,14 @@ solve, both about **sharing the PDS with TSO/ISPF while it is up**:
    `DISP=OLD`, which takes an *exclusive* dataset-level `SYSDSN` enqueue — it
    fails (or waits) if anyone else, including ISPF, has the PDS allocated.  We
    instead **dynamically allocate `DISP=SHR`** (SVC 99, `mvs_dynalloc` in
-   `src/mvsdalc.asm`) and open the returned ddname with `fopen("//DDN:ddname",
+   `src-asm/mvsdalc.asm`) and open the returned ddname with `fopen("//DDN:ddname",
    "wt")`, so the server shares the PDS the way TSO users do.
 2. **Member-level races with an editor.**  `DISP=SHR` shares the dataset but
    does nothing to stop us rewriting a member somebody is editing — their
    later save would silently overwrite ours (or vice-versa).  ISPF/EDIT (and
    REVIEW) serialise a member with an **exclusive enqueue** on
    `QNAME=SPFEDIT`, `RNAME = dsname(44) + member(8)` (blank-padded), scope
-   `SYSTEMS`.  We take the **same** enqueue (`mvs_enq` in `src/mvsenq.asm`,
+   `SYSTEMS`.  We take the **same** enqueue (`mvs_enq` in `src-asm/mvsenq.asm`,
    `RET=USE` so it *fails fast* instead of waiting — never hanging the
    single-threaded server) before touching the member.  A conflict means an
    editor holds it, and we fail the operation.
@@ -742,7 +742,7 @@ create/write working end-to-end.
 
 ### Phase 2 — spill to a temporary dataset
 
-> **Status: designed, not yet implemented.**  Phase 1 keeps the whole member in
+> **Status: implemented** in `src/mvsspl.c`.  Phase 1 kept the whole member in
 > memory (`PWW_MAX_MEMBER_BYTES`).  Phase 2 keeps only a small prefix in memory
 > and moves the byte stream to a **temporary PS dataset** once it grows past a
 > threshold, so member size is bounded by scratch DASD, not by the 8 MB address
@@ -994,7 +994,7 @@ the member (the member must already exist in the directory), and while the
 slot's `SPFEDIT` enqueue is still held (§7.2), so the directory rewrite is
 serialised against an editor just like the content STOW:
 
-1. `mvs_dynalloc(ALLOC, FREE=CLOSE, dsname, NULL, ddname)` (`src/mvsdalc.asm`)
+1. `mvs_dynalloc(ALLOC, FREE=CLOSE, dsname, NULL, ddname)` (`src-asm/mvsdalc.asm`)
    — the same SVC 99 `DISP=SHR` allocator used for the member write (§7.2),
    here called **dataset-level** (member = `NULL`), because `STOW`'s
    `BLDL`/`FIND` work on the directory. It returns the system-assigned ddname
@@ -1002,7 +1002,7 @@ serialised against an editor just like the content STOW:
    means the allocation is freed when the dataset is closed, so no explicit
    unallocate is needed (this stats allocation is *separate* from, and
    short-lived relative to, the member allocation the slot holds).
-2. `mvs_stow(ddname, member, userdata, len)` (`src/mvsstow.asm`) — opens that
+2. `mvs_stow(ddname, member, userdata, len)` (`src-asm/mvsstow.asm`) — opens that
    ddname (`DSORG=PO`), does `BLDL` to get the member's `TTR`, **`FIND` by that
    TTR to position the DCB on the existing member**, then `STOW TYPE=REPLACE`
    with the 30-byte user data, and closes (which also frees the allocation).
@@ -1085,7 +1085,7 @@ Helpers live in `src/mvspdir.c` (next to the decoder) with unit tests in
 |------|--------|
 | `src/mvspww.c` / `.h` (new) | Pending-member write pool: buffer alloc/grow, place-at-offset, idle-flush sweep, flush-one (record conversion + `STOW`), flush-all. `pww_lock`/`pww_unlock` take + release the `SPFEDIT` enqueue and `DISP=SHR` allocation, held from first write to slot release (§7.2). After flush, sets ISPF stats via `mvs_dynalloc()` + `mvs_stow()` (§9.1). **Phase 2 (§8):** spills to a temp dataset past `PWW_SPILL_THRESHOLD`; adds `pww_read_range()` and calls into `mvsspl`. **Abend protection (§7.3):** two STAE-guarded regions (`_setjmp_stae` / `_setjmp_canc`, `<mvsutils.h>`) — **A** the member write (abend ⇒ real failure; decode SDWA, `B14`→`ENOSPC`; mandatory unallocate **and** `SPFEDIT` DEQ under nested protection; slot dropped, not retried) and **B** the ISPF-stats STOW REPLACE (abend *or* non-zero `mvs_stow` rc ⇒ warn only, flush still reports success) |
 | `src/mvsspl.c` / `.h` (new — **Phase 2**, §8) | Temp-dataset spill store: `spill_open` / `spill_write` (zero-extending past EOF) / `spill_read` / `spill_close`, over one reusable `&&PWWSP<nn>` scratch PS per pool slot (`DSORG=PS RECFM=FB BLKSIZE=4096`, binary; one `"w+b"` open per spill). Distinct `spill_` prefix keeps it separate from the member-write path |
-| `src/mvsdalc.asm`, `src/mvsstow.asm`, `src/mvsenq.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 `DISP=SHR` dynamic allocation returning its ddname via `DALRTDDN` (`mvs_dynalloc`); BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); ENQ/DEQ/TEST on `SPFEDIT`, exclusive, `RET=USE`, scope `SYSTEMS` (`mvs_enq`, §7.2); C prototypes + `MVSDALC`/`MVSSTOW`/`MVSENQ` name aliases in `asmutils.h` |
+| `src-asm/mvsdalc.asm`, `src-asm/mvsstow.asm`, `src-asm/mvsenq.asm`, `src/asmutils.h` (new) | Assembler helpers: SVC 99 `DISP=SHR` dynamic allocation returning its ddname via `DALRTDDN` (`mvs_dynalloc`); BLDL/FIND/STOW-REPLACE ISPF-stats update (`mvs_stow`); ENQ/DEQ/TEST on `SPFEDIT`, exclusive, `RET=USE`, scope `SYSTEMS` (`mvs_enq`, §7.2); C prototypes + `MVSDALC`/`MVSSTOW`/`MVSENQ` name aliases in `asmutils.h` |
 | `src/mvsvfs.c` | `vfs_pwrite` → route into the write pool; `vfs_create` → create pending member; `vfs_stat_pds_member` → check pending pool so in-progress members are visible; `vfs_errno_to_nfs3` maps the write path's `EACCES` (member locked → `NFS3ERR_ACCES`) and `EROFS`/`EXDEV` |
 | `src/nfs3.c` | `proc_write` → echo the client's requested stability; `proc_commit` → flush the member then reply; `proc_create` unchanged in shape |
 | `src/nfsd.c` | Call `pww_flush_idle()` after `select()`; flush-all on STOP before shutdown; strengthen the write verifier (JES job id / boot counter) |

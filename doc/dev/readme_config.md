@@ -7,7 +7,7 @@ S NFSD                       (started task -- see jcl/nfsd.jcl)
 ./nfsd [-p pmap] [-m mount] [-n nfs] nfsd.conf
 ```
 
-Code: `exports_load()` in `src/exports.c`. Sample: [`nfsd.conf`](../nfsd.conf).
+Code: `exports_load()` in `src/exports.c`. Sample: [`nfsd.conf`](../../nfsd.conf).
 
 ## 1. Format
 
@@ -52,7 +52,7 @@ The text after `F NFSD,` is what you put here. The line is handed to the
 interfaces cannot drift apart — anything valid at the console is valid here,
 and vice versa.
 
-Currently recognised commands (see [readme_logging](../README.md#logging)):
+Currently recognised commands (see [readme_logging](../../README.md#logging)):
 
 | Command | Effect |
 |---|---|

@@ -1,72 +1,42 @@
 # MVS support for the VFS module
 
-This module contains functions to access MVS resources, such as PDS directories and dataset attributes (DSORG, RECFM, LRECL, BLKSIZE etc).
+The MVS support modules reach real MVS resources — PDS directories, member
+data, dataset attributes (DSORG, RECFM, LRECL, BLKSIZE) — and return them in
+MVS terms. Translating those into the hierarchical, un\*x-style view that NFS
+clients see is the job of the MVS VFS implementation, `mvsvfs.c`.
 
-These functions return MVS type information. It is the MVS VFS implementation that provides the 
-translation from MVS constructs to a hierarchical file system (un*x) paradigm.
+> **Note (2026-08-24):** this file previously documented a proposed API
+> (`mvs_get_dsinfo`, `mvs_get_pdsdir`, `mvs_read`, `mvs_write` and their
+> structs) that was never built under those names. None of those symbols exist
+> in the source. The sketch has been replaced by the map below, which points at
+> the modules that were actually written.
 
-# VFS Routines
+## Where the work actually lives
 
-## vfs_stat
+| Module | Responsibility |
+|---|---|
+| `mvsio.c/h` | Path classification (`mvs_path_type`), member-name validation, DCB info retrieval |
+| `mvspdir.c/h` | PDS directory block parsing; ISPF statistics decode and encode |
+| `mvsprw.c/h` | PDS member reads, with a sequential-read position cache |
+| `mvspww.c/h` | Pending-member write pool — buffers WRITEs, STOWs on COMMIT |
+| `mvsspl.c/h` | Write-spill store, backing a large pending member with a temporary PS dataset |
+| `mvsblkc.c/h` | PDS space prediction — refuses a write that could not fit |
+| `mvsdol.c/h` | Directory open-list pool — caches open PDS directory scans |
+| `mvsfsz.c/h` | File-size cache — true text-mode sizes of PDS members |
+| `mvsfid.c/h` | Stable 64-bit file IDs from dataset + member name |
+| `mvsutl.c/h` | JES2 job-id lookup; CVT timezone offset and LOCAL ↔ UTC epoch conversion |
 
-This will be called for both a "directory" and "files". 
+The assembler helpers live in `src-asm/` and are declared in `src/asmutils.h`:
+`getcib` (MODIFY command block), `mvs_dynalloc` (SVC 99), `mvs_stow`
+(BLDL/FIND/STOW), `mvs_enq` (SPFEDIT serialisation), and the DSCB reader used
+by the space prediction.
 
-# MVS Support Routines
+## Further reading
 
-* mvs_get_dsinfo - Get dataset information, such as volume serial number, LRECL,
-  BLKSIZE, DSORG, RECFM.
-* mvs_get_pdsdir - Get PDS member list information (member name and ISPF stats)
-* mvs_read - Read a block from a PDS member
-* mvs_write - Write a block to a PDS member
-
-## mvs_get_dsinfo
-
-```c
-typedef struct {
-    unsigned char           volser[7];
-    unsigned char           dsorg;
-    short int               lrecl;
-    short int               blksize;
-    unsigned char           recfm;           
-} mvs_dsinfo_t;
-
-mvs_dsinfo_t *mvs_get_dsinfo(
-    unsigned char *dsname,
-    unsigned char *volser
-);
-```
-
-The `mvs_get_dsinfo` function will return NULL if the dataset is not found. The 
-volser maybe specified as NULL, in which case the dataset will be located via a
-catalog entry.
-
-## mvs_get_pdsdir
-
-```c
-typedef struct {
-    unsigned char           member_name[9];
-    int                     line_count;
-    short int               version;
-    short int               level;
-
-} mvs_dir_entry_t;
-
-mvs_dir_entry_t[] mvs_get_pdsdir(
-    unsigned char          *dsname,
-    unsigned char          *volser,
-    unsigned char          *after_member_name,
-    int                     max_member_count
-);
-```
-## mvs_read
-
-## mvs_write
-
-
-## Calling assembler functions from JCC compiled code
-
-
-
-
-
-
+| Document | Covers |
+|---|---|
+| [readme_vfs.md](readme_vfs.md) | The VFS interface every backend implements |
+| [readme_mvsfsz.md](readme_mvsfsz.md) | The file-size cache in detail |
+| [design_nfs_write.md](design_nfs_write.md) | The write path, enqueue and STOW |
+| [design_pds_full_prediction.md](design_pds_full_prediction.md) | Space prediction and the DSCB reads behind it |
+| [s370_jcc_prologue.md](s370_jcc_prologue.md) | Calling assembler from JCC-compiled code |

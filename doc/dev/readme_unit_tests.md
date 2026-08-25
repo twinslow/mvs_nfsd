@@ -10,8 +10,8 @@ Linux during development and on MVS via JCL for integration verification.
 
 ```
 tests/
-    munit.c             munit framework source (vendored)
-    munit.h             munit framework header (vendored)
+    munit.c             munit framework source (not in the repo -- see below)
+    munit.h             munit framework header (not in the repo -- see below)
     tstubs.c            Stub implementations of exports_count() / exports_get()
     tstubs.h            Declarations for the stub helper functions
     runall.c            Top-level runner: aggregates all test suites

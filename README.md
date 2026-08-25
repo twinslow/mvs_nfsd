@@ -96,6 +96,8 @@ other important datasets that could prevent an IPL from completing.
 | `jccprolg.asm` | `JCCPROLG` macro — JCC stack-frame entry linkage used by the assembler modules |
 | `jccretrn.asm` | `JCCRETRN` macro — JCC return linkage used by the assembler modules |
 
+The C sources live in `src/`; the `.asm` modules above live in `src-asm/`.
+
 ### JCL
 
 | File | Purpose |
@@ -130,7 +132,7 @@ other important datasets that could prevent an IPL from completing.
 | `tests/texports.c` | Tests for `exports.c` — the NFSDCONF parser + export table (multiple export paths, dataset accumulation, options, fail-closed, lookups). **Standalone program** — links the real `exports.c`, so it cannot use `tstubs`; built/run by `tests-jcl/testexp.jcl`, not `runall` |
 
 > Coverage summary: see the **test coverage matrix** in
-> [doc/readme_unit_tests.md](doc/readme_unit_tests.md), which maps every
+> [doc/dev/readme_unit_tests.md](doc/dev/readme_unit_tests.md), which maps every
 > production module to its test module with a low/medium/high rating.
 
 Standalone diagnostic programs (each has its own `main()` and is run
@@ -193,7 +195,7 @@ along with the main test harness and executes the tests.
 
 The config file is sectioned, Windows `.ini` style.  Section names are
 case-insensitive; `#` starts a comment and blank lines are ignored.  Full
-reference: **[doc/readme_config.md](doc/readme_config.md)**.
+reference: **[doc/dev/readme_config.md](doc/dev/readme_config.md)**.
 
 ```ini
 [Init]
@@ -241,7 +243,7 @@ The member file extension is derived from the dataset's last qualifier,
 lower-cased (members of `TEMP.TESTPROJ.CNTL` appear as `*.cntl`), unless
 overridden with the `fileext=` export keyword (e.g. `fileext=jcl` to present a
 `.CNTL` PDS as `*.jcl`) or suppressed entirely with `nofileext` (members shown
-by their bare name) — see `doc/readme_config.md`.
+by their bare name) — see `doc/dev/readme_config.md`.
 
 ## Running on MVS
 
@@ -584,7 +586,7 @@ After the member is stowed, its ISPF statistics are applied **in place**
 position on it, then STOW REPLACE with the encoded stats).  A `touch` (SETATTR
 time change) refreshes just the ISPF changed date the same way.  The full
 design, including the record-conversion and durability model, is in
-[`doc/design_nfs_write.md`](doc/design_nfs_write.md).
+[`doc/dev/design_nfs_write.md`](doc/dev/design_nfs_write.md).
 
 ### Full-dataset prediction (`mvsblkc.c`)
 
@@ -606,8 +608,8 @@ Every ambiguous choice is resolved towards "predict full", because a wrong
 reports.  Exports whose DSCB cannot be read, or that are not PO with a
 usable F/FB or V/VB record format, are rejected at config load.
 
-See [`doc/design_pds_full_prediction.md`](doc/design_pds_full_prediction.md)
-for the design and [`doc/analysis_io_lock_hang.md`](doc/analysis_io_lock_hang.md)
+See [`doc/dev/design_pds_full_prediction.md`](doc/dev/design_pds_full_prediction.md)
+for the design and [`doc/dev/analysis_io_lock_hang.md`](doc/dev/analysis_io_lock_hang.md)
 for the hang investigation that motivated it.
 
 ### File-size cache (`mvsfsz.c`)
@@ -754,7 +756,7 @@ lost track of it.
 
 The names are ASCII (so a handle is readable in a packet trace); the two
 numeric fields are big-endian.  See `fh_encode()` / `fh_decode()` in
-`fhandle.c`, and **[doc/readme_filehandles.md](doc/readme_filehandles.md)**
+`fhandle.c`, and **[doc/dev/readme_filehandles.md](doc/dev/readme_filehandles.md)**
 for the full rationale, the EBCDIC pitfalls, and the upgrade note (clients
 must remount once).
 
@@ -782,7 +784,7 @@ on every LOOKUP and READDIRPLUS call.
   marked read-only with the `ro` keyword, the reported permission bits
   are configurable (`dirperm` / `memperm` / `rootperm`), and the member file
   extension can be overridden (`fileext`) or suppressed (`nofileext`) — see
-  [doc/readme_config.md](doc/readme_config.md).  Read-only is enforced for
+  [doc/dev/readme_config.md](doc/dev/readme_config.md).  Read-only is enforced for
   every client including one mounting as root.
 - RENAME works only **within a single PDS** — a member cannot be moved to a
   different dataset (different directory).  A cross-PDS request returns

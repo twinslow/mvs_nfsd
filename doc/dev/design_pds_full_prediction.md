@@ -1,5 +1,10 @@
 # Predicting if a given member can be written to PDS
 
+Status: **Implemented** in `src/mvsblkc.c`, with the pool entry points gated in
+`src/mvspww.c` (`pww_write`, `pww_create`, `pww_truncate`). This document is
+retained as the design record and is written in the future tense of its drafting;
+where an implementation detail differs it is noted inline.
+
 The goal of this change is for the NFSD server to predict, on each NFS write request,
 whether or not there is sufficient space remaining in the PDS to satisfy the request.
 
@@ -574,7 +579,7 @@ can be tested hardest.
 **Success criterion for the whole change:** a full-suite Windows run with
 `upload_full_dataset` filling the PDS produces zero `IEC032I E37-04` /
 `IEC217I B14-10` in the job log, and therefore zero exposure to the hang in
-`doc/analysis_io_lock_hang.md`.
+`analysis_io_lock_hang.md`.
 
 ---
 
