@@ -6,12 +6,13 @@ Upload the XMIT file `nfsd.v*.xmi` to MVS, to a dataset name
 of your choice and then "receive" the XMIT data into a PDS, for example
 `SYSS.NFSD.V0R1M0.DISTRIB`.
 
-This will be a `RECFM=FB,LRECL=80` format dataset that contains --
+This will be a partitioned dataset, `RECFM=FB,LRECL=80` format that
+contains --
 
 * Install JCL.
 * A sample started task JES2 stored procedure.
 * A sample configuration which you can place in its own dataset,
-  or `SYS*.PARMLIB`.
+  or a member in `SYS*.PARMLIB`.
 * XMIT format data to create the runtime load library.
 * XMIT format data for the source datasets.
 
@@ -26,32 +27,32 @@ There are two executable programs which are used by the started task.
 * **NFSD** - This is the executable for the NFS server as you might
   expect.
 
-Note that the configuration file, or started task stored procedure
-are not created/placed automatically (I consider that this would
-be rude) so it is left for you to do this manually.
+Note that the installation job does not copy the configuration file,
+or started task stored procedure. It is left for you to do this
+manually.
 
 Note that the full source and development tree can be found on
-*github* at:
-https://github.com/twinslow/mvs_nfsd
+github at --
 
+https://github.com/twinslow/mvs_nfsd
 
 # Installation Steps
 
 ## Step 1 - Load the `nfsd_v*.xmi` file to MVS
 
 Use FTP or your terminal emulator (such as the wonderful Vista TN3270)
-to load the file to MVS. Then use RECV370 to create the distrubution
+to load the file to MVS. Then use RECV370 to create the distribution
 dataset.
 
 Note, that I had to create the dataset first for FTPD and a
 IND$FILE transfer using Vista TN3270.
 
-The full screen interface provided in MVS-TK5 works (option M.R).
-The following inputs, with option 1 were successful.
+The full screen interface provided in MVS-TK5 works (option M.R) and
+the following inputs, with "option 1" were successful.
 
 ```
 --------------------   Receive XMIT File   ---------------------------------
-OPTION  ===>
+OPTION  ===> 1
 
  1  Receive XMIT file on MVS to PDS/SEQ file                        HERC01
  2  Receive XMIT file on PC  to PDS/SEQ file                        PRECV372
@@ -80,19 +81,29 @@ OPTION  ===>
 In these instructions I am assuming this output dataset is --
 `SYSS.NFSD.V0R1M0.DISTRIB`.
 
-## Step 2 - Create the NFSD load library
+## Step 2 - Create the NFSD source and load library datasets
 
 Customize the install job `SYSS.NFSD.V0R1M0.DISTRIB(INSTALL)`. You will
 likely wish to change --
 
 * Job card information such as job name, job class, message class,
   notify userid etc.
-* The target load library dataset to be created with the executables
-  for NFSD.
+* The dataset name of your `DISTRIB` PDS.
+* The target output dataset prefix for load library and source datasets.
+* The target volume for these datasets.
+
+Note that these datasets are created as DISP=(NEW,CATLG) and the job
+will fail if they already exist.
 
 The NFSD server does not need to run authorized, but it will need to
 have appropriate permissions to its configuration and the datasets to
 be exported (the datasets that are to be remotely mounted and accessed).
+
+In the *MVS TK5* environment, the started task will run under the `STC`
+userid, and have a group of `STCGROUP`. The permissions in the default
+setup should be suitable, allowing read/write access to any dataset
+you wish to export. See *TK5* and *RAKF* documentation for more
+information on this.
 
 ## Step 3 - Customize, or create the started task stored procedure
 
@@ -114,6 +125,10 @@ format FB or VB. You way wish to keep the the configuration as a
 member of `SYS1.PARMLIB`, such as `NFSDCFG0`.
 
 The sample JES2 stored procedure assume exactly this setup.
+
+Note that at this time the dataset names in the export list cannot
+include wilcards to perform generic exports based on system
+catalog. You must explicitly list each dataset you wish to export.
 
 ## Step 5 - Start NFSD
 

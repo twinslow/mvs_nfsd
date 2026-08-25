@@ -23,8 +23,8 @@
 2. Update all jobs docs that refer to release number
     * Do a *replace in files* from regex "V\d+R\d+M\d+" to "V20R3M0" etc.
 3. Recreate PDF files for installation and user_guide markdown files.
-4. Copy installation.md as $readme.jcl
-5. Upload modified files to MVS
+4. Copy ./doc/user/installation.md to ./jcl/$readme.jcl
+5. Upload modified files to MVS.
 6. Run the job `MKDISTR`. Verify max condition code zero.
 7. Create new build directory `./build/mvs/nfsd_vnrnmn`
 8. Download the newly created XMI file 'SYSS.NFSD.VnRnMn.XMI' as nfsd_vnrnmn.xmi

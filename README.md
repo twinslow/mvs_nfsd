@@ -5,6 +5,9 @@ A minimal NFSv3 (RFC 1813) server written in pure C, targeting MVS 3.8J
 MVS Partitioned Datasets (PDS) as NFS-mounted directories, making PDS members
 visible as ordinary files to any NFSv3 client (Linux, Windows, macOS).
 
+**The server assumes the MVS PDS members contain EBCDIC text, as it is converted to
+and from ASCII for the NFS protocol and client.**
+
 ## Design goals
 
 - **No external libraries.** Standard C and POSIX sockets only.
