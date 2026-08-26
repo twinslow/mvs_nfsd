@@ -22,9 +22,9 @@
 //********************************************************************
 //*
 //RECV370 PROC VOL=TSO003,                  Target dasd volume
-//         XMI='SYSS.NFSD.V0R1M0.DISTRIB',  XMI - Input xmit data set
+//         XMI='SYSS.NFSD.V0R2M0.DISTRIB',  XMI - Input xmit data set
 //         INMEM='NOT-SPECIFIED',           XMI - Input member
-//         OUTPREF='SYSS.NFSD.V0R1M0',      Output dataset prefix
+//         OUTPREF='SYSS.NFSD.V0R2M0',      Output dataset prefix
 //         OUTTYPE='FORGOTTEN',             Output dataset last qual
 //         SPA='15,5',                      Pri and sec SPACE (in trk)
 //         BLK='3200',                      Blocksize

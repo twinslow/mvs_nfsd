@@ -4,7 +4,7 @@
 
 Upload the XMIT file `nfsd.v*.xmi` to MVS, to a dataset name
 of your choice and then "receive" the XMIT data into a PDS, for example
-`SYSS.NFSD.V0R1M0.DISTRIB`.
+`SYSS.NFSD.V0R2M0.DISTRIB`.
 
 This will be a partitioned dataset, `RECFM=FB,LRECL=80` format that
 contains --
@@ -38,17 +38,114 @@ https://github.com/twinslow/mvs_nfsd
 
 # Installation Steps
 
-## Step 1 - Load the `nfsd_v*.xmi` file to MVS
+## Step 1 - What HLQ are you going to use?
 
-Use FTP or your terminal emulator (such as the wonderful Vista TN3270)
-to load the file to MVS. Then use RECV370 to create the distribution
-dataset.
+In the examples for this installation document I have been using a
+HLQ of *SYSS*. This is not already in use on a standard *MVS TK5*
+installation.
 
-Note, that I had to create the dataset first for FTPD and a
+You should avoid having the install datasets cataloged in the MVS
+master catalog, as this is may result in the catalog entries being
+lost after maintenance.
+
+There is a job provided in *MVS TK5* which defines all catalog
+aliases, pointing specific HLQ values to *USER catalogs*. This job
+is *SYS2.JCLLIB(ALLALIAS)*. I like to update that job with any new
+HLQs, as a record of what has been defined. The *IDCAMS* command is
+shown below to create the alias for *SYSS*.
+
+```
+DEF ALIAS(NAME('SYSS') REL('SYS1.UCAT.TK5'))
+```
+
+You can copy the *IDCAMS* command for the *define alias* and execute
+it directly via TSO option 6. Note that executing the command
+provides no output back to the screen, which is a little disconcerting.
+
+You can verify that the command did indeed create the alias using the
+following command in option 6 (assuming you are using the *SYSS* HLQ) --
+
+```
+LISTC ENT('SYSS') ALL
+```
+
+You'll see output something like this ...
+```
+ALIAS --------- SYSS
+     IN-CAT --- SYS1.MCAT.TK5
+     HISTORY
+       RELEASE----------------2
+     ASSOCIATIONS
+       USERCAT--SYS1.UCAT.TK5
+***
+```
+
+## Step 2 - Create the DISTRIBution PDS from the XMIT file
+
+There are a multitude of ways you can get the XMIT file onto your
+MVS system. If you are using *MVS TK5* I recommend using the full
+screen interface to *RECV370* provided as option *M.R*.
+
+Option 2 will generate a batch job that will initialize the hercules
+reader device with the specified (PC or Linux) file and then execute
+the RECV370 program to read the *card deck* directly from the reader
+unit device specified.
+
+Below are screen shots for both options (you only need to use one
+of them).
+
+In these instructions I am assuming this output dataset is --
+`SYSS.NFSD.V0R2M0.DISTRIB`.
+
+### If the XMIT file is NOT on MVS
+
+This option submits a job that will --
+
+1. Issue a DEVINIT command to hercules, to place the specified XMIT format
+   (EBCDIC/BINARY) file on the specified reader device.
+2. Run RECV370 to process the XMIT file and create the output dataset.
+3. Issue another DEVINIT command to hercules, to reset the reader with
+   no file loaded.
+
+Note the use of forward slashes in the PC file name.
+
+```
+--------------------   Receive XMIT File   ---------------------------------
+OPTION  ===> 2
+
+ 1  Receive XMIT file on MVS to PDS/SEQ file                        HERC01
+ 2  Receive XMIT file on PC  to PDS/SEQ file                        PRECV372
+                                                                    PXMI
+ XMIT Input File
+1 MVSFILE:
+-or-
+2 PCFILE: C:/mvs-clean/nfsd_v0r2m0/nfsd_v0r2m0.xmi
+  Reader Control for PCFILE
+   HercRDR Jes2RDR DEVINIT Reset Command
+   10C             DEVINIT 10C
+
+ MVS Output File
+  DSN: SYSS.NFSD.V0R2M0.DISTRIB                     VOL: TSO003  UNIT: SYSDA
+  SPACE: (CYL,(5,2,3))               DISP: (NEW,CATLG)
+
+ JOB STATEMENT INFORMATION
+  ===> //HERC01R JOB CLASS=A,
+  ===> //      MSGLEVEL=1,MSGCLASS=X,NOTIFY=HERC01
+  ===>
+  ===>
+
+```
+
+### If the XMIT file is already on MVS
+
+After using FTP or your terminal emulator (such as the wonderful Vista TN3270)
+to load the file to MVS, you can use *RECV370* to create the distribution
+dataset. **Note,** I had to create the dataset first for both FTPD and
 IND$FILE transfer using Vista TN3270.
 
-The full screen interface provided in MVS-TK5 works (option M.R) and
-the following inputs, with "option 1" were successful.
+In the screen shot below, I've shown the selected options using
+TK5 full screen interface to *RECV370* that will submit a batch job
+and create the distribution dataset.
 
 ```
 --------------------   Receive XMIT File   ---------------------------------
@@ -58,7 +155,7 @@ OPTION  ===> 1
  2  Receive XMIT file on PC  to PDS/SEQ file                        PRECV372
                                                                     PXMI
  XMIT Input File
-1 MVSFILE: SYSS.NFSD.V0R1M0.XMI
+1 MVSFILE: SYSS.NFSD.V0R2M0.XMI
 -or-
 2 PCFILE:
   Reader Control for PCFILE
@@ -66,7 +163,7 @@ OPTION  ===> 1
 
 
  MVS Output File
-  DSN: SYSS.NFSD.V0R1M0.DISTRIB                     VOL: TSO003  UNIT: SYSDA
+  DSN: SYSS.NFSD.V0R2M0.DISTRIB                     VOL: TSO003  UNIT: SYSDA
   SPACE: (CYL,(5,2,3))               DISP: (NEW,CATLG)
 
  JOB STATEMENT INFORMATION
@@ -77,13 +174,9 @@ OPTION  ===> 1
 
 ```
 
+## Step 3 - Create the NFSD source and load library datasets
 
-In these instructions I am assuming this output dataset is --
-`SYSS.NFSD.V0R1M0.DISTRIB`.
-
-## Step 2 - Create the NFSD source and load library datasets
-
-Customize the install job `SYSS.NFSD.V0R1M0.DISTRIB(INSTALL)`. You will
+Customize the install job `SYSS.NFSD.V0R2M0.DISTRIB(INSTALL)`. You will
 likely wish to change --
 
 * Job card information such as job name, job class, message class,
@@ -103,11 +196,12 @@ In the *MVS TK5* environment, the started task will run under the `STC`
 userid, and have a group of `STCGROUP`. The permissions in the default
 setup should be suitable, allowing read/write access to any dataset
 you wish to export. See *TK5* and *RAKF* documentation for more
-information on this.
+information on this. If you have RAKF access failures, check the
+settings in *SYS1.SECURE.CNTL(PROFILES)*.
 
-## Step 3 - Customize, or create the started task stored procedure
+## Step 4 - Customize, or create the started task stored procedure
 
-The member `SYSS.NFSD.V0R1M0.DISTRIB(NFSD)` is a sample stored procedure
+The member `SYSS.NFSD.V0R2M0.DISTRIB(NFSD)` is a sample stored procedure
 you can copy to a suitable JES2 procedure library. If you are using
 the MVS TK5 system then I suggest using `SYS2.PROCLIB`.
 
@@ -116,9 +210,9 @@ the MVS TK5 system then I suggest using `SYS2.PROCLIB`.
   appropriate.
 * Update the source of the configuration file (see below).
 
-## Step 4 - Customize, or create the NFSD configuration file
+## Step 5 - Customize, or create the NFSD configuration file
 
-The member `SYSS.NFSD.V0R1M0.DISTRIB(CONFIG)` contains a sample
+The member `SYSS.NFSD.V0R2M0.DISTRIB(CONFIG)` contains a sample
 configuration for the NFSD server. You can copy this to either a
 sequential dataset, or a member of a PDS. The dataset can be record
 format FB or VB. You way wish to keep the the configuration as a
@@ -130,7 +224,7 @@ Note that at this time the dataset names in the export list cannot
 include wilcards to perform generic exports based on system
 catalog. You must explicitly list each dataset you wish to export.
 
-## Step 5 - Start NFSD
+## Step 6 - Start NFSD
 
 Enter a start command on the MVS console to run NFSD, `S NFSD`.
 

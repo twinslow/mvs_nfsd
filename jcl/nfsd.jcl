@@ -1,4 +1,4 @@
-//NFSD    PROC DSNPREF='SYSS.NFSD.V0R1M0',                               0000100
+//NFSD    PROC DSNPREF='SYSS.NFSD.V0R2M0',                               0000100
 //             CONFIG='SYS1.PARMLIB(NFSDCFG0)'                           0000110
 //********************************************************************   0000200
 //*                                                                      0000300

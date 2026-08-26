@@ -58,7 +58,7 @@
 //*
 //*
 //MKDISTR PROC SRCPREF='TONYW.NFSD',
-//             DSNPREF='SYSS.NFSD.V0R1M0',
+//             DSNPREF='SYSS.NFSD.V0R2M0',
 //             VOLSER=TSO003
 //*
 //*-------------------------------------------------------------------
